@@ -182,6 +182,7 @@ fn classify_ok_outcome(
     match tool.domain_family() {
         AssistantDomainFamily::Calendar => classify_calendar_outcome(message, tool, block),
         AssistantDomainFamily::Weather => classify_weather_outcome(block),
+        AssistantDomainFamily::Downloads => classify_downloads_outcome(tool, block),
         AssistantDomainFamily::Library => classify_library_outcome(message, tool, block),
         AssistantDomainFamily::Transcript => classify_transcript_outcome(block),
         AssistantDomainFamily::Rooms => classify_rooms_outcome(tool, block),
@@ -193,13 +194,9 @@ fn classify_ok_outcome(
             message: tool_message(block),
             ..OutcomeInspection::default()
         },
-        AssistantDomainFamily::Network | AssistantDomainFamily::System => OutcomeInspection {
-            kind: AssistantToolOutcomeKind::Answer,
-            confidence: 0.97,
-            stale: tool.freshness_sensitive() && !block.data.is_null(),
-            message: tool_message(block),
-            ..OutcomeInspection::default()
-        },
+        AssistantDomainFamily::Network => classify_network_outcome(tool, block),
+        AssistantDomainFamily::Memory => classify_memory_outcome(tool, block),
+        AssistantDomainFamily::System => classify_system_outcome(tool, block),
         _ => classify_generic_outcome(block),
     }
 }
@@ -306,6 +303,39 @@ fn classify_calendar_outcome(
                 .unwrap_or(0);
             OutcomeInspection {
                 kind: if events == 0 {
+                    AssistantToolOutcomeKind::Empty
+                } else {
+                    AssistantToolOutcomeKind::Answer
+                },
+                confidence: 0.97,
+                ..OutcomeInspection::default()
+            }
+        }
+        AssistantToolName::CalendarCountEvents => {
+            let total = block
+                .data
+                .get("total_event_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            OutcomeInspection {
+                kind: if total == 0 {
+                    AssistantToolOutcomeKind::Empty
+                } else {
+                    AssistantToolOutcomeKind::Answer
+                },
+                confidence: 0.97,
+                ..OutcomeInspection::default()
+            }
+        }
+        AssistantToolName::CalendarListBusyDays => {
+            let busy_days = block
+                .data
+                .get("busy_days")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            OutcomeInspection {
+                kind: if busy_days == 0 {
                     AssistantToolOutcomeKind::Empty
                 } else {
                     AssistantToolOutcomeKind::Answer
@@ -507,7 +537,29 @@ fn classify_library_outcome(
                 ..OutcomeInspection::default()
             }
         }
-        AssistantToolName::LibraryGetItemSummary => {
+        AssistantToolName::LibrariesGetLibrarySummary => {
+            if tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("no accessible library matched")
+            {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::LibraryGetItemSummary
+        | AssistantToolName::LibraryGetItemMediaDetails => {
             if tool_message(block)
                 .as_deref()
                 .unwrap_or_default()
@@ -532,6 +584,392 @@ fn classify_library_outcome(
         | AssistantToolName::LibrariesListAccessible => {
             classify_generic_list_outcome(block, "items")
         }
+        AssistantToolName::LibrariesFindDuplicateTitles => {
+            let duplicates = block
+                .data
+                .get("duplicates")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            OutcomeInspection {
+                kind: if duplicates == 0 {
+                    AssistantToolOutcomeKind::Empty
+                } else {
+                    AssistantToolOutcomeKind::Answer
+                },
+                confidence: 0.97,
+                ..OutcomeInspection::default()
+            }
+        }
+        AssistantToolName::LibrariesListMissingMetadata => {
+            let items = block
+                .data
+                .get("items")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            OutcomeInspection {
+                kind: if items == 0 {
+                    AssistantToolOutcomeKind::Empty
+                } else {
+                    AssistantToolOutcomeKind::Answer
+                },
+                confidence: 0.97,
+                ..OutcomeInspection::default()
+            }
+        }
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn classify_downloads_outcome(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    match tool {
+        AssistantToolName::DownloadsListAvailableArtifacts => {
+            classify_generic_list_outcome(block, "artifacts")
+        }
+        AssistantToolName::DownloadsGetArtifactDetails
+        | AssistantToolName::DownloadsGetArtifactChecksum
+        | AssistantToolName::DownloadsGetArtifactInstallSteps
+        | AssistantToolName::DownloadsGetArtifactCompatibility => {
+            if tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("no download artifact matched")
+            {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn classify_network_outcome(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    match tool {
+        AssistantToolName::NetworkGetDefaultRoute => {
+            let lower = tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lower.contains("no default route matched") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: tool.freshness_sensitive() && !block.data.is_null(),
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::NetworkGetHostnameAliases => {
+            let lower = tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lower.contains("no hostname aliases matched") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: tool.freshness_sensitive() && !block.data.is_null(),
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::NetworkGetDnsServers => {
+            let lower = tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lower.contains("no dns servers matched") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: tool.freshness_sensitive() && !block.data.is_null(),
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::NetworkGetInterfaceDetails => {
+            if tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("no network interface matched")
+            {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: true,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::NetworkGetTopologySummary => OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Answer,
+            confidence: 0.97,
+            stale: tool.freshness_sensitive() && !block.data.is_null(),
+            message: tool_message(block),
+            ..OutcomeInspection::default()
+        },
+        AssistantToolName::NetworkGetRouteTable
+        | AssistantToolName::NetworkGetActiveConnections
+        | AssistantToolName::NetworkGetInterfaceCounters
+        | AssistantToolName::NetworkGetWifiStatus
+        | AssistantToolName::NetworkGetVpnStatus => OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Answer,
+            confidence: 0.97,
+            stale: tool.freshness_sensitive() && !block.data.is_null(),
+            message: tool_message(block),
+            ..OutcomeInspection::default()
+        },
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn classify_system_outcome(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    match tool {
+        AssistantToolName::SystemGetStoragePathDetail => {
+            if tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("no storage path matched")
+            {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: true,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::SystemGetMountDetail => {
+            let lower = tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lower.contains("no storage mount matched") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: true,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::SystemGetPortConflicts => {
+            let lower = tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lower.contains("no listening sockets matched") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: tool.freshness_sensitive() && !block.data.is_null(),
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::SystemGetPortConflictDetail => {
+            let lower = tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lower.contains("no port conflict matched") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: true,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::SystemGetFailedUnits => {
+            let lower = tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lower.contains("no failed systemd units were found") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Empty,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else if lower.contains("no failed systemd units matched") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: tool.freshness_sensitive() && !block.data.is_null(),
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::SystemGetFailedUnitDetail => {
+            let lower = tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if lower.contains("no failed systemd unit matched") {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: tool.freshness_sensitive() && !block.data.is_null(),
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::SystemGetServiceDetail => {
+            if tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("no service component matched")
+            {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    stale: true,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::SystemGetServiceHealth
+        | AssistantToolName::SystemGetBackupSummary
+        | AssistantToolName::SystemGetTranscodeSummary
+        | AssistantToolName::SystemGetStorageSummary
+        | AssistantToolName::SystemGetRecentErrors
+        | AssistantToolName::SystemGetHostRuntimeSummary => OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Answer,
+            confidence: 0.97,
+            stale: tool.freshness_sensitive() && !block.data.is_null(),
+            message: tool_message(block),
+            ..OutcomeInspection::default()
+        },
+        AssistantToolName::SystemGetKernelInfo
+        | AssistantToolName::SystemGetCpuTopology
+        | AssistantToolName::SystemGetTemperatureSensors
+        | AssistantToolName::SystemGetBlockDeviceInventory
+        | AssistantToolName::SystemGetFilesystemTable
+        | AssistantToolName::SystemGetGpuInventory
+        | AssistantToolName::SystemGetPciDevices
+        | AssistantToolName::SystemGetUsbDevices
+        | AssistantToolName::SystemGetBootLogSummary
+        | AssistantToolName::SystemGetJournalSummary => OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Answer,
+            confidence: 0.97,
+            stale: tool.freshness_sensitive() && !block.data.is_null(),
+            message: tool_message(block),
+            ..OutcomeInspection::default()
+        },
         _ => classify_generic_outcome(block),
     }
 }
@@ -580,6 +1018,83 @@ fn classify_servers_outcome(
             classify_generic_list_outcome(block, "servers")
         }
         AssistantToolName::ServersGetMinecraftServerSummary => classify_generic_outcome(block),
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn classify_memory_outcome(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    match tool {
+        AssistantToolName::MemoryListRecentFacts | AssistantToolName::MemorySearchFacts => {
+            classify_generic_list_outcome(block, "facts")
+        }
+        AssistantToolName::MemoryListRecentEntities | AssistantToolName::MemorySearchEntities => {
+            classify_generic_list_outcome(block, "entities")
+        }
+        AssistantToolName::MemoryListRecentChanges => {
+            let facts = block
+                .data
+                .get("facts")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            let entities = block
+                .data
+                .get("entities")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            OutcomeInspection {
+                kind: if facts == 0 && entities == 0 {
+                    AssistantToolOutcomeKind::Empty
+                } else {
+                    AssistantToolOutcomeKind::Answer
+                },
+                confidence: 0.95,
+                ..OutcomeInspection::default()
+            }
+        }
+        AssistantToolName::MemoryListConflictingFacts => {
+            let conflicts = block
+                .data
+                .get("conflicts")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            OutcomeInspection {
+                kind: if conflicts == 0 {
+                    AssistantToolOutcomeKind::Empty
+                } else {
+                    AssistantToolOutcomeKind::Answer
+                },
+                confidence: 0.95,
+                ..OutcomeInspection::default()
+            }
+        }
+        AssistantToolName::MemoryGetEntityProvenance => {
+            let entity_present = block
+                .data
+                .get("entity")
+                .is_some_and(|value| !value.is_null());
+            let source_present = block
+                .data
+                .get("source_chunk")
+                .is_some_and(|value| !value.is_null());
+            OutcomeInspection {
+                kind: if entity_present || source_present {
+                    AssistantToolOutcomeKind::Answer
+                } else {
+                    AssistantToolOutcomeKind::Empty
+                },
+                confidence: 0.95,
+                ..OutcomeInspection::default()
+            }
+        }
+        AssistantToolName::MemoryGetEntityRelations => {
+            classify_generic_list_outcome(block, "relations")
+        }
         _ => classify_generic_outcome(block),
     }
 }
@@ -867,6 +1382,142 @@ mod tests {
                 .recovery_hints
                 .iter()
                 .any(|hint| hint == "normalize_location")
+        );
+    }
+
+    #[test]
+    fn normalizes_recent_changes_as_answer() {
+        let outcome = normalize_tool_result(
+            "What's new in my memory?",
+            &PlannedToolCall {
+                tool: AssistantToolName::MemoryListRecentChanges,
+                input: AssistantToolInput::None,
+            },
+            AssistantToolContextBlock {
+                tool: "memory_list_recent_changes",
+                label: "Recent stored memory changes".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": null,
+                    "fact_count": 1,
+                    "entity_count": 1,
+                    "facts": [
+                        {
+                            "id": "fact-1",
+                            "memory_key": "fact-1",
+                            "memory_type": "user_memory",
+                            "topic_key": "memory:people",
+                            "title": "favorite color",
+                            "content": "Dark green",
+                            "weight": 1.0,
+                            "created_ts": 1000,
+                            "updated_ts": 1000
+                        }
+                    ],
+                    "entities": [
+                        {
+                            "id": "entity-1",
+                            "node_key": "person:rachel",
+                            "entity_kind": "person",
+                            "label": "Rachel",
+                            "identifier": "rachel",
+                            "topic_key": "memory:people",
+                            "source_chunk_id": null,
+                            "access_scope": "user",
+                            "ordinal": 1,
+                            "created_ts": 3000,
+                            "updated_ts": 3000
+                        }
+                    ]
+                }),
+            },
+        );
+        assert_eq!(
+            outcome.kind,
+            crate::ai_assistant::types::AssistantToolOutcomeKind::Answer
+        );
+    }
+
+    #[test]
+    fn normalizes_conflicting_facts_as_empty_when_none_found() {
+        let outcome = normalize_tool_result(
+            "What conflicting facts do you have about Rachel?",
+            &PlannedToolCall {
+                tool: AssistantToolName::MemoryListConflictingFacts,
+                input: AssistantToolInput::SystemService {
+                    query: "Rachel".to_string(),
+                },
+            },
+            AssistantToolContextBlock {
+                tool: "memory_list_conflicting_facts",
+                label: "Conflicting stored memory facts".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "Rachel",
+                    "total_count": 0,
+                    "conflict_group_count": 0,
+                    "conflicts": []
+                }),
+            },
+        );
+        assert_eq!(
+            outcome.kind,
+            crate::ai_assistant::types::AssistantToolOutcomeKind::Empty
+        );
+    }
+
+    #[test]
+    fn normalizes_entity_provenance_as_answer() {
+        let outcome = normalize_tool_result(
+            "Where did you learn about Rachel?",
+            &PlannedToolCall {
+                tool: AssistantToolName::MemoryGetEntityProvenance,
+                input: AssistantToolInput::SystemService {
+                    query: "Rachel".to_string(),
+                },
+            },
+            AssistantToolContextBlock {
+                tool: "memory_get_entity_provenance",
+                label: "Stored entity provenance for Rachel".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "Rachel",
+                    "matched_by": "exact entity search",
+                    "entity": {
+                        "id": "entity-1",
+                        "node_key": "person:rachel",
+                        "conversation_id": "conv-1",
+                        "turn_id": "turn-1",
+                        "entity_kind": "person",
+                        "label": "Rachel",
+                        "identifier": "rachel",
+                        "topic_key": "memory:people",
+                        "source_chunk_id": "chunk-1",
+                        "access_scope": "user",
+                        "ordinal": 1,
+                        "created_ts": 3000,
+                        "updated_ts": 4000
+                    },
+                    "source_chunk": {
+                        "chunk_key": "chunk-1",
+                        "source_kind": "conversation",
+                        "source_id": "conv-1",
+                        "source_sub_id": "turn-1",
+                        "owner_user_id": "user-1",
+                        "access_scope": "user",
+                        "access_key": null,
+                        "topic_key": "memory:people",
+                        "title": "Rachel family note",
+                        "excerpt": "Rachel is my sister.",
+                        "source_ts": 3000,
+                        "updated_ts": 4000
+                    }
+                }),
+            },
+        );
+        assert_eq!(
+            outcome.kind,
+            crate::ai_assistant::types::AssistantToolOutcomeKind::Answer
         );
     }
 }

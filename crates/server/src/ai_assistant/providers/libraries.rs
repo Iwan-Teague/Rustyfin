@@ -15,9 +15,14 @@ impl ToolProvider for LibrariesToolProvider {
 
     fn register(&self, registry: &mut ToolRegistryBuilder) {
         registry.register_tool(self, AssistantToolName::LibrariesListAccessible);
+        registry.register_tool(self, AssistantToolName::LibrariesGetLibrarySummary);
         registry.register_tool(self, AssistantToolName::LibrarySearchTitles);
         registry.register_tool(self, AssistantToolName::LibraryGetItemSummary);
+        registry.register_tool(self, AssistantToolName::LibraryGetItemMediaDetails);
+        registry.register_tool(self, AssistantToolName::LibraryGetItemSourcePaths);
         registry.register_tool(self, AssistantToolName::LibrariesGetRecentlyAdded);
+        registry.register_tool(self, AssistantToolName::LibrariesFindDuplicateTitles);
+        registry.register_tool(self, AssistantToolName::LibrariesListMissingMetadata);
     }
 
     fn execute<'a>(

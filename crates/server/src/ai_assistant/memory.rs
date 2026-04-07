@@ -49,16 +49,64 @@ fn visibility_for_tool(tool: &str) -> AssistantGroundingVisibility {
         "system_get_host_runtime_summary"
         | "system_get_backup_summary"
         | "system_get_service_health"
+        | "system_get_service_detail"
         | "system_get_transcode_summary"
         | "system_get_storage_summary"
-        | "system_get_recent_errors" => AssistantGroundingVisibility::Admin,
+        | "system_get_recent_errors"
+        | "system_get_kernel_info"
+        | "system_get_cpu_topology"
+        | "system_get_temperature_sensors"
+        | "system_get_block_device_inventory"
+        | "system_get_filesystem_table"
+        | "system_get_gpu_inventory"
+        | "system_get_pci_devices"
+        | "system_get_usb_devices"
+        | "system_get_boot_log_summary"
+        | "system_get_journal_summary"
+        | "system_get_port_conflicts"
+        | "system_get_failed_units"
+        | "ai_list_background_jobs"
+        | "ai_get_job_status"
+        | "ai_get_tool_registry"
+        | "ai_get_grounding_summary"
+        | "ai_get_last_tool_failure_reason" => AssistantGroundingVisibility::Admin,
+        "downloads_list_available_artifacts" | "downloads_get_artifact_details" => {
+            AssistantGroundingVisibility::Shared
+        }
+        "network_get_topology_summary"
+        | "network_get_interface_details"
+        | "network_get_default_route"
+        | "network_get_hostname_aliases" => AssistantGroundingVisibility::Shared,
+        "network_get_route_table"
+        | "network_get_active_connections"
+        | "network_get_interface_counters"
+        | "network_get_wifi_status"
+        | "network_get_vpn_status" => AssistantGroundingVisibility::Admin,
         "calendar_list_events"
         | "calendar_get_next_event"
         | "calendar_upcoming_birthdays"
         | "calendar_get_event_details"
+        | "calendar_get_event_by_exact_date_and_title"
+        | "calendar_get_event_series_summary"
+        | "calendar_get_next_free_slot"
+        | "calendar_list_busy_slots"
+        | "calendar_count_events"
+        | "calendar_list_busy_days"
+        | "calendar_list_overlapping_events"
         | "calendar_create_event"
         | "calendar_create_birthday"
         | "channels_get_transcript_summary"
+        | "memory_get_person_summary"
+        | "memory_list_recent_facts"
+        | "memory_list_recent_entities"
+        | "memory_search_facts"
+        | "memory_search_entities"
+        | "memory_find_exact_entity"
+        | "memory_get_entity_relations"
+        | "memory_get_entity_relation_path"
+        | "memory_list_recent_changes"
+        | "memory_list_conflicting_facts"
+        | "memory_get_entity_provenance"
         | "account_get_profile_summary" => AssistantGroundingVisibility::User,
         _ => AssistantGroundingVisibility::Shared,
     }
@@ -70,6 +118,13 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
         | "calendar_get_next_event"
         | "calendar_upcoming_birthdays"
         | "calendar_get_event_details"
+        | "calendar_get_event_by_exact_date_and_title"
+        | "calendar_get_event_series_summary"
+        | "calendar_get_next_free_slot"
+        | "calendar_list_busy_slots"
+        | "calendar_count_events"
+        | "calendar_list_busy_days"
+        | "calendar_list_overlapping_events"
         | "calendar_create_event"
         | "calendar_create_birthday" => block
             .data
@@ -91,26 +146,127 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
             .and_then(Value::as_str)
             .map(|channel_id| format!("transcript:{channel_id}")),
         "downloads_list_available_artifacts" => Some("downloads:catalog".to_string()),
+        "downloads_get_artifact_details" => block
+            .data
+            .get("artifact_id")
+            .and_then(Value::as_str)
+            .or_else(|| block.data.get("id").and_then(Value::as_str))
+            .map(|artifact_id| format!("downloads:{artifact_id}"))
+            .or_else(|| Some("downloads:catalog".to_string())),
+        "network_get_topology_summary" => Some("network:topology".to_string()),
+        "network_get_interface_details" => block
+            .data
+            .get("interface")
+            .and_then(|interface| interface.get("name"))
+            .and_then(Value::as_str)
+            .map(|name| format!("network:{name}"))
+            .or_else(|| Some("network:topology".to_string())),
+        "network_get_default_route" => Some("network:default_route".to_string()),
+        "network_get_hostname_aliases" => Some("network:hostname_aliases".to_string()),
+        "network_get_route_table" => Some("admin:route_table".to_string()),
+        "network_get_active_connections" => Some("admin:connections".to_string()),
+        "network_get_interface_counters" => Some("admin:interface_counters".to_string()),
+        "network_get_wifi_status" => Some("admin:wifi".to_string()),
+        "network_get_vpn_status" => Some("admin:vpn".to_string()),
         "libraries_list_accessible" => Some("libraries:accessible".to_string()),
-        "library_search_titles" | "library_get_item_summary" | "libraries_get_recently_added" => {
-            block
-                .data
-                .get("library_id")
-                .and_then(Value::as_str)
-                .map(|library_id| format!("library:{library_id}"))
-                .or_else(|| Some("libraries:search".to_string()))
-        }
+        "libraries_get_library_summary" => block
+            .data
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|library_id| format!("library:{library_id}"))
+            .or_else(|| Some("libraries:accessible".to_string())),
+        "memory_list_recent_changes" => block
+            .data
+            .get("entities")
+            .and_then(Value::as_array)
+            .and_then(|entities| {
+                entities
+                    .iter()
+                    .find_map(|entity| entity.get("topic_key").and_then(Value::as_str))
+            })
+            .or_else(|| {
+                block
+                    .data
+                    .get("facts")
+                    .and_then(Value::as_array)
+                    .and_then(|facts| {
+                        facts
+                            .iter()
+                            .find_map(|fact| fact.get("topic_key").and_then(Value::as_str))
+                    })
+            })
+            .map(str::to_string)
+            .or_else(|| Some("memory:recent_changes".to_string())),
+        "memory_list_conflicting_facts" => block
+            .data
+            .get("conflicts")
+            .and_then(Value::as_array)
+            .and_then(|conflicts| {
+                conflicts
+                    .iter()
+                    .find_map(|conflict| conflict.get("topic_key").and_then(Value::as_str))
+            })
+            .map(str::to_string)
+            .or_else(|| Some("memory:conflicts".to_string())),
+        "memory_get_entity_provenance" => block
+            .data
+            .get("entity")
+            .and_then(|entity| entity.get("topic_key"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                block
+                    .data
+                    .get("source_chunk")
+                    .and_then(|chunk| chunk.get("topic_key"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_string)
+            .or_else(|| Some("memory:provenance".to_string())),
+        "system_get_port_conflicts" => Some("admin:port_conflicts".to_string()),
+        "system_get_failed_units" => Some("admin:failed_units".to_string()),
+        "system_get_kernel_info" => Some("admin:kernel".to_string()),
+        "system_get_cpu_topology" => Some("admin:cpu_topology".to_string()),
+        "system_get_temperature_sensors" => Some("admin:temperature_sensors".to_string()),
+        "system_get_block_device_inventory" => Some("admin:block_devices".to_string()),
+        "system_get_filesystem_table" => Some("admin:filesystem_table".to_string()),
+        "system_get_gpu_inventory" => Some("admin:gpu_inventory".to_string()),
+        "system_get_pci_devices" => Some("admin:pci_devices".to_string()),
+        "system_get_usb_devices" => Some("admin:usb_devices".to_string()),
+        "system_get_boot_log_summary" => Some("admin:boot_logs".to_string()),
+        "system_get_journal_summary" => Some("admin:journal".to_string()),
+        "library_search_titles"
+        | "library_get_item_summary"
+        | "library_get_item_media_details"
+        | "libraries_get_recently_added" => block
+            .data
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|item_id| format!("library_item:{item_id}"))
+            .or_else(|| {
+                block
+                    .data
+                    .get("library_id")
+                    .and_then(Value::as_str)
+                    .map(|library_id| format!("library:{library_id}"))
+            })
+            .or_else(|| Some("libraries:search".to_string())),
         "rooms_list_active" | "rooms_list_joinable" | "rooms_get_room_summary" => {
             Some("rooms:catalog".to_string())
         }
         "servers_list_minecraft_status" | "servers_get_minecraft_server_summary" => {
             Some("servers:catalog".to_string())
         }
-        "network_get_topology_summary" => Some("network:topology".to_string()),
         "system_get_ai_runtime_summary" => Some("ai:runtime".to_string()),
         "system_get_host_runtime_summary" => Some("admin:runtime".to_string()),
         "system_get_backup_summary" => Some("admin:backups".to_string()),
         "system_get_service_health" => Some("admin:service_health".to_string()),
+        "system_get_service_detail" => block
+            .data
+            .get("component")
+            .and_then(|component| component.get("name"))
+            .and_then(Value::as_str)
+            .map(|name| format!("admin:service:{name}"))
+            .or_else(|| Some("admin:service_health".to_string())),
         "system_get_transcode_summary" => Some("admin:transcode".to_string()),
         "system_get_storage_summary" => Some("admin:storage".to_string()),
         "system_get_recent_errors" => Some("admin:recent_errors".to_string()),
@@ -786,7 +942,11 @@ fn maybe_topic_from_message(message: &str) -> Option<String> {
     if lower.contains("transcript") || lower.contains("call") {
         return Some("transcript:conversation".to_string());
     }
-    if lower.contains("download") || lower.contains("extension") {
+    if lower.contains("download")
+        || lower.contains("extension")
+        || lower.contains("artifact")
+        || lower.contains("package")
+    {
         return Some("downloads:catalog".to_string());
     }
     if lower.contains("library") || lower.contains("movie") || lower.contains("show") {
@@ -1299,7 +1459,8 @@ pub async fn augment_history_with_entity_graph(
 mod tests {
     use super::*;
     use crate::ai_assistant::registry::AssistantToolName;
-    use crate::ai_assistant::types::AssistantToolInput;
+    use crate::ai_assistant::types::{AssistantToolContextBlock, AssistantToolInput};
+    use serde_json::json;
 
     #[test]
     fn topic_key_from_history_prefers_latest_assistant_context() {
@@ -1338,13 +1499,196 @@ mod tests {
     }
 
     #[test]
+    fn topic_key_for_detail_tools_uses_specific_entities() {
+        let download_call = PlannedToolCall {
+            tool: AssistantToolName::DownloadsGetArtifactDetails,
+            input: AssistantToolInput::DownloadsFilter {
+                query: Some("RustyVault".to_string()),
+                availability: None,
+            },
+        };
+        let download_block = AssistantToolContextBlock {
+            tool: "downloads_get_artifact_details",
+            label: "Download artifact details".to_string(),
+            status: "ok",
+            data: json!({
+                "id": "download-1",
+                "artifact_id": "rustyvault-webext"
+            }),
+        };
+        assert_eq!(
+            topic_key_for_tool(&download_call, &download_block).as_deref(),
+            Some("downloads:rustyvault-webext")
+        );
+
+        let library_call = PlannedToolCall {
+            tool: AssistantToolName::LibrariesGetLibrarySummary,
+            input: AssistantToolInput::LibrarySearch {
+                query: "Movies".to_string(),
+            },
+        };
+        let library_block = AssistantToolContextBlock {
+            tool: "libraries_get_library_summary",
+            label: "Library summary".to_string(),
+            status: "ok",
+            data: json!({
+                "id": "library-1",
+                "name": "Movies",
+                "kind": "movie",
+                "item_count": 42,
+                "paths": [],
+                "settings": {
+                    "show_images": true,
+                    "prefer_local_artwork": true,
+                    "fetch_online_artwork": true,
+                    "tmdb_store_in_media_dir": false,
+                    "tmdb_sync_on_new_media": true,
+                    "tmdb_sync_schedule": "manual",
+                    "tmdb_last_sync_ts": null,
+                    "tmdb_fetch_posters": true,
+                    "tmdb_fetch_backdrops": true,
+                    "tmdb_fetch_metadata": true,
+                    "tmdb_fetch_reviews": false
+                },
+                "created_ts": 0,
+                "updated_ts": 0
+            }),
+        };
+        assert_eq!(
+            topic_key_for_tool(&library_call, &library_block).as_deref(),
+            Some("library:library-1")
+        );
+    }
+
+    #[test]
+    fn topic_key_for_network_and_system_detail_tools_is_specific() {
+        let network_default_route_call = PlannedToolCall {
+            tool: AssistantToolName::NetworkGetDefaultRoute,
+            input: AssistantToolInput::NetworkDefaultRoute { query: None },
+        };
+        let network_default_route_block = AssistantToolContextBlock {
+            tool: "network_get_default_route",
+            label: "Default route".to_string(),
+            status: "ok",
+            data: json!({
+                "routes": [
+                    {
+                        "route": "default via 192.168.0.1 dev enp3s0"
+                    }
+                ]
+            }),
+        };
+        assert_eq!(
+            topic_key_for_tool(&network_default_route_call, &network_default_route_block)
+                .as_deref(),
+            Some("network:default_route")
+        );
+
+        let network_hostname_aliases_call = PlannedToolCall {
+            tool: AssistantToolName::NetworkGetHostnameAliases,
+            input: AssistantToolInput::NetworkHostnameAliases { query: None },
+        };
+        let network_hostname_aliases_block = AssistantToolContextBlock {
+            tool: "network_get_hostname_aliases",
+            label: "Hostname aliases".to_string(),
+            status: "ok",
+            data: json!({
+                "aliases": [
+                    {
+                        "name": "server",
+                        "source": "hostname -a"
+                    }
+                ]
+            }),
+        };
+        assert_eq!(
+            topic_key_for_tool(
+                &network_hostname_aliases_call,
+                &network_hostname_aliases_block
+            )
+            .as_deref(),
+            Some("network:hostname_aliases")
+        );
+
+        let system_port_conflicts_call = PlannedToolCall {
+            tool: AssistantToolName::SystemGetPortConflicts,
+            input: AssistantToolInput::SystemPortConflicts { query: None },
+        };
+        let system_port_conflicts_block = AssistantToolContextBlock {
+            tool: "system_get_port_conflicts",
+            label: "Port conflicts".to_string(),
+            status: "ok",
+            data: json!({
+                "conflicts": [
+                    {
+                        "protocol": "tcp",
+                        "state": "LISTEN",
+                        "local_address": "127.0.0.1",
+                        "raw_entry": "LISTEN ..."
+                    }
+                ]
+            }),
+        };
+        assert_eq!(
+            topic_key_for_tool(&system_port_conflicts_call, &system_port_conflicts_block)
+                .as_deref(),
+            Some("system:port_conflicts")
+        );
+
+        let system_failed_units_call = PlannedToolCall {
+            tool: AssistantToolName::SystemGetFailedUnits,
+            input: AssistantToolInput::SystemFailedUnits { query: None },
+        };
+        let system_failed_units_block = AssistantToolContextBlock {
+            tool: "system_get_failed_units",
+            label: "Failed units".to_string(),
+            status: "ok",
+            data: json!({
+                "units": [
+                    {
+                        "name": "rustfin.service",
+                        "load": "loaded",
+                        "active": "failed",
+                        "sub": "failed",
+                        "description": "Rustyfin native service"
+                    }
+                ]
+            }),
+        };
+        assert_eq!(
+            topic_key_for_tool(&system_failed_units_call, &system_failed_units_block).as_deref(),
+            Some("system:failed_units")
+        );
+    }
+
+    #[test]
     fn visibility_for_tool_marks_admin_only_sources() {
         assert_eq!(
             visibility_for_tool("system_get_recent_errors"),
             AssistantGroundingVisibility::Admin
         );
         assert_eq!(
+            visibility_for_tool("system_get_port_conflicts"),
+            AssistantGroundingVisibility::Admin
+        );
+        assert_eq!(
+            visibility_for_tool("system_get_failed_units"),
+            AssistantGroundingVisibility::Admin
+        );
+        assert_eq!(
             visibility_for_tool("downloads_list_available_artifacts"),
+            AssistantGroundingVisibility::Shared
+        );
+        assert_eq!(
+            visibility_for_tool("downloads_get_artifact_details"),
+            AssistantGroundingVisibility::Shared
+        );
+        assert_eq!(
+            visibility_for_tool("network_get_default_route"),
+            AssistantGroundingVisibility::Shared
+        );
+        assert_eq!(
+            visibility_for_tool("network_get_hostname_aliases"),
             AssistantGroundingVisibility::Shared
         );
     }

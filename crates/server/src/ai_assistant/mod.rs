@@ -1,6 +1,7 @@
 pub mod confirmation;
 pub mod context;
 pub mod dates;
+pub mod diagnostics;
 pub mod executor;
 pub mod memory;
 pub mod orchestrator;
@@ -26,8 +27,9 @@ pub use orchestrator::{
     unsupported_write_response_for_message,
 };
 pub use replies::{
-    deterministic_ai_runtime_reply, deterministic_calendar_reply, deterministic_library_reply,
-    deterministic_multi_step_reply, deterministic_network_reply,
+    deterministic_ai_runtime_reply, deterministic_calendar_reply, deterministic_downloads_reply,
+    deterministic_library_reply, deterministic_memory_reply, deterministic_multi_step_reply,
+    deterministic_network_reply, deterministic_system_reply,
 };
 pub use types::{
     AssistantActivityTraceItem, AssistantChatRequest, AssistantClarificationRequest,

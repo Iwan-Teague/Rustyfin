@@ -184,7 +184,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::{ToolExecutionProfile, ToolRegistry, default_tool_registry};
-    use crate::ai_assistant::providers::{CalendarToolProvider, LibrariesToolProvider};
+    use crate::ai_assistant::providers::{
+        CalendarToolProvider, LibrariesToolProvider, MemoryToolProvider,
+    };
     use crate::ai_assistant::registry::AssistantToolName;
 
     #[test]
@@ -205,6 +207,94 @@ mod tests {
             registry.provider_id_for_tool(AssistantToolName::LibrarySearchTitles),
             Some("libraries")
         );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::LibrariesFindDuplicateTitles),
+            Some("libraries")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::LibrariesListMissingMetadata),
+            Some("libraries")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::DownloadsGetArtifactChecksum),
+            Some("downloads")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::DownloadsGetArtifactInstallSteps),
+            Some("downloads")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::DownloadsGetArtifactCompatibility),
+            Some("downloads")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::MemorySearchFacts),
+            Some("memory")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::MemoryListRecentChanges),
+            Some("memory")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::MemoryListConflictingFacts),
+            Some("memory")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::MemoryGetEntityProvenance),
+            Some("memory")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::MemoryListRecentEntities),
+            Some("memory")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::MemoryGetEntityRelations),
+            Some("memory")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::MemoryGetEntityRelationPath),
+            Some("memory")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::CalendarGetNextFreeDay),
+            Some("calendar")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::CalendarListOverlappingEvents),
+            Some("calendar")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::NetworkGetDefaultRoute),
+            Some("network")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::NetworkGetHostnameAliases),
+            Some("network")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::NetworkGetDnsServers),
+            Some("network")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::SystemGetPortConflicts),
+            Some("system")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::SystemGetPortConflictDetail),
+            Some("system")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::SystemGetFailedUnits),
+            Some("system")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::SystemGetFailedUnitDetail),
+            Some("system")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::SystemGetMountDetail),
+            Some("system")
+        );
     }
 
     #[test]
@@ -212,6 +302,7 @@ mod tests {
         let registry = ToolRegistry::from_providers(vec![
             Arc::new(CalendarToolProvider) as Arc<dyn super::ToolProvider>,
             Arc::new(LibrariesToolProvider) as Arc<dyn super::ToolProvider>,
+            Arc::new(MemoryToolProvider) as Arc<dyn super::ToolProvider>,
         ]);
 
         assert!(
@@ -228,6 +319,16 @@ mod tests {
             registry
                 .entry(AssistantToolName::WeatherGetCurrent)
                 .is_none()
+        );
+        assert!(
+            registry
+                .entry(AssistantToolName::MemoryGetEntityRelations)
+                .is_some()
+        );
+        assert!(
+            registry
+                .entry(AssistantToolName::MemoryGetEntityProvenance)
+                .is_some()
         );
     }
 

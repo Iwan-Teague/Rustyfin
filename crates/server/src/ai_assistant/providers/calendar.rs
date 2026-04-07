@@ -16,6 +16,13 @@ impl ToolProvider for CalendarToolProvider {
     fn register(&self, registry: &mut ToolRegistryBuilder) {
         registry.register_tool(self, AssistantToolName::CalendarListEvents);
         registry.register_tool(self, AssistantToolName::CalendarGetNextEvent);
+        registry.register_tool(self, AssistantToolName::CalendarListDateConflicts);
+        registry.register_tool(self, AssistantToolName::CalendarListFreeDays);
+        registry.register_tool(self, AssistantToolName::CalendarGetNextFreeDay);
+        registry.register_tool(self, AssistantToolName::CalendarGetNextEventTiming);
+        registry.register_tool(self, AssistantToolName::CalendarCountEvents);
+        registry.register_tool(self, AssistantToolName::CalendarListBusyDays);
+        registry.register_tool(self, AssistantToolName::CalendarListOverlappingEvents);
         registry.register_tool(self, AssistantToolName::CalendarUpcomingBirthdays);
         registry.register_tool(self, AssistantToolName::CalendarGetEventDetails);
         registry.register_tool(self, AssistantToolName::CalendarCreateEvent);

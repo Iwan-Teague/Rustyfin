@@ -31,7 +31,7 @@ use super::web::{normalize_public_url, public_web_tools_enabled};
 use crate::auth::AuthUser;
 use crate::state::AppState;
 
-const MAX_TOOL_CALLS_PER_TURN: usize = 3;
+const MAX_TOOL_CALLS_PER_TURN: usize = 8;
 const PLANNER_HISTORY_MESSAGE_LIMIT: usize = 6;
 const DEFAULT_ASSISTANT_CONTEXT_LENGTH_TOKENS: u32 = 4096;
 const NORMAL_HISTORY_RAW_MESSAGE_LIMIT: usize = 6;
@@ -416,8 +416,61 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
                     | AssistantToolName::SystemGetCurrentDateTime
                     | AssistantToolName::SystemGetAiRuntimeSummary
                     | AssistantToolName::NetworkGetTopologySummary
+                    | AssistantToolName::NetworkGetInterfaceDetails
+                    | AssistantToolName::NetworkGetDefaultRoute
+                    | AssistantToolName::NetworkGetHostnameAliases
+                    | AssistantToolName::NetworkGetDnsServers
+                    | AssistantToolName::NetworkGetRouteTable
+                    | AssistantToolName::NetworkGetActiveConnections
+                    | AssistantToolName::NetworkGetInterfaceCounters
+                    | AssistantToolName::NetworkGetWifiStatus
+                    | AssistantToolName::NetworkGetVpnStatus
+                    | AssistantToolName::SystemGetServiceHealth
+                    | AssistantToolName::SystemGetServiceDetail
+                    | AssistantToolName::SystemGetMountDetail
+                    | AssistantToolName::SystemGetStoragePathDetail
+                    | AssistantToolName::SystemGetPortConflicts
+                    | AssistantToolName::SystemGetPortConflictDetail
+                    | AssistantToolName::SystemGetFailedUnits
+                    | AssistantToolName::SystemGetFailedUnitDetail
+                    | AssistantToolName::DownloadsListAvailableArtifacts
+                    | AssistantToolName::DownloadsGetArtifactDetails
+                    | AssistantToolName::DownloadsGetArtifactChecksum
+                    | AssistantToolName::DownloadsGetArtifactInstallSteps
+                    | AssistantToolName::DownloadsGetArtifactCompatibility
+                    | AssistantToolName::LibrariesListAccessible
+                    | AssistantToolName::LibrariesGetLibrarySummary
+                    | AssistantToolName::LibrarySearchTitles
+                    | AssistantToolName::LibraryGetItemSummary
+                    | AssistantToolName::LibraryGetItemMediaDetails
+                    | AssistantToolName::LibrariesGetRecentlyAdded
+                    | AssistantToolName::LibrariesFindDuplicateTitles
+                    | AssistantToolName::LibrariesListMissingMetadata
                     | AssistantToolName::CalendarGetNextEvent
+                    | AssistantToolName::CalendarGetNextEventTiming
+                    | AssistantToolName::CalendarCountEvents
+                    | AssistantToolName::CalendarListBusyDays
                     | AssistantToolName::CalendarUpcomingBirthdays
+                    | AssistantToolName::CalendarListDateConflicts
+                    | AssistantToolName::CalendarListFreeDays
+                    | AssistantToolName::MemoryListRecentFacts
+                    | AssistantToolName::MemoryListRecentEntities
+                    | AssistantToolName::MemoryListRecentChanges
+                    | AssistantToolName::MemoryListConflictingFacts
+                    | AssistantToolName::MemorySearchFacts
+                    | AssistantToolName::MemorySearchEntities
+                    | AssistantToolName::MemoryGetEntityRelations
+                    | AssistantToolName::MemoryGetEntityProvenance
+                    | AssistantToolName::SystemGetKernelInfo
+                    | AssistantToolName::SystemGetCpuTopology
+                    | AssistantToolName::SystemGetTemperatureSensors
+                    | AssistantToolName::SystemGetBlockDeviceInventory
+                    | AssistantToolName::SystemGetFilesystemTable
+                    | AssistantToolName::SystemGetGpuInventory
+                    | AssistantToolName::SystemGetPciDevices
+                    | AssistantToolName::SystemGetUsbDevices
+                    | AssistantToolName::SystemGetBootLogSummary
+                    | AssistantToolName::SystemGetJournalSummary
             )
         })
 }
@@ -684,7 +737,7 @@ fn build_model_planner_messages(
         ChatMessage {
             role: "system".to_string(),
             content: format!(
-                "You are the Rustyfin assistant tool planner. Choose zero to three grounded read-only tools. \
+                "You are the Rustyfin assistant tool planner. Choose zero to {MAX_TOOL_CALLS_PER_TURN} grounded read-only tools. \
 Return JSON only with no markdown, no prose, and no code fences.\n\
 Schema:\n\
 {{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"args\":{{\"query\":\"optional\",\"url\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\"}}}}]}}\n\
@@ -693,16 +746,49 @@ or\n\
 Rules:\n\
 - Never use a tool not listed below.\n\
 - Never exceed {MAX_TOOL_CALLS_PER_TURN} tools.\n\
-- Use detail tools only when the user is asking about one specific room, one specific server, or one specific library item.\n\
+- Use detail tools only when the user is asking about one specific room, one specific server, one specific download artifact, or one specific library item.\n\
 - Use libraries_list_accessible for generic library access questions.\n\
 - Use library_search_titles for searching by title.\n\
+- Use libraries_get_library_summary when the user wants exact metadata, item counts, paths, or settings for one accessible library.\n\
+- Use library_get_item_media_details when the user wants file path, artwork, poster/backdrop/logo, or storage details for one specific library item.\n\
 - Use libraries_get_recently_added for recently added or newest library items.\n\
+- Use libraries_find_duplicate_titles when the user wants duplicate titles or collisions across accessible libraries.\n\
+- Use libraries_list_missing_metadata when the user wants library items with missing metadata.\n\
+- Use downloads_list_available_artifacts for generic host-published download questions.\n\
+- Use downloads_get_artifact_details when the user wants exact metadata for one specific download artifact or package.\n\
+- Use downloads_get_artifact_checksum when the user wants only the checksum or verification hash for one specific download artifact.\n\
+- Use downloads_get_artifact_install_steps when the user wants install steps or setup instructions for one specific download artifact.\n\
+- Use downloads_get_artifact_compatibility when the user wants platform or architecture compatibility for one specific download artifact.\n\
+- Use memory_list_recent_facts for recent stored facts.\n\
+- Use memory_list_recent_entities for recent stored entities or people.\n\
+- Use memory_list_recent_changes when the user asks what changed recently in memory, optionally narrowed to a subject.\n\
+- Use memory_list_conflicting_facts when the user asks about conflicting or contradictory stored facts, optionally narrowed to a subject.\n\
+- Use memory_search_facts for searching stored facts by subject.\n\
+- Use memory_search_entities for searching stored entities or people by subject.\n\
+- Use memory_find_exact_entity for exact stored entity lookups.\n\
+- Use memory_get_entity_relations when the user asks who or what is related to a stored entity.\n\
+- Use memory_get_entity_relation_path when the user asks how two stored entities are connected.\n\
+- Use memory_get_entity_provenance when the user asks where a stored entity or fact came from or what source grounded it.\n\
 - Use calendar_upcoming_birthdays only for birthday requests, including named questions like \"When is Rachel's birthday?\".\n\
 - Use calendar_get_next_event when the user asks for the next or nearest upcoming calendar event.\n\
+- Use calendar_get_next_event_timing when the user asks how long until the next upcoming calendar event.\n\
+- Use calendar_list_date_conflicts when the user asks whether a date or window has overlapping calendar events.\n\
+- Use calendar_list_free_days when the user asks which dates in a window are free or open.\n\
+- Use calendar_count_events when the user asks how many events are in a window or how busy a calendar window is.\n\
+- Use calendar_list_busy_days when the user asks which dates in a window are the busiest.\n\
 - Use calendar_get_event_details when the user wants more detail about one specific calendar event.\n\
 - Use channels_list_unread_activity for recent visible channel activity; exact unread counts are not available.\n\
 - Use channels_get_transcript_summary when the user asks what a transcribed voice call was about or wants a transcript-based call summary.\n\
 - Use network_get_topology_summary for Rustyfin network, interface, IP address, hostname, remote-access, proxy, or topology questions.\n\
+- Use network_get_interface_details when the user wants one specific interface or IP address.\n\
+- Use network_get_default_route when the user asks for the host default route, gateway, or outbound path.\n\
+- Use network_get_hostname_aliases when the user asks about hostname aliases, host naming, or /etc/hosts style mappings.\n\
+- Use network_get_dns_servers when the user asks about DNS servers, resolvers, nameservers, or resolver configuration.\n\
+- Use network_get_route_table when the user asks about routing tables, routes, or gateway paths.\n\
+- Use network_get_active_connections when the user asks about active sockets, listeners, or established connections.\n\
+- Use network_get_interface_counters when the user asks about interface traffic counters, bytes, packets, or link stats.\n\
+- Use network_get_wifi_status when the user asks about Wi-Fi, wireless, SSID, or signal information.\n\
+- Use network_get_vpn_status when the user asks about VPN, WireGuard, tunnel, or TUN/TAP interfaces.\n\
 - Use weather_get_current for current weather, temperature, wind, or conditions right now.\n\
 - Use weather_get_forecast for forecast, tomorrow, weekend, this week, next few days, rain chance, or weather planning questions.\n\
 - Use weather_get_history for recent past-weather questions such as yesterday, last night, or a specific earlier date.\n\
@@ -712,9 +798,26 @@ Rules:\n\
 - Use system_get_host_runtime_summary only for host/runtime resource questions.\n\
 - Use system_get_backup_summary for backup or restore capability questions.\n\
 - Use system_get_service_health for internal service or agent health questions.\n\
+- Use system_get_service_detail for one specific internal service or agent health question.\n\
 - Use system_get_transcode_summary for transcoding, ffmpeg, hardware acceleration, or transcode-failure questions.\n\
-- Use system_get_storage_summary for storage, disk, cache, model directory, or free-space questions.\n\
+- Use system_get_storage_path_detail for one specific storage path, mount point, cache directory, model directory, or disk-usage location.\n\
+- Use system_get_mount_detail for one specific mount point, mounted filesystem, volume, or backing mount query.\n\
+- Use system_get_storage_summary for general storage, disk, cache, or free-space questions.\n\
 - Use system_get_recent_errors for recent failures, problem summaries, or error overviews.\n\
+- Use system_get_kernel_info for kernel, OS release, or base platform questions.\n\
+- Use system_get_cpu_topology for CPU socket, core, thread, or topology questions.\n\
+- Use system_get_temperature_sensors for temperature, thermal zone, hardware sensor, or heat questions.\n\
+- Use system_get_block_device_inventory for block devices, disks, partitions, or lsblk-style inventory questions.\n\
+- Use system_get_filesystem_table for mounted filesystems or mount-table questions.\n\
+- Use system_get_gpu_inventory for GPUs, graphics adapters, VRAM, or display-controller inventory questions.\n\
+- Use system_get_pci_devices for PCI devices or PCI inventory questions.\n\
+- Use system_get_usb_devices for USB device inventory questions.\n\
+- Use system_get_boot_log_summary for boot logs or early boot summary questions.\n\
+- Use system_get_journal_summary for current boot journal or warning/error journal questions.\n\
+- Use system_get_port_conflicts for listening sockets, bound ports, or port-in-use questions.\n\
+- Use system_get_port_conflict_detail for one specific port, socket, or process/listener question.\n\
+- Use system_get_failed_units for failed systemd units or service failures.\n\
+- Use system_get_failed_unit_detail for one specific failed systemd unit or service failure.\n\
 - Use web_fetch_public_page_summary only for explicit public URLs.\n\
 - Use web_search_public_web only for current public web information not already covered by a Rustyfin tool or curated public-weather tools.\n\
 - If the request is unsupported, casual chat, a joke, simple math, roleplay, a tone/style instruction, a reset request, or a write action, return mode none.\n\
@@ -783,6 +886,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::DocumentCreateDownload => {
             " Args: required title/file name/format/content request; explicit user confirmation is required before the backend will execute it."
         }
+        AssistantToolName::SystemGetFailedUnitDetail => {
+            " Args: required failed unit or service reference."
+        }
         AssistantToolName::ConversationsArchiveSelection => {
             " Args: required resolved conversation ids/titles; explicit user confirmation is required before the backend will execute it."
         }
@@ -796,11 +902,45 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
             " Args: none; the backend derives the calendar time window from the message."
         }
         AssistantToolName::CalendarGetNextEvent => " Args: none.",
+        AssistantToolName::CalendarGetNextEventTiming => " Args: none.",
+        AssistantToolName::CalendarListDateConflicts => {
+            " Args: none; the backend derives the calendar time window from the message."
+        }
+        AssistantToolName::CalendarListFreeDays => {
+            " Args: none; the backend derives the calendar time window from the message."
+        }
+        AssistantToolName::CalendarGetNextFreeDay => {
+            " Args: none; the backend derives the calendar time window from the message."
+        }
+        AssistantToolName::CalendarGetEventByExactDateAndTitle => {
+            " Args: required query; the backend derives the visible calendar window from the message or follow-up context."
+        }
+        AssistantToolName::CalendarGetEventSeriesSummary => {
+            " Args: required query; the backend derives the visible calendar window from the message."
+        }
+        AssistantToolName::CalendarGetNextFreeSlot => {
+            " Args: none; the backend derives the calendar time window from the message."
+        }
+        AssistantToolName::CalendarListBusySlots => {
+            " Args: none; the backend derives the calendar time window from the message."
+        }
+        AssistantToolName::CalendarCountEvents => {
+            " Args: none; the backend derives the calendar time window from the message."
+        }
+        AssistantToolName::CalendarListBusyDays => {
+            " Args: none; the backend derives the calendar time window from the message."
+        }
+        AssistantToolName::CalendarListOverlappingEvents => {
+            " Args: none; the backend derives the calendar time window from the message."
+        }
         AssistantToolName::CalendarUpcomingBirthdays => {
             " Args: optional query; the backend derives the birthday time window from the message and can narrow results to a named person."
         }
         AssistantToolName::CalendarGetEventDetails => {
             " Args: required query; the backend derives the visible calendar window from the message or follow-up context."
+        }
+        AssistantToolName::MemoryGetPersonSummary => {
+            " Args: required query; the backend resolves one stored person or profile entity."
         }
         AssistantToolName::ChannelsListUnreadActivity => {
             " Args: optional query; exact unread counts are unavailable."
@@ -811,16 +951,76 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::DownloadsListAvailableArtifacts => {
             " Args: optional query, optional availability."
         }
+        AssistantToolName::DownloadsGetArtifactDetails => {
+            " Args: required query; the backend resolves one download artifact and returns its exact metadata."
+        }
+        AssistantToolName::DownloadsGetArtifactSource => {
+            " Args: required query; the backend resolves one download artifact and returns its source URL or package path."
+        }
+        AssistantToolName::DownloadsGetReleaseNotes => {
+            " Args: required query; the backend resolves one download artifact and returns its release-note text."
+        }
+        AssistantToolName::DownloadsGetArtifactChecksum => {
+            " Args: required query; the backend resolves one download artifact and returns its checksum details."
+        }
+        AssistantToolName::DownloadsGetArtifactInstallSteps => {
+            " Args: required query; the backend resolves one download artifact and returns install guidance."
+        }
+        AssistantToolName::DownloadsGetArtifactCompatibility => {
+            " Args: required query; the backend resolves one download artifact and returns platform compatibility details."
+        }
         AssistantToolName::NetworkGetTopologySummary => " Args: none.",
+        AssistantToolName::NetworkGetInterfaceDetails => {
+            " Args: required query; the backend resolves one network interface or IP address."
+        }
+        AssistantToolName::NetworkGetDefaultRoute => {
+            " Args: optional query; the backend resolves the host default route, gateway, or outbound path."
+        }
+        AssistantToolName::NetworkGetHostnameAliases => {
+            " Args: optional query; the backend resolves hostname aliases or /etc/hosts style host names."
+        }
+        AssistantToolName::NetworkGetDnsServers => {
+            " Args: optional query; the backend resolves DNS servers, resolvers, or nameserver configuration."
+        }
+        AssistantToolName::NetworkGetRouteTable => " Args: none.",
+        AssistantToolName::NetworkGetActiveConnections => " Args: none.",
+        AssistantToolName::NetworkGetInterfaceCounters => " Args: none.",
+        AssistantToolName::NetworkGetWifiStatus => " Args: none.",
+        AssistantToolName::NetworkGetVpnStatus => " Args: none.",
+        AssistantToolName::LibrariesListAccessible => " Args: none.",
+        AssistantToolName::LibrariesGetLibrarySummary => {
+            " Args: required query; the backend resolves one accessible library and returns its exact metadata, paths, item count, and settings."
+        }
         AssistantToolName::LibrarySearchTitles => " Args: required query.",
         AssistantToolName::LibraryGetItemSummary => " Args: required query.",
+        AssistantToolName::LibraryGetItemMediaDetails => {
+            " Args: required query; the backend resolves one accessible item and returns artwork and media-path details."
+        }
+        AssistantToolName::LibraryGetItemSourcePaths => {
+            " Args: required query; the backend resolves one accessible item and returns source-path details."
+        }
         AssistantToolName::LibrariesGetRecentlyAdded => " Args: optional query.",
+        AssistantToolName::LibrariesFindDuplicateTitles => {
+            " Args: none; the backend scans accessible libraries for duplicate titles."
+        }
+        AssistantToolName::LibrariesListMissingMetadata => {
+            " Args: none; the backend scans accessible libraries for items missing metadata."
+        }
         AssistantToolName::WeatherGetCurrent => " Args: required location.",
         AssistantToolName::WeatherGetForecast => {
             " Args: required location; the backend derives a short forecast window from the message."
         }
         AssistantToolName::WeatherGetHistory => {
             " Args: required location; the backend derives the recent history date window from the message."
+        }
+        AssistantToolName::WeatherResolveLocationAlias => {
+            " Args: required location; the backend resolves a canonical location and timezone."
+        }
+        AssistantToolName::WeatherGetForecastForDate => {
+            " Args: required location; the backend derives the target forecast date from the message."
+        }
+        AssistantToolName::WeatherGetRecentHistoryForDate => {
+            " Args: required location; the backend derives the target history date from the message."
         }
         AssistantToolName::WebSearchPublicWeb => " Args: required query.",
         AssistantToolName::WebFetchPublicPageSummary => " Args: required url.",
@@ -829,6 +1029,61 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::RoomsGetRoomSummary => " Args: required query, optional room_mode.",
         AssistantToolName::SystemGetCurrentDateTime => " Args: none.",
         AssistantToolName::SystemGetAiRuntimeSummary => " Args: none.",
+        AssistantToolName::SystemGetKernelInfo => " Args: none.",
+        AssistantToolName::SystemGetCpuTopology => " Args: none.",
+        AssistantToolName::SystemGetTemperatureSensors => " Args: none.",
+        AssistantToolName::SystemGetBlockDeviceInventory => " Args: none.",
+        AssistantToolName::SystemGetFilesystemTable => " Args: none.",
+        AssistantToolName::SystemGetGpuInventory => " Args: none.",
+        AssistantToolName::SystemGetPciDevices => " Args: none.",
+        AssistantToolName::SystemGetUsbDevices => " Args: none.",
+        AssistantToolName::SystemGetBootLogSummary => " Args: none.",
+        AssistantToolName::SystemGetJournalSummary => " Args: none.",
+        AssistantToolName::SystemGetProcessDetail => {
+            " Args: required query; the backend resolves one process by pid, name, or command line."
+        }
+        AssistantToolName::SystemGetListenerDetail => {
+            " Args: required query; the backend resolves one listening socket or listener."
+        }
+        AssistantToolName::SystemGetDiskUsageDetail => {
+            " Args: required query; the backend resolves one path or mount and returns exact disk usage."
+        }
+        AssistantToolName::SystemGetPortConflicts => {
+            " Args: optional query; the backend lists listening sockets or port-in-use details."
+        }
+        AssistantToolName::SystemGetPortConflictDetail => {
+            " Args: required query; the backend resolves one listening socket, port, or process listener."
+        }
+        AssistantToolName::SystemGetFailedUnits => {
+            " Args: optional query; the backend lists failed systemd units or service failures."
+        }
+        AssistantToolName::SystemGetStoragePathDetail => {
+            " Args: required query; the backend resolves one storage path, mount, or disk usage location."
+        }
+        AssistantToolName::SystemGetMountDetail => {
+            " Args: required query; the backend resolves one mount point, filesystem, or backing mount."
+        }
+        AssistantToolName::MemoryListRecentFacts => {
+            " Args: none; the backend lists recent stored memory facts for the signed-in user."
+        }
+        AssistantToolName::MemorySearchFacts => {
+            " Args: required query; the backend resolves one stored memory fact subject."
+        }
+        AssistantToolName::MemorySearchEntities => {
+            " Args: required query; the backend resolves one stored entity or person subject."
+        }
+        AssistantToolName::MemoryFindExactEntity => {
+            " Args: required query; the backend resolves one exact stored entity match."
+        }
+        AssistantToolName::MemoryListRecentChanges => {
+            " Args: optional query; the backend can return broad recent changes or narrow them to a subject."
+        }
+        AssistantToolName::MemoryListConflictingFacts => {
+            " Args: optional query; the backend lists conflicting stored facts for a subject or topic."
+        }
+        AssistantToolName::MemoryGetEntityProvenance => {
+            " Args: required query; the backend resolves one stored entity and returns its source provenance."
+        }
         AssistantToolName::ServersListMinecraftStatus => {
             " Args: optional query, optional availability."
         }
@@ -836,13 +1091,27 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
             " Args: required query, optional availability."
         }
         AssistantToolName::AccountGetProfileSummary
-        | AssistantToolName::LibrariesListAccessible
+        | AssistantToolName::AiListBackgroundJobs
+        | AssistantToolName::AiGetJobStatus
+        | AssistantToolName::AiGetToolRegistry
+        | AssistantToolName::AiGetGroundingSummary
+        | AssistantToolName::AiGetLastToolFailureReason
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetServiceHealth
+        | AssistantToolName::SystemGetServiceDetail
         | AssistantToolName::SystemGetTranscodeSummary
         | AssistantToolName::SystemGetStorageSummary
         | AssistantToolName::SystemGetRecentErrors => " Args: none.",
+        AssistantToolName::MemoryListRecentEntities => {
+            " Args: none; the backend lists the signed-in user's recent stored entities."
+        }
+        AssistantToolName::MemoryGetEntityRelations => {
+            " Args: required query; the backend resolves one stored entity and loads its immediate relations."
+        }
+        AssistantToolName::MemoryGetEntityRelationPath => {
+            " Args: required source and target entity queries joined with ||; the backend resolves a bounded path between them."
+        }
     }
 }
 
@@ -1170,9 +1439,19 @@ fn normalize_planner_tool_input(
             None,
         )),
         AssistantToolName::AccountGetProfileSummary
+        | AssistantToolName::AiListBackgroundJobs
+        | AssistantToolName::AiGetJobStatus
+        | AssistantToolName::AiGetToolRegistry
+        | AssistantToolName::AiGetGroundingSummary
+        | AssistantToolName::AiGetLastToolFailureReason
+        | AssistantToolName::MemoryListRecentFacts
+        | AssistantToolName::MemoryListRecentEntities
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
+        | AssistantToolName::NetworkGetDefaultRoute
+        | AssistantToolName::NetworkGetHostnameAliases
         | AssistantToolName::CalendarGetNextEvent
+        | AssistantToolName::CalendarGetNextEventTiming
         | AssistantToolName::SystemGetCurrentDateTime
         | AssistantToolName::SystemGetAiRuntimeSummary
         | AssistantToolName::SystemGetHostRuntimeSummary
@@ -1181,7 +1460,228 @@ fn normalize_planner_tool_input(
         | AssistantToolName::SystemGetTranscodeSummary
         | AssistantToolName::SystemGetStorageSummary
         | AssistantToolName::SystemGetRecentErrors => Ok(AssistantToolInput::None),
-        AssistantToolName::CalendarListEvents => Ok(extract_calendar_window(message, 7, None)),
+        AssistantToolName::CalendarGetEventByExactDateAndTitle
+        | AssistantToolName::CalendarGetEventSeriesSummary => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_calendar_event_detail_query(message))
+                .or_else(|| extract_quoted_phrase(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "calendar series and exact-date detail queries require a specific event reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(extract_calendar_window(message, 30, Some(query)))
+        }
+        AssistantToolName::CalendarGetNextFreeSlot | AssistantToolName::CalendarListBusySlots => {
+            Ok(extract_calendar_window(message, 7, None))
+        }
+        AssistantToolName::SystemGetPortConflicts => Ok(AssistantToolInput::SystemPortConflicts {
+            query: normalize_optional_query(args.query.clone())
+                .or_else(|| extract_port_conflicts_query(message)),
+        }),
+        AssistantToolName::SystemGetFailedUnits => Ok(AssistantToolInput::SystemFailedUnits {
+            query: normalize_optional_query(args.query.clone())
+                .or_else(|| extract_failed_units_query(message)),
+        }),
+        AssistantToolName::SystemGetFailedUnitDetail => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_failed_unit_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "failed unit detail queries require a specific failed unit or service reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemFailedUnits { query: Some(query) })
+        }
+        AssistantToolName::MemoryListRecentChanges => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_memory_recent_changes_query(message));
+            Ok(match query {
+                Some(query) => AssistantToolInput::SystemService { query },
+                None => AssistantToolInput::None,
+            })
+        }
+        AssistantToolName::MemoryListConflictingFacts => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_memory_conflict_query(message));
+            Ok(match query {
+                Some(query) => AssistantToolInput::SystemService { query },
+                None => AssistantToolInput::None,
+            })
+        }
+        AssistantToolName::MemoryGetPersonSummary => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_memory_exact_entity_query(message))
+                .or_else(|| extract_memory_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "person summary queries require a specific person or profile reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::MemorySearchFacts | AssistantToolName::MemorySearchEntities => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_memory_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "memory search queries require a subject to search for",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::MemoryFindExactEntity => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_memory_exact_entity_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "exact memory entity queries require a specific subject to look up",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::MemoryGetEntityRelations => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_memory_relation_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "memory relation queries require a subject to load",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::MemoryGetEntityRelationPath => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| {
+                    extract_memory_relation_path_query(message)
+                        .map(|(source, target)| format!("{source} || {target}"))
+                })
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "memory relation path queries require two related subjects",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::MemoryGetEntityProvenance => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_memory_provenance_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "memory provenance queries require a specific subject to look up",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::SystemGetServiceDetail => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_service_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "service detail queries require a service reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::SystemGetMountDetail => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_mount_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "mount detail queries require a mount point, filesystem, or backing path reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::SystemGetStoragePathDetail => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_storage_path_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "storage path detail queries require a storage path or mount reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::SystemGetPortConflictDetail => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_port_conflict_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "port conflict detail queries require a specific port or listener reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemPortConflicts { query: Some(query) })
+        }
+        AssistantToolName::SystemGetProcessDetail => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_process_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "process detail queries require a process, pid, or command line reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::SystemGetListenerDetail => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_listener_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "listener detail queries require a socket, port, or listener reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemPortConflicts { query: Some(query) })
+        }
+        AssistantToolName::SystemGetDiskUsageDetail => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_disk_usage_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "disk usage detail queries require a path, mount, or filesystem reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::SystemService { query })
+        }
+        AssistantToolName::CalendarListEvents
+        | AssistantToolName::CalendarListDateConflicts
+        | AssistantToolName::CalendarListFreeDays
+        | AssistantToolName::CalendarCountEvents
+        | AssistantToolName::CalendarListBusyDays
+        | AssistantToolName::CalendarListOverlappingEvents => {
+            Ok(extract_calendar_window(message, 7, None))
+        }
+        AssistantToolName::CalendarGetNextFreeDay => Ok(extract_calendar_window(message, 30, None)),
         AssistantToolName::CalendarUpcomingBirthdays => Ok(birthday_calendar_window_input(
             message,
             args.query
@@ -1219,6 +1719,95 @@ fn normalize_planner_tool_input(
                 availability,
             })
         }
+        AssistantToolName::DownloadsGetArtifactDetails => Ok(AssistantToolInput::DownloadsFilter {
+            query: Some(
+                normalize_optional_query(args.query.clone())
+                    .or_else(|| extract_download_artifact_detail_query(message))
+                    .or_else(|| extract_downloads_follow_up_query(message))
+                    .or_else(|| extract_downloads_query(message))
+                    .ok_or_else(|| {
+                        planner_issue(
+                            "missing_required_argument",
+                            "download artifact detail queries require an artifact reference",
+                            Some("args.query"),
+                        )
+                    })?,
+            ),
+            availability: validated_downloads_availability(args.availability.as_deref())?
+                .or_else(|| extract_downloads_availability(message)),
+        }),
+        AssistantToolName::DownloadsGetArtifactSource
+        | AssistantToolName::DownloadsGetReleaseNotes => {
+            Ok(AssistantToolInput::DownloadsFilter {
+                query: Some(
+                    normalize_optional_query(args.query.clone())
+                        .or_else(|| extract_download_artifact_source_query(message))
+                        .or_else(|| extract_download_artifact_release_notes_query(message))
+                        .or_else(|| extract_download_artifact_detail_query(message))
+                        .or_else(|| extract_downloads_follow_up_query(message))
+                        .or_else(|| extract_downloads_query(message))
+                        .ok_or_else(|| {
+                            planner_issue(
+                                "missing_required_argument",
+                                "download artifact source and release-note queries require an artifact reference",
+                                Some("args.query"),
+                            )
+                        })?,
+                ),
+                availability: validated_downloads_availability(args.availability.as_deref())?
+                    .or_else(|| extract_downloads_availability(message)),
+            })
+        }
+        AssistantToolName::DownloadsGetArtifactChecksum
+        | AssistantToolName::DownloadsGetArtifactInstallSteps
+        | AssistantToolName::DownloadsGetArtifactCompatibility => {
+            Ok(AssistantToolInput::DownloadsFilter {
+                query: Some(
+                    normalize_optional_query(args.query.clone())
+                        .or_else(|| extract_download_artifact_detail_query(message))
+                        .or_else(|| extract_downloads_follow_up_query(message))
+                        .or_else(|| extract_downloads_query(message))
+                        .ok_or_else(|| {
+                            planner_issue(
+                                "missing_required_argument",
+                                "download artifact detail queries require an artifact reference",
+                                Some("args.query"),
+                            )
+                        })?,
+                ),
+                availability: validated_downloads_availability(args.availability.as_deref())?
+                    .or_else(|| extract_downloads_availability(message)),
+            })
+        }
+        AssistantToolName::NetworkGetInterfaceDetails => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_network_interface_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "network interface detail queries require an interface reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::NetworkInterface { query })
+        }
+        AssistantToolName::NetworkGetDnsServers => Ok(AssistantToolInput::NetworkDnsServers {
+            query: normalize_optional_query(args.query.clone())
+                .or_else(|| extract_network_dns_servers_query(message)),
+        }),
+        AssistantToolName::LibrariesGetLibrarySummary => Ok(AssistantToolInput::LibrarySearch {
+            query: normalize_optional_query(args.query.clone())
+                .or_else(|| extract_library_detail_query(message))
+                .or_else(|| extract_library_follow_up_query(message))
+                .or_else(|| extract_library_search_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "library summary queries require a library reference",
+                        Some("args.query"),
+                    )
+                })?,
+        }),
         AssistantToolName::LibrarySearchTitles => Ok(AssistantToolInput::LibrarySearch {
             query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_library_search_query(message))
@@ -1244,22 +1833,58 @@ fn normalize_planner_tool_input(
                     )
                 })?,
         }),
+        AssistantToolName::LibraryGetItemMediaDetails => Ok(AssistantToolInput::LibrarySearch {
+            query: normalize_optional_query(args.query.clone())
+                .or_else(|| extract_quoted_phrase(message))
+                .or_else(|| extract_library_media_detail_query(message))
+                .or_else(|| extract_library_follow_up_query(message))
+                .or_else(|| extract_library_search_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "library media detail queries require a title",
+                        Some("args.query"),
+                    )
+                })?,
+        }),
+        AssistantToolName::LibraryGetItemSourcePaths => Ok(AssistantToolInput::LibrarySearch {
+            query: normalize_optional_query(args.query.clone())
+                .or_else(|| extract_quoted_phrase(message))
+                .or_else(|| extract_library_source_paths_query(message))
+                .or_else(|| extract_library_media_detail_query(message))
+                .or_else(|| extract_library_follow_up_query(message))
+                .or_else(|| extract_library_search_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "library source path queries require a title",
+                        Some("args.query"),
+                    )
+                })?,
+        }),
         AssistantToolName::LibrariesGetRecentlyAdded => Ok(AssistantToolInput::LibraryRecent {
             query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_recent_library_query(message)),
         }),
+        AssistantToolName::LibrariesFindDuplicateTitles
+        | AssistantToolName::LibrariesListMissingMetadata => Ok(AssistantToolInput::None),
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
-        | AssistantToolName::WeatherGetHistory => normalize_optional_query(args.query.clone())
-            .or_else(|| extract_weather_location(message))
-            .and_then(|location| weather_tool_input_for_location(message, location))
-            .ok_or_else(|| {
-                planner_issue(
-                    "missing_required_argument",
-                    "weather tools require a location",
-                    Some("args.query"),
-                )
-            }),
+        | AssistantToolName::WeatherGetHistory
+        | AssistantToolName::WeatherResolveLocationAlias
+        | AssistantToolName::WeatherGetForecastForDate
+        | AssistantToolName::WeatherGetRecentHistoryForDate => {
+            normalize_optional_query(args.query.clone())
+                .or_else(|| extract_weather_location(message))
+                .and_then(|location| weather_tool_input_for_location(message, location))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "weather tools require a location",
+                        Some("args.query"),
+                    )
+                })
+        }
         AssistantToolName::WebSearchPublicWeb => Ok(AssistantToolInput::WebSearch {
             query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_public_web_search_query(message))
@@ -1337,6 +1962,11 @@ fn normalize_planner_tool_input(
                     .or_else(|| extract_server_availability(message)),
             })
         }
+        _ => Err(planner_issue(
+            "unsupported_tool",
+            "tool input normalization is not implemented for this tool",
+            None,
+        )),
     }
 }
 
@@ -1399,12 +2029,39 @@ fn unsupported_combo_domain(tool: AssistantToolName) -> Option<&'static str> {
     match tool {
         AssistantToolName::CalendarListEvents
         | AssistantToolName::CalendarGetNextEvent
+        | AssistantToolName::CalendarGetNextEventTiming
+        | AssistantToolName::CalendarCountEvents
+        | AssistantToolName::CalendarListBusyDays
         | AssistantToolName::CalendarUpcomingBirthdays
-        | AssistantToolName::CalendarGetEventDetails => Some("calendar"),
+        | AssistantToolName::CalendarGetEventDetails
+        | AssistantToolName::CalendarListDateConflicts
+        | AssistantToolName::CalendarListFreeDays => Some("calendar"),
+        AssistantToolName::DownloadsListAvailableArtifacts
+        | AssistantToolName::DownloadsGetArtifactDetails => Some("downloads"),
+        AssistantToolName::NetworkGetTopologySummary
+        | AssistantToolName::NetworkGetInterfaceDetails
+        | AssistantToolName::NetworkGetDnsServers
+        | AssistantToolName::NetworkGetDefaultRoute
+        | AssistantToolName::NetworkGetHostnameAliases
+        | AssistantToolName::NetworkGetRouteTable
+        | AssistantToolName::NetworkGetActiveConnections
+        | AssistantToolName::NetworkGetInterfaceCounters
+        | AssistantToolName::NetworkGetWifiStatus
+        | AssistantToolName::NetworkGetVpnStatus => Some("network"),
         AssistantToolName::LibrarySearchTitles
         | AssistantToolName::LibraryGetItemSummary
+        | AssistantToolName::LibraryGetItemMediaDetails
         | AssistantToolName::LibrariesGetRecentlyAdded
-        | AssistantToolName::LibrariesListAccessible => Some("library"),
+        | AssistantToolName::LibrariesListAccessible
+        | AssistantToolName::LibrariesGetLibrarySummary => Some("library"),
+        AssistantToolName::MemoryListRecentFacts
+        | AssistantToolName::MemoryListRecentEntities
+        | AssistantToolName::MemorySearchFacts
+        | AssistantToolName::MemorySearchEntities
+        | AssistantToolName::MemoryGetEntityRelations
+        | AssistantToolName::MemoryListRecentChanges
+        | AssistantToolName::MemoryListConflictingFacts
+        | AssistantToolName::MemoryGetEntityProvenance => Some("memory"),
         AssistantToolName::RoomsListActive
         | AssistantToolName::RoomsListJoinable
         | AssistantToolName::RoomsGetRoomSummary => Some("rooms"),
@@ -1413,6 +2070,29 @@ fn unsupported_combo_domain(tool: AssistantToolName) -> Option<&'static str> {
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
         | AssistantToolName::WeatherGetHistory => Some("weather"),
+        AssistantToolName::SystemGetCurrentDateTime
+        | AssistantToolName::SystemGetAiRuntimeSummary
+        | AssistantToolName::SystemGetHostRuntimeSummary
+        | AssistantToolName::SystemGetBackupSummary
+        | AssistantToolName::SystemGetServiceHealth
+        | AssistantToolName::SystemGetServiceDetail
+        | AssistantToolName::SystemGetTranscodeSummary
+        | AssistantToolName::SystemGetStorageSummary
+        | AssistantToolName::SystemGetStoragePathDetail
+        | AssistantToolName::SystemGetRecentErrors
+        | AssistantToolName::SystemGetKernelInfo
+        | AssistantToolName::SystemGetCpuTopology
+        | AssistantToolName::SystemGetTemperatureSensors
+        | AssistantToolName::SystemGetBlockDeviceInventory
+        | AssistantToolName::SystemGetFilesystemTable
+        | AssistantToolName::SystemGetGpuInventory
+        | AssistantToolName::SystemGetPciDevices
+        | AssistantToolName::SystemGetUsbDevices
+        | AssistantToolName::SystemGetBootLogSummary
+        | AssistantToolName::SystemGetJournalSummary
+        | AssistantToolName::SystemGetPortConflicts
+        | AssistantToolName::SystemGetFailedUnits
+        | AssistantToolName::SystemGetFailedUnitDetail => Some("system"),
         _ => None,
     }
 }
@@ -1699,6 +2379,454 @@ fn is_ambiguous_server_query(message_lower: &str, message: &str) -> bool {
         && extract_server_query(message).is_none()
 }
 
+fn is_system_kernel_info_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "kernel",
+            "kernel info",
+            "kernel and os",
+            "operating system",
+            "os release",
+            "uname",
+            "distribution",
+            "distro",
+            "platform",
+            "base platform",
+            "linux version",
+        ],
+    )
+}
+
+fn is_system_cpu_topology_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "cpu topology",
+            "cpu sockets",
+            "logical cpu",
+            "logical cpus",
+            "physical core",
+            "physical cores",
+            "socket",
+            "sockets",
+            "core count",
+            "thread count",
+            "lscpu",
+        ],
+    )
+}
+
+fn is_system_temperature_sensors_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "temperature",
+            "temperatures",
+            "temperature sensors",
+            "thermal",
+            "thermal sensors",
+            "thermal zone",
+            "hwmon",
+            "overheating",
+        ],
+    )
+}
+
+fn is_system_block_device_inventory_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "block device",
+            "block devices",
+            "disk inventory",
+            "disks",
+            "drives",
+            "partitions",
+            "storage devices",
+            "lsblk",
+        ],
+    )
+}
+
+fn is_system_filesystem_table_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "filesystem table",
+            "mount table",
+            "mounted filesystems",
+            "mounts",
+            "mount points",
+            "what is mounted",
+            "what's mounted",
+            "mounted on",
+            "fstab",
+        ],
+    )
+}
+
+fn is_system_gpu_inventory_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "gpu",
+            "gpus",
+            "graphics",
+            "graphics card",
+            "graphics cards",
+            "display adapter",
+            "display adapters",
+            "vram",
+            "opencl",
+            "cuda",
+            "nvidia-smi",
+        ],
+    )
+}
+
+fn is_system_pci_devices_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &["pci", "pci devices", "pci inventory", "pci bus"],
+    )
+}
+
+fn is_system_usb_devices_query(message_lower: &str) -> bool {
+    has_any(message_lower, &["usb", "usb devices", "usb inventory"])
+}
+
+fn is_system_boot_log_summary_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "boot log",
+            "boot logs",
+            "early boot",
+            "startup log",
+            "startup logs",
+            "system boot",
+        ],
+    )
+}
+
+fn is_system_journal_summary_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "journal",
+            "journalctl",
+            "warning log",
+            "warning logs",
+            "error log",
+            "error logs",
+            "boot journal",
+            "system journal",
+            "warnings and errors",
+        ],
+    )
+}
+
+fn is_system_process_detail_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "process detail",
+            "process details",
+            "process info",
+            "process information",
+            "which process",
+            "what process",
+            "find process",
+            "lookup process",
+            "ps ",
+            "pid ",
+        ],
+    )
+}
+
+fn is_system_listener_detail_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "listener detail",
+            "listener details",
+            "listener info",
+            "listener information",
+            "socket detail",
+            "socket details",
+            "which listener",
+            "what listener",
+            "which socket",
+            "what socket",
+            "who is listening",
+            "what is listening on",
+            "what's listening on",
+        ],
+    )
+}
+
+fn is_system_disk_usage_detail_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "disk usage detail",
+            "disk usage",
+            "disk space",
+            "storage usage",
+            "filesystem usage",
+            "how much space",
+            "how much free space",
+            "how full is",
+            "how full are",
+            "df ",
+        ],
+    )
+}
+
+fn is_network_route_table_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "route table",
+            "routing table",
+            "routes",
+            "routing",
+            "default route",
+            "default gateway",
+            "gateway",
+            "gateways",
+            "ip route",
+        ],
+    )
+}
+
+fn is_network_active_connections_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "active connections",
+            "listeners",
+            "listening ports",
+            "socket",
+            "sockets",
+            "established connections",
+            "what is listening",
+            "who is connected",
+        ],
+    )
+}
+
+fn is_network_interface_counters_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "interface counters",
+            "traffic counters",
+            "interface stats",
+            "link state",
+            "link status",
+            "rx bytes",
+            "tx bytes",
+            "packets",
+            "network traffic",
+        ],
+    )
+}
+
+fn is_network_wifi_status_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &["wifi", "wi-fi", "wireless", "ssid", "wlan"],
+    )
+}
+
+fn is_network_vpn_status_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "vpn",
+            "wireguard",
+            "wg0",
+            "tun",
+            "tap",
+            "tunnel",
+            "tunnels",
+            "tailscale",
+            "zerotier",
+            "zt",
+        ],
+    )
+}
+
+fn push_system_diagnostics_tools(
+    message: &str,
+    planned: &mut Vec<PlannedToolCall>,
+    seen: &mut HashSet<&'static str>,
+) {
+    let lower = message.to_ascii_lowercase();
+    if is_system_kernel_info_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetKernelInfo,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_cpu_topology_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetCpuTopology,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_temperature_sensors_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetTemperatureSensors,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_block_device_inventory_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetBlockDeviceInventory,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_filesystem_table_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetFilesystemTable,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_gpu_inventory_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetGpuInventory,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_pci_devices_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetPciDevices,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_usb_devices_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetUsbDevices,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_boot_log_summary_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetBootLogSummary,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_journal_summary_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetJournalSummary,
+            AssistantToolInput::None,
+        );
+    }
+    if is_system_process_detail_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetProcessDetail,
+            AssistantToolInput::SystemService {
+                query: extract_process_detail_query(message)
+                    .unwrap_or_else(|| message.trim().to_string()),
+            },
+        );
+    }
+    if is_system_listener_detail_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetListenerDetail,
+            AssistantToolInput::SystemPortConflicts {
+                query: extract_listener_detail_query(message),
+            },
+        );
+    }
+    if is_system_disk_usage_detail_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::SystemGetDiskUsageDetail,
+            AssistantToolInput::SystemService {
+                query: extract_disk_usage_detail_query(message)
+                    .unwrap_or_else(|| message.trim().to_string()),
+            },
+        );
+    }
+}
+
+fn push_network_diagnostics_tools(
+    message: &str,
+    planned: &mut Vec<PlannedToolCall>,
+    seen: &mut HashSet<&'static str>,
+) {
+    let lower = message.to_ascii_lowercase();
+    if is_network_route_table_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::NetworkGetRouteTable,
+            AssistantToolInput::None,
+        );
+    }
+    if is_network_active_connections_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::NetworkGetActiveConnections,
+            AssistantToolInput::None,
+        );
+    }
+    if is_network_interface_counters_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::NetworkGetInterfaceCounters,
+            AssistantToolInput::None,
+        );
+    }
+    if is_network_wifi_status_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::NetworkGetWifiStatus,
+            AssistantToolInput::None,
+        );
+    }
+    if is_network_vpn_status_query(&lower) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::NetworkGetVpnStatus,
+            AssistantToolInput::None,
+        );
+    }
+}
+
 pub fn plan_tool_calls(message: &str) -> Vec<PlannedToolCall> {
     plan_tool_calls_with_history(message, &[])
 }
@@ -1734,13 +2862,70 @@ pub fn plan_tool_calls_with_history(
             AssistantToolName::CalendarUpcomingBirthdays,
             calendar_input,
         );
-    } else if is_next_calendar_event_query(&lower) {
+    } else if is_calendar_overlapping_events_query(&lower) {
+        let calendar_input = extract_calendar_window(message, 7, None);
         push_tool(
             &mut planned,
             &mut seen,
-            AssistantToolName::CalendarGetNextEvent,
-            AssistantToolInput::None,
+            AssistantToolName::CalendarListOverlappingEvents,
+            calendar_input,
         );
+    } else if is_calendar_conflict_query(&lower) {
+        let calendar_input = extract_calendar_window(message, 7, None);
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::CalendarListDateConflicts,
+            calendar_input,
+        );
+    } else if is_calendar_next_free_day_query(&lower) {
+        let calendar_input = extract_calendar_window(message, 30, None);
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::CalendarGetNextFreeDay,
+            calendar_input,
+        );
+    } else if is_calendar_free_days_query(&lower) {
+        let calendar_input = extract_calendar_window(message, 7, None);
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::CalendarListFreeDays,
+            calendar_input,
+        );
+    } else if is_calendar_busy_days_query(&lower) {
+        let calendar_input = extract_calendar_window(message, 7, None);
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::CalendarListBusyDays,
+            calendar_input,
+        );
+    } else if is_calendar_event_count_query(&lower) {
+        let calendar_input = extract_calendar_window(message, 7, None);
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::CalendarCountEvents,
+            calendar_input,
+        );
+    } else if is_next_calendar_event_query(&lower) {
+        if is_next_calendar_event_timing_query(&lower) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::CalendarGetNextEventTiming,
+                AssistantToolInput::None,
+            );
+        } else {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::CalendarGetNextEvent,
+                AssistantToolInput::None,
+            );
+        }
     } else if let Some(query) = extract_calendar_event_detail_query(message) {
         let calendar_input = extract_calendar_window(message, 30, Some(query));
         push_tool(
@@ -1821,7 +3006,37 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
-    if has_any(
+    if let Some(query) = extract_download_artifact_checksum_query(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::DownloadsGetArtifactChecksum,
+            AssistantToolInput::DownloadsFilter {
+                query: Some(query),
+                availability: extract_downloads_availability(message),
+            },
+        );
+    } else if let Some(query) = extract_download_artifact_install_steps_query(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::DownloadsGetArtifactInstallSteps,
+            AssistantToolInput::DownloadsFilter {
+                query: Some(query),
+                availability: extract_downloads_availability(message),
+            },
+        );
+    } else if let Some(query) = extract_download_artifact_compatibility_query(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::DownloadsGetArtifactCompatibility,
+            AssistantToolInput::DownloadsFilter {
+                query: Some(query),
+                availability: extract_downloads_availability(message),
+            },
+        );
+    } else if has_any(
         &lower,
         &[
             "download",
@@ -1832,12 +3047,24 @@ pub fn plan_tool_calls_with_history(
             "companion tools",
         ],
     ) {
-        push_tool(
-            &mut planned,
-            &mut seen,
-            AssistantToolName::DownloadsListAvailableArtifacts,
-            extract_downloads_filter(message),
-        );
+        if let Some(query) = extract_download_artifact_detail_query(message) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::DownloadsGetArtifactDetails,
+                AssistantToolInput::DownloadsFilter {
+                    query: Some(query),
+                    availability: extract_downloads_availability(message),
+                },
+            );
+        } else {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::DownloadsListAvailableArtifacts,
+                extract_downloads_filter(message),
+            );
+        }
     }
 
     if is_weather_query(&lower)
@@ -1866,13 +3093,96 @@ pub fn plan_tool_calls_with_history(
         }
     }
 
-    if is_network_query(&lower) {
+    if let Some(query) = extract_port_conflict_detail_query(message) {
         push_tool(
             &mut planned,
             &mut seen,
-            AssistantToolName::NetworkGetTopologySummary,
-            AssistantToolInput::None,
+            AssistantToolName::SystemGetPortConflictDetail,
+            AssistantToolInput::SystemPortConflicts { query: Some(query) },
         );
+    } else if is_port_conflicts_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetPortConflicts,
+            AssistantToolInput::SystemPortConflicts {
+                query: extract_port_conflicts_query(message),
+            },
+        );
+    }
+
+    if is_failed_unit_detail_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetFailedUnitDetail,
+            AssistantToolInput::SystemFailedUnits {
+                query: extract_failed_unit_detail_query(message),
+            },
+        );
+    } else if is_failed_units_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetFailedUnits,
+            AssistantToolInput::SystemFailedUnits {
+                query: extract_failed_units_query(message),
+            },
+        );
+    }
+
+    push_system_diagnostics_tools(message, &mut planned, &mut seen);
+    push_network_diagnostics_tools(message, &mut planned, &mut seen);
+
+    let network_diagnostics_requested = is_network_route_table_query(&lower)
+        || is_network_active_connections_query(&lower)
+        || is_network_interface_counters_query(&lower)
+        || is_network_wifi_status_query(&lower)
+        || is_network_vpn_status_query(&lower);
+
+    if is_network_query(&lower) && !network_diagnostics_requested {
+        if is_network_default_route_query(&lower) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::NetworkGetDefaultRoute,
+                AssistantToolInput::NetworkDefaultRoute {
+                    query: extract_network_default_route_query(message),
+                },
+            );
+        } else if is_network_hostname_aliases_query(&lower) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::NetworkGetHostnameAliases,
+                AssistantToolInput::NetworkHostnameAliases {
+                    query: extract_network_hostname_aliases_query(message),
+                },
+            );
+        } else if is_network_dns_servers_query(&lower) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::NetworkGetDnsServers,
+                AssistantToolInput::NetworkDnsServers {
+                    query: extract_network_dns_servers_query(message),
+                },
+            );
+        } else if let Some(query) = extract_network_interface_query(message) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::NetworkGetInterfaceDetails,
+                AssistantToolInput::NetworkInterface { query },
+            );
+        } else {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::NetworkGetTopologySummary,
+                AssistantToolInput::None,
+            );
+        }
     }
 
     if is_current_datetime_query(&lower) {
@@ -1893,7 +3203,19 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
-    if is_host_runtime_query(&lower) && !is_ai_runtime_query(&lower) {
+    let host_diagnostics_requested = is_system_kernel_info_query(&lower)
+        || is_system_cpu_topology_query(&lower)
+        || is_system_temperature_sensors_query(&lower)
+        || is_system_block_device_inventory_query(&lower)
+        || is_system_filesystem_table_query(&lower)
+        || is_system_gpu_inventory_query(&lower)
+        || is_system_pci_devices_query(&lower)
+        || is_system_usb_devices_query(&lower)
+        || is_system_boot_log_summary_query(&lower)
+        || is_system_journal_summary_query(&lower);
+
+    if is_host_runtime_query(&lower) && !is_ai_runtime_query(&lower) && !host_diagnostics_requested
+    {
         push_tool(
             &mut planned,
             &mut seen,
@@ -1911,7 +3233,14 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
-    if is_service_health_query(&lower) {
+    if let Some(query) = extract_service_detail_query(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetServiceDetail,
+            AssistantToolInput::SystemService { query },
+        );
+    } else if is_service_health_query(&lower) {
         push_tool(
             &mut planned,
             &mut seen,
@@ -1929,7 +3258,21 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
-    if is_storage_query(&lower) {
+    if let Some(query) = extract_mount_detail_query(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetMountDetail,
+            AssistantToolInput::SystemService { query },
+        );
+    } else if let Some(query) = extract_storage_path_detail_query(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetStoragePathDetail,
+            AssistantToolInput::SystemService { query },
+        );
+    } else if is_storage_query(&lower) {
         push_tool(
             &mut planned,
             &mut seen,
@@ -1947,7 +3290,35 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
-    if let Some(query) = extract_library_search_query(message) {
+    if is_library_duplicate_titles_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::LibrariesFindDuplicateTitles,
+            AssistantToolInput::None,
+        );
+    } else if is_library_missing_metadata_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::LibrariesListMissingMetadata,
+            AssistantToolInput::None,
+        );
+    } else if let Some(query) = extract_library_media_detail_query(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::LibraryGetItemMediaDetails,
+            AssistantToolInput::LibrarySearch { query },
+        );
+    } else if let Some(query) = extract_library_detail_query(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::LibrariesGetLibrarySummary,
+            AssistantToolInput::LibrarySearch { query },
+        );
+    } else if let Some(query) = extract_library_search_query(message) {
         push_tool(
             &mut planned,
             &mut seen,
@@ -1980,6 +3351,98 @@ pub fn plan_tool_calls_with_history(
             AssistantToolName::LibrariesListAccessible,
             AssistantToolInput::None,
         );
+    }
+
+    if !message_has_other_domain_context(&lower)
+        && extract_memory_relation_path_query(message).is_some()
+    {
+        if let Some((source, target)) = extract_memory_relation_path_query(message) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::MemoryGetEntityRelationPath,
+                AssistantToolInput::SystemService {
+                    query: format!("{source} || {target}"),
+                },
+            );
+        }
+    } else if !message_has_other_domain_context(&lower) && is_memory_relation_query(&lower) {
+        if let Some(query) = extract_memory_relation_query(message) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::MemoryGetEntityRelations,
+                AssistantToolInput::SystemService { query },
+            );
+        }
+    } else if !message_has_other_domain_context(&lower) && is_memory_recent_changes_query(&lower) {
+        let input = extract_memory_recent_changes_query(message)
+            .map(|query| AssistantToolInput::SystemService { query })
+            .unwrap_or(AssistantToolInput::None);
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::MemoryListRecentChanges,
+            input,
+        );
+    } else if !message_has_other_domain_context(&lower) && is_memory_conflict_query(&lower) {
+        let input = extract_memory_conflict_query(message)
+            .map(|query| AssistantToolInput::SystemService { query })
+            .unwrap_or(AssistantToolInput::None);
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::MemoryListConflictingFacts,
+            input,
+        );
+    } else if !message_has_other_domain_context(&lower) && is_memory_provenance_query(&lower) {
+        if let Some(query) = extract_memory_provenance_query(message) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::MemoryGetEntityProvenance,
+                AssistantToolInput::SystemService { query },
+            );
+        }
+    } else if !message_has_other_domain_context(&lower) && is_memory_recent_entity_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::MemoryListRecentEntities,
+            AssistantToolInput::None,
+        );
+    } else if !message_has_other_domain_context(&lower) && is_memory_recent_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::MemoryListRecentFacts,
+            AssistantToolInput::None,
+        );
+    } else if !message_has_other_domain_context(&lower) && is_memory_exact_entity_query(&lower) {
+        if let Some(query) = extract_memory_exact_entity_query(message) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::MemoryFindExactEntity,
+                AssistantToolInput::SystemService { query },
+            );
+        }
+    } else if let Some(query) = extract_memory_query(message) {
+        if is_memory_entity_query(&lower) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::MemorySearchEntities,
+                AssistantToolInput::SystemService { query },
+            );
+        } else {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::MemorySearchFacts,
+                AssistantToolInput::SystemService { query },
+            );
+        }
     }
 
     if !is_host_runtime_query(&lower)
@@ -2285,6 +3748,30 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
             AssistantToolInput::CalendarWindow { label, .. },
         ) => format!("Checking calendar events for {label}"),
         (AssistantToolName::CalendarListEvents, _) => "Checking calendar events".to_string(),
+        (
+            AssistantToolName::CalendarCountEvents,
+            AssistantToolInput::CalendarWindow { label, .. },
+        ) => format!("Counting calendar events for {label}"),
+        (AssistantToolName::CalendarCountEvents, _) => "Counting calendar events".to_string(),
+        (
+            AssistantToolName::CalendarListBusyDays,
+            AssistantToolInput::CalendarWindow { label, .. },
+        ) => format!("Checking busy calendar days for {label}"),
+        (AssistantToolName::CalendarListBusyDays, _) => "Checking busy calendar days".to_string(),
+        (
+            AssistantToolName::CalendarGetNextFreeDay,
+            AssistantToolInput::CalendarWindow { label, .. },
+        ) => format!("Checking the next free calendar day for {label}"),
+        (AssistantToolName::CalendarGetNextFreeDay, _) => {
+            "Checking the next free calendar day".to_string()
+        }
+        (
+            AssistantToolName::CalendarListOverlappingEvents,
+            AssistantToolInput::CalendarWindow { label, .. },
+        ) => format!("Checking overlapping calendar events for {label}"),
+        (AssistantToolName::CalendarListOverlappingEvents, _) => {
+            "Checking overlapping calendar events".to_string()
+        }
         (AssistantToolName::CalendarGetNextEvent, _) => {
             "Checking your next calendar event".to_string()
         }
@@ -2350,9 +3837,55 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::DownloadsListAvailableArtifacts, _) => {
             "Checking available downloads".to_string()
         }
+        (
+            AssistantToolName::DownloadsGetArtifactDetails,
+            AssistantToolInput::DownloadsFilter {
+                query: Some(query), ..
+            },
+        ) => format!("Loading download artifact details for \"{query}\""),
+        (AssistantToolName::DownloadsGetArtifactDetails, _) => {
+            "Loading download artifact details".to_string()
+        }
         (AssistantToolName::NetworkGetTopologySummary, _) => {
             "Checking network topology and interface state".to_string()
         }
+        (
+            AssistantToolName::NetworkGetInterfaceDetails,
+            AssistantToolInput::NetworkInterface { query },
+        ) => {
+            format!("Loading network interface details for \"{query}\"")
+        }
+        (AssistantToolName::NetworkGetInterfaceDetails, _) => {
+            "Loading network interface details".to_string()
+        }
+        (
+            AssistantToolName::NetworkGetDefaultRoute,
+            AssistantToolInput::NetworkDefaultRoute { query: Some(query) },
+        ) => format!("Checking default route for \"{query}\""),
+        (AssistantToolName::NetworkGetDefaultRoute, _) => {
+            "Checking the default network route".to_string()
+        }
+        (
+            AssistantToolName::NetworkGetHostnameAliases,
+            AssistantToolInput::NetworkHostnameAliases { query: Some(query) },
+        ) => format!("Checking hostname aliases for \"{query}\""),
+        (AssistantToolName::NetworkGetHostnameAliases, _) => {
+            "Checking hostname aliases".to_string()
+        }
+        (
+            AssistantToolName::NetworkGetDnsServers,
+            AssistantToolInput::NetworkDnsServers { query: Some(query) },
+        ) => format!("Checking DNS servers for \"{query}\""),
+        (AssistantToolName::NetworkGetDnsServers, _) => "Checking DNS servers".to_string(),
+        (AssistantToolName::NetworkGetRouteTable, _) => "Checking route table".to_string(),
+        (AssistantToolName::NetworkGetActiveConnections, _) => {
+            "Checking active connections".to_string()
+        }
+        (AssistantToolName::NetworkGetInterfaceCounters, _) => {
+            "Checking interface counters".to_string()
+        }
+        (AssistantToolName::NetworkGetWifiStatus, _) => "Checking Wi-Fi status".to_string(),
+        (AssistantToolName::NetworkGetVpnStatus, _) => "Checking VPN status".to_string(),
         (AssistantToolName::WeatherGetCurrent, AssistantToolInput::Weather { location, .. }) => {
             format!("Checking current weather for \"{location}\"")
         }
@@ -2375,20 +3908,144 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::LibrariesListAccessible, _) => {
             "Checking accessible libraries".to_string()
         }
+        (AssistantToolName::MemoryListRecentFacts, AssistantToolInput::None) => {
+            "Checking recent stored memory facts".to_string()
+        }
+        (AssistantToolName::MemoryListRecentEntities, AssistantToolInput::None) => {
+            "Checking recent stored entities".to_string()
+        }
+        (AssistantToolName::MemorySearchFacts, AssistantToolInput::SystemService { query }) => {
+            format!("Searching stored memory facts for \"{query}\"")
+        }
+        (AssistantToolName::MemorySearchEntities, AssistantToolInput::SystemService { query }) => {
+            format!("Searching stored entities for \"{query}\"")
+        }
+        (AssistantToolName::MemoryFindExactEntity, AssistantToolInput::SystemService { query }) => {
+            format!("Finding exact stored entity match for \"{query}\"")
+        }
+        (
+            AssistantToolName::MemoryListRecentChanges,
+            AssistantToolInput::SystemService { query },
+        ) => format!("Checking recent stored memory changes for \"{query}\""),
+        (AssistantToolName::MemoryListRecentChanges, AssistantToolInput::None) => {
+            "Checking recent stored memory changes".to_string()
+        }
+        (
+            AssistantToolName::MemoryListConflictingFacts,
+            AssistantToolInput::SystemService { query },
+        ) => format!("Checking conflicting stored memory facts for \"{query}\""),
+        (AssistantToolName::MemoryListConflictingFacts, AssistantToolInput::None) => {
+            "Checking conflicting stored memory facts".to_string()
+        }
+        (
+            AssistantToolName::MemoryGetEntityProvenance,
+            AssistantToolInput::SystemService { query },
+        ) => format!("Loading stored entity provenance for \"{query}\""),
+        (AssistantToolName::MemoryGetEntityProvenance, AssistantToolInput::None) => {
+            "Loading stored entity provenance".to_string()
+        }
+        (
+            AssistantToolName::MemoryGetEntityRelations,
+            AssistantToolInput::SystemService { query },
+        ) => format!("Loading stored entity relations for \"{query}\""),
+        (
+            AssistantToolName::MemoryGetEntityRelationPath,
+            AssistantToolInput::SystemService { query },
+        ) => {
+            if let Some((source, target)) = query.split_once("||") {
+                format!(
+                    "Loading stored entity relation path between \"{}\" and \"{}\"",
+                    source.trim(),
+                    target.trim()
+                )
+            } else {
+                "Loading stored entity relation path".to_string()
+            }
+        }
+        (AssistantToolName::MemoryListRecentFacts, _) => {
+            "Checking recent stored memory facts".to_string()
+        }
+        (AssistantToolName::MemoryListRecentEntities, _) => {
+            "Checking recent stored entities".to_string()
+        }
+        (AssistantToolName::MemorySearchFacts, _) => "Searching stored memory facts".to_string(),
+        (AssistantToolName::MemorySearchEntities, _) => "Searching stored entities".to_string(),
+        (AssistantToolName::MemoryFindExactEntity, _) => {
+            "Finding exact stored entity match".to_string()
+        }
+        (AssistantToolName::MemoryListRecentChanges, _) => {
+            "Checking recent stored memory changes".to_string()
+        }
+        (AssistantToolName::MemoryListConflictingFacts, _) => {
+            "Checking conflicting stored memory facts".to_string()
+        }
+        (AssistantToolName::MemoryGetEntityProvenance, _) => {
+            "Loading stored entity provenance".to_string()
+        }
+        (AssistantToolName::MemoryGetEntityRelations, _) => {
+            "Loading stored entity relations".to_string()
+        }
+        (AssistantToolName::MemoryGetEntityRelationPath, _) => {
+            "Loading stored entity relation path".to_string()
+        }
         (AssistantToolName::SystemGetCurrentDateTime, _) => {
             "Checking the Rustyfin host date and time".to_string()
         }
         (AssistantToolName::SystemGetAiRuntimeSummary, _) => {
             "Checking the Rustyfin AI runtime and loaded model".to_string()
         }
+        (AssistantToolName::SystemGetKernelInfo, _) => {
+            "Checking host kernel and OS details".to_string()
+        }
+        (AssistantToolName::SystemGetCpuTopology, _) => "Checking CPU topology".to_string(),
+        (AssistantToolName::SystemGetTemperatureSensors, _) => {
+            "Checking temperature sensors".to_string()
+        }
+        (AssistantToolName::SystemGetBlockDeviceInventory, _) => {
+            "Checking block devices".to_string()
+        }
+        (AssistantToolName::SystemGetFilesystemTable, _) => "Checking filesystem table".to_string(),
+        (AssistantToolName::SystemGetGpuInventory, _) => "Checking GPU inventory".to_string(),
+        (AssistantToolName::SystemGetPciDevices, _) => "Checking PCI devices".to_string(),
+        (AssistantToolName::SystemGetUsbDevices, _) => "Checking USB devices".to_string(),
+        (AssistantToolName::SystemGetBootLogSummary, _) => "Checking boot logs".to_string(),
+        (AssistantToolName::SystemGetJournalSummary, _) => "Checking journal summary".to_string(),
+        (AssistantToolName::SystemGetProcessDetail, _) => "Checking host processes".to_string(),
+        (AssistantToolName::SystemGetListenerDetail, _) => "Checking host listeners".to_string(),
+        (AssistantToolName::SystemGetDiskUsageDetail, _) => {
+            "Checking disk usage details".to_string()
+        }
         (AssistantToolName::SystemGetHostRuntimeSummary, _) => {
             "Checking Rustyfin host runtime stats".to_string()
         }
+        (
+            AssistantToolName::SystemGetStoragePathDetail,
+            AssistantToolInput::SystemService { query },
+        ) => format!("Loading storage path details for \"{query}\""),
+        (AssistantToolName::SystemGetStoragePathDetail, _) => {
+            "Loading storage path details".to_string()
+        }
+        (AssistantToolName::SystemGetMountDetail, AssistantToolInput::SystemService { query }) => {
+            format!("Loading mount details for \"{query}\"")
+        }
+        (AssistantToolName::SystemGetMountDetail, _) => "Loading mount details".to_string(),
+        (
+            AssistantToolName::LibrariesGetLibrarySummary,
+            AssistantToolInput::LibrarySearch { query },
+        ) => format!("Loading library summary for \"{query}\""),
+        (AssistantToolName::LibrariesGetLibrarySummary, _) => "Loading library summary".to_string(),
         (AssistantToolName::LibrarySearchTitles, AssistantToolInput::LibrarySearch { query }) => {
             format!("Searching libraries for \"{query}\"")
         }
         (AssistantToolName::LibraryGetItemSummary, AssistantToolInput::LibrarySearch { query }) => {
             format!("Loading library item details for \"{query}\"")
+        }
+        (
+            AssistantToolName::LibraryGetItemMediaDetails,
+            AssistantToolInput::LibrarySearch { query },
+        ) => format!("Loading library media details for \"{query}\""),
+        (AssistantToolName::LibraryGetItemMediaDetails, _) => {
+            "Loading library media details".to_string()
         }
         (
             AssistantToolName::LibrariesGetRecentlyAdded,
@@ -2481,6 +4138,13 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         }
         (AssistantToolName::SystemGetBackupSummary, _) => "Checking backup capability".to_string(),
         (AssistantToolName::SystemGetServiceHealth, _) => "Checking service health".to_string(),
+        (
+            AssistantToolName::SystemGetServiceDetail,
+            AssistantToolInput::SystemService { query },
+        ) => {
+            format!("Loading service details for \"{query}\"")
+        }
+        (AssistantToolName::SystemGetServiceDetail, _) => "Loading service details".to_string(),
         (AssistantToolName::SystemGetTranscodeSummary, _) => {
             "Checking transcoding health and hardware acceleration".to_string()
         }
@@ -2489,6 +4153,30 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         }
         (AssistantToolName::SystemGetRecentErrors, _) => {
             "Checking recent failures and errors".to_string()
+        }
+        (
+            AssistantToolName::SystemGetPortConflicts,
+            AssistantToolInput::SystemPortConflicts { query: Some(query) },
+        ) => format!("Checking port conflicts for \"{query}\""),
+        (AssistantToolName::SystemGetPortConflicts, _) => "Checking port conflicts".to_string(),
+        (
+            AssistantToolName::SystemGetPortConflictDetail,
+            AssistantToolInput::SystemPortConflicts { query: Some(query) },
+        ) => format!("Loading port conflict details for \"{query}\""),
+        (AssistantToolName::SystemGetPortConflictDetail, _) => {
+            "Loading port conflict details".to_string()
+        }
+        (
+            AssistantToolName::SystemGetFailedUnits,
+            AssistantToolInput::SystemFailedUnits { query: Some(query) },
+        ) => format!("Checking failed units for \"{query}\""),
+        (AssistantToolName::SystemGetFailedUnits, _) => "Checking failed systemd units".to_string(),
+        (
+            AssistantToolName::SystemGetFailedUnitDetail,
+            AssistantToolInput::SystemFailedUnits { query: Some(query) },
+        ) => format!("Loading failed unit details for \"{query}\""),
+        (AssistantToolName::SystemGetFailedUnitDetail, _) => {
+            "Loading failed unit details".to_string()
         }
         _ => format!("Checking {}", call.tool.spec().summary.to_ascii_lowercase()),
     }
@@ -2563,6 +4251,57 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
+            AssistantToolName::CalendarGetNextFreeDay => {
+                if message_has_calendar_follow_up_hint(message)
+                    || is_calendar_free_days_query(&message.to_ascii_lowercase())
+                    || is_calendar_conflict_query(&message.to_ascii_lowercase())
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarGetNextFreeDay,
+                        extract_calendar_window(message, 30, None),
+                    );
+                }
+            }
+            AssistantToolName::CalendarCountEvents => {
+                if let Some(query) = extract_calendar_event_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarGetEventDetails,
+                        extract_calendar_window(message, 30, Some(query)),
+                    );
+                } else if message_has_calendar_follow_up_hint(message)
+                    || is_calendar_event_count_query(&message.to_ascii_lowercase())
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarCountEvents,
+                        extract_calendar_window(message, 7, None),
+                    );
+                }
+            }
+            AssistantToolName::CalendarListBusyDays => {
+                if let Some(query) = extract_calendar_event_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarGetEventDetails,
+                        extract_calendar_window(message, 30, Some(query)),
+                    );
+                } else if message_has_calendar_follow_up_hint(message)
+                    || is_calendar_busy_days_query(&message.to_ascii_lowercase())
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarListBusyDays,
+                        extract_calendar_window(message, 7, None),
+                    );
+                }
+            }
             AssistantToolName::CalendarGetNextEvent => {
                 if let Some(query) = extract_calendar_event_detail_query(message) {
                     push_tool(
@@ -2592,6 +4331,18 @@ fn apply_follow_up_tool_hints(
                         planned,
                         seen,
                         AssistantToolName::CalendarGetNextEvent,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
+            AssistantToolName::CalendarGetNextEventTiming => {
+                if is_next_calendar_event_timing_query(&message.to_ascii_lowercase())
+                    || message_has_calendar_follow_up_hint(message)
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarGetNextEventTiming,
                         AssistantToolInput::None,
                     );
                 }
@@ -2633,6 +4384,21 @@ fn apply_follow_up_tool_hints(
                     }
                 }
             }
+            AssistantToolName::CalendarListDateConflicts
+            | AssistantToolName::CalendarListFreeDays
+            | AssistantToolName::CalendarListOverlappingEvents => {
+                if message_has_calendar_follow_up_hint(message)
+                    || is_calendar_conflict_query(&message.to_ascii_lowercase())
+                    || is_calendar_free_days_query(&message.to_ascii_lowercase())
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        tool,
+                        extract_calendar_window(message, 7, None),
+                    );
+                }
+            }
             AssistantToolName::ChannelsListUnreadActivity => {
                 if message_has_channel_follow_up_hint(message) {
                     push_tool(
@@ -2661,8 +4427,116 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
-            AssistantToolName::DownloadsListAvailableArtifacts => {
-                if message_has_downloads_follow_up_hint(message) {
+            AssistantToolName::DownloadsListAvailableArtifacts
+            | AssistantToolName::DownloadsGetArtifactDetails
+            | AssistantToolName::DownloadsGetArtifactSource
+            | AssistantToolName::DownloadsGetReleaseNotes
+            | AssistantToolName::DownloadsGetArtifactChecksum
+            | AssistantToolName::DownloadsGetArtifactInstallSteps
+            | AssistantToolName::DownloadsGetArtifactCompatibility => {
+                if let Some(query) = extract_download_artifact_source_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::DownloadsGetArtifactSource,
+                        AssistantToolInput::DownloadsFilter {
+                            query: Some(query),
+                            availability: extract_downloads_availability(message),
+                        },
+                    );
+                } else if let Some(query) = extract_download_artifact_release_notes_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::DownloadsGetReleaseNotes,
+                        AssistantToolInput::DownloadsFilter {
+                            query: Some(query),
+                            availability: extract_downloads_availability(message),
+                        },
+                    );
+                } else if let Some(query) = extract_download_artifact_checksum_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::DownloadsGetArtifactChecksum,
+                        AssistantToolInput::DownloadsFilter {
+                            query: Some(query),
+                            availability: extract_downloads_availability(message),
+                        },
+                    );
+                } else if let Some(query) = extract_download_artifact_install_steps_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::DownloadsGetArtifactInstallSteps,
+                        AssistantToolInput::DownloadsFilter {
+                            query: Some(query),
+                            availability: extract_downloads_availability(message),
+                        },
+                    );
+                } else if let Some(query) = extract_download_artifact_compatibility_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::DownloadsGetArtifactCompatibility,
+                        AssistantToolInput::DownloadsFilter {
+                            query: Some(query),
+                            availability: extract_downloads_availability(message),
+                        },
+                    );
+                } else if let Some(query) = extract_download_artifact_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::DownloadsGetArtifactDetails,
+                        AssistantToolInput::DownloadsFilter {
+                            query: Some(query),
+                            availability: extract_downloads_availability(message),
+                        },
+                    );
+                } else if let Some(entity_label) = recent_single_download_entity_label(history) {
+                    if message_has_download_checksum_hint(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::DownloadsGetArtifactChecksum,
+                            AssistantToolInput::DownloadsFilter {
+                                query: Some(entity_label),
+                                availability: extract_downloads_availability(message),
+                            },
+                        );
+                    } else if message_has_download_install_steps_hint(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::DownloadsGetArtifactInstallSteps,
+                            AssistantToolInput::DownloadsFilter {
+                                query: Some(entity_label),
+                                availability: extract_downloads_availability(message),
+                            },
+                        );
+                    } else if message_has_download_compatibility_hint(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::DownloadsGetArtifactCompatibility,
+                            AssistantToolInput::DownloadsFilter {
+                                query: Some(entity_label),
+                                availability: extract_downloads_availability(message),
+                            },
+                        );
+                    } else if is_single_download_detail_follow_up(message, history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::DownloadsGetArtifactDetails,
+                            AssistantToolInput::DownloadsFilter {
+                                query: Some(entity_label),
+                                availability: extract_downloads_availability(message),
+                            },
+                        );
+                    }
+                } else if message_has_downloads_follow_up_hint(message) {
                     push_tool(
                         planned,
                         seen,
@@ -2672,11 +4546,258 @@ fn apply_follow_up_tool_hints(
                 }
             }
             AssistantToolName::NetworkGetTopologySummary => {
-                if message_has_network_follow_up_hint(message) {
+                let before = planned.len();
+                push_network_diagnostics_tools(message, planned, seen);
+                if planned.len() == before {
+                    if let Some(query) = extract_network_interface_query(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::NetworkGetInterfaceDetails,
+                            AssistantToolInput::NetworkInterface { query },
+                        );
+                    } else if is_single_network_detail_follow_up(message, history) {
+                        if let Some(entity_label) = recent_single_network_entity_label(history) {
+                            push_tool(
+                                planned,
+                                seen,
+                                AssistantToolName::NetworkGetInterfaceDetails,
+                                AssistantToolInput::NetworkInterface {
+                                    query: entity_label,
+                                },
+                            );
+                        }
+                    } else if message_has_network_follow_up_hint(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::NetworkGetTopologySummary,
+                            AssistantToolInput::None,
+                        );
+                    }
+                }
+            }
+            AssistantToolName::NetworkGetInterfaceDetails => {
+                let before = planned.len();
+                push_network_diagnostics_tools(message, planned, seen);
+                if planned.len() == before {
+                    if let Some(query) = extract_network_interface_query(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::NetworkGetInterfaceDetails,
+                            AssistantToolInput::NetworkInterface { query },
+                        );
+                    } else if is_single_network_detail_follow_up(message, history) {
+                        if let Some(entity_label) = recent_single_network_entity_label(history) {
+                            push_tool(
+                                planned,
+                                seen,
+                                AssistantToolName::NetworkGetInterfaceDetails,
+                                AssistantToolInput::NetworkInterface {
+                                    query: entity_label,
+                                },
+                            );
+                        }
+                    } else if message_has_network_follow_up_hint(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::NetworkGetTopologySummary,
+                            AssistantToolInput::None,
+                        );
+                    }
+                }
+            }
+            AssistantToolName::NetworkGetDefaultRoute => {
+                let before = planned.len();
+                push_network_diagnostics_tools(message, planned, seen);
+                if planned.len() == before
+                    && (is_network_default_route_query(&message.to_ascii_lowercase())
+                        || message_has_network_follow_up_hint(message))
+                {
                     push_tool(
                         planned,
                         seen,
-                        AssistantToolName::NetworkGetTopologySummary,
+                        AssistantToolName::NetworkGetDefaultRoute,
+                        AssistantToolInput::NetworkDefaultRoute {
+                            query: extract_network_default_route_query(message),
+                        },
+                    );
+                }
+            }
+            AssistantToolName::NetworkGetHostnameAliases => {
+                let before = planned.len();
+                push_network_diagnostics_tools(message, planned, seen);
+                if planned.len() == before
+                    && (is_network_hostname_aliases_query(&message.to_ascii_lowercase())
+                        || message_has_network_follow_up_hint(message))
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::NetworkGetHostnameAliases,
+                        AssistantToolInput::NetworkHostnameAliases {
+                            query: extract_network_hostname_aliases_query(message),
+                        },
+                    );
+                }
+            }
+            AssistantToolName::NetworkGetDnsServers => {
+                let before = planned.len();
+                push_network_diagnostics_tools(message, planned, seen);
+                if planned.len() == before
+                    && (is_network_dns_servers_query(&message.to_ascii_lowercase())
+                        || message_has_network_follow_up_hint(message))
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::NetworkGetDnsServers,
+                        AssistantToolInput::NetworkDnsServers {
+                            query: extract_network_dns_servers_query(message),
+                        },
+                    );
+                }
+            }
+            AssistantToolName::NetworkGetRouteTable
+            | AssistantToolName::NetworkGetActiveConnections
+            | AssistantToolName::NetworkGetInterfaceCounters
+            | AssistantToolName::NetworkGetWifiStatus
+            | AssistantToolName::NetworkGetVpnStatus => {
+                push_network_diagnostics_tools(message, planned, seen);
+            }
+            AssistantToolName::SystemGetServiceHealth => {
+                if let Some(query) = extract_service_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetServiceDetail,
+                        AssistantToolInput::SystemService { query },
+                    );
+                } else if is_single_service_detail_follow_up(message, history) {
+                    if let Some(entity_label) = recent_single_service_entity_label(history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::SystemGetServiceDetail,
+                            AssistantToolInput::SystemService {
+                                query: entity_label,
+                            },
+                        );
+                    }
+                } else if is_service_health_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetServiceHealth,
+                        AssistantToolInput::None,
+                    );
+                } else if message_has_service_health_follow_up_hint(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetServiceHealth,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
+            AssistantToolName::SystemGetKernelInfo
+            | AssistantToolName::SystemGetCpuTopology
+            | AssistantToolName::SystemGetTemperatureSensors
+            | AssistantToolName::SystemGetBlockDeviceInventory
+            | AssistantToolName::SystemGetFilesystemTable
+            | AssistantToolName::SystemGetGpuInventory
+            | AssistantToolName::SystemGetPciDevices
+            | AssistantToolName::SystemGetUsbDevices
+            | AssistantToolName::SystemGetBootLogSummary
+            | AssistantToolName::SystemGetJournalSummary
+            | AssistantToolName::SystemGetProcessDetail
+            | AssistantToolName::SystemGetListenerDetail
+            | AssistantToolName::SystemGetDiskUsageDetail => {
+                push_system_diagnostics_tools(message, planned, seen);
+            }
+            AssistantToolName::SystemGetPortConflicts
+            | AssistantToolName::SystemGetPortConflictDetail => {
+                if let Some(query) = extract_port_conflict_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetPortConflictDetail,
+                        AssistantToolInput::SystemPortConflicts { query: Some(query) },
+                    );
+                } else if is_port_conflicts_query(&message.to_ascii_lowercase())
+                    || message_has_port_conflicts_follow_up_hint(message)
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetPortConflicts,
+                        AssistantToolInput::SystemPortConflicts {
+                            query: extract_port_conflicts_query(message),
+                        },
+                    );
+                }
+            }
+            AssistantToolName::SystemGetFailedUnits => {
+                if is_failed_units_query(&message.to_ascii_lowercase())
+                    || message_has_failed_units_follow_up_hint(message)
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetFailedUnits,
+                        AssistantToolInput::SystemFailedUnits {
+                            query: extract_failed_units_query(message),
+                        },
+                    );
+                }
+            }
+            AssistantToolName::SystemGetFailedUnitDetail => {
+                if let Some(query) = extract_failed_unit_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetFailedUnitDetail,
+                        AssistantToolInput::SystemFailedUnits { query: Some(query) },
+                    );
+                } else if message_has_failed_units_follow_up_hint(message) {
+                    if let Some(entity_label) = recent_single_failed_unit_entity_label(history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::SystemGetFailedUnitDetail,
+                            AssistantToolInput::SystemFailedUnits {
+                                query: Some(entity_label),
+                            },
+                        );
+                    }
+                }
+            }
+            AssistantToolName::SystemGetServiceDetail => {
+                if let Some(query) = extract_service_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetServiceDetail,
+                        AssistantToolInput::SystemService { query },
+                    );
+                } else if is_single_service_detail_follow_up(message, history) {
+                    if let Some(entity_label) = recent_single_service_entity_label(history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::SystemGetServiceDetail,
+                            AssistantToolInput::SystemService {
+                                query: entity_label,
+                            },
+                        );
+                    }
+                } else if message_has_service_health_follow_up_hint(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetServiceHealth,
                         AssistantToolInput::None,
                     );
                 }
@@ -2713,10 +4834,84 @@ fn apply_follow_up_tool_hints(
                 }
             }
             AssistantToolName::LibrariesListAccessible
+            | AssistantToolName::LibrariesGetLibrarySummary
             | AssistantToolName::LibrarySearchTitles
             | AssistantToolName::LibraryGetItemSummary
-            | AssistantToolName::LibrariesGetRecentlyAdded => {
-                if let Some(query) = extract_library_follow_up_query(message) {
+            | AssistantToolName::LibraryGetItemMediaDetails
+            | AssistantToolName::LibraryGetItemSourcePaths
+            | AssistantToolName::LibrariesGetRecentlyAdded
+            | AssistantToolName::LibrariesFindDuplicateTitles
+            | AssistantToolName::LibrariesListMissingMetadata => {
+                let lower = message.to_ascii_lowercase();
+                if is_library_duplicate_titles_query(&lower) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::LibrariesFindDuplicateTitles,
+                        AssistantToolInput::None,
+                    );
+                } else if is_library_missing_metadata_query(&lower) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::LibrariesListMissingMetadata,
+                        AssistantToolInput::None,
+                    );
+                } else if let Some(query) = extract_library_media_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::LibraryGetItemMediaDetails,
+                        AssistantToolInput::LibrarySearch { query },
+                    );
+                } else if let Some(query) = extract_library_source_paths_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::LibraryGetItemSourcePaths,
+                        AssistantToolInput::LibrarySearch { query },
+                    );
+                } else if is_single_library_media_detail_follow_up(message, history) {
+                    if let Some(entity_label) = recent_single_library_item_entity_label(history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::LibraryGetItemMediaDetails,
+                            AssistantToolInput::LibrarySearch {
+                                query: entity_label,
+                            },
+                        );
+                    }
+                } else if is_single_library_source_paths_follow_up(message, history) {
+                    if let Some(entity_label) = recent_single_library_item_entity_label(history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::LibraryGetItemSourcePaths,
+                            AssistantToolInput::LibrarySearch {
+                                query: entity_label,
+                            },
+                        );
+                    }
+                } else if let Some(query) = extract_library_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::LibrariesGetLibrarySummary,
+                        AssistantToolInput::LibrarySearch { query },
+                    );
+                } else if is_single_library_detail_follow_up(message, history) {
+                    if let Some(entity_label) = recent_single_library_entity_label(history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::LibrariesGetLibrarySummary,
+                            AssistantToolInput::LibrarySearch {
+                                query: entity_label,
+                            },
+                        );
+                    }
+                } else if let Some(query) = extract_library_follow_up_query(message) {
                     push_tool(
                         planned,
                         seen,
@@ -2743,7 +4938,10 @@ fn apply_follow_up_tool_hints(
             }
             AssistantToolName::WeatherGetCurrent
             | AssistantToolName::WeatherGetForecast
-            | AssistantToolName::WeatherGetHistory => {
+            | AssistantToolName::WeatherGetHistory
+            | AssistantToolName::WeatherResolveLocationAlias
+            | AssistantToolName::WeatherGetForecastForDate
+            | AssistantToolName::WeatherGetRecentHistoryForDate => {
                 if let Some((tool, input)) = extract_weather_follow_up_call(message, history) {
                     push_tool(planned, seen, tool, input);
                 }
@@ -2768,8 +4966,11 @@ fn apply_follow_up_tool_hints(
             }
             AssistantToolName::AccountGetProfileSummary => {}
             AssistantToolName::SystemGetAiRuntimeSummary => {
-                if is_ai_runtime_query(&message.to_ascii_lowercase())
-                    || message_has_ai_runtime_follow_up_hint(message)
+                let before = planned.len();
+                push_system_diagnostics_tools(message, planned, seen);
+                if planned.len() == before
+                    && (is_ai_runtime_query(&message.to_ascii_lowercase())
+                        || message_has_ai_runtime_follow_up_hint(message))
                 {
                     push_tool(
                         planned,
@@ -2780,7 +4981,9 @@ fn apply_follow_up_tool_hints(
                 }
             }
             AssistantToolName::SystemGetHostRuntimeSummary => {
-                if message_has_host_runtime_follow_up_hint(message) {
+                let before = planned.len();
+                push_system_diagnostics_tools(message, planned, seen);
+                if planned.len() == before && message_has_host_runtime_follow_up_hint(message) {
                     push_tool(
                         planned,
                         seen,
@@ -2811,16 +5014,6 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
-            AssistantToolName::SystemGetServiceHealth => {
-                if is_service_health_query(&message.to_ascii_lowercase()) {
-                    push_tool(
-                        planned,
-                        seen,
-                        AssistantToolName::SystemGetServiceHealth,
-                        AssistantToolInput::None,
-                    );
-                }
-            }
             AssistantToolName::SystemGetTranscodeSummary => {
                 if is_transcode_query(&message.to_ascii_lowercase()) {
                     push_tool(
@@ -2831,14 +5024,147 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
-            AssistantToolName::SystemGetStorageSummary => {
-                if is_storage_query(&message.to_ascii_lowercase()) {
+            AssistantToolName::SystemGetStorageSummary
+            | AssistantToolName::SystemGetStoragePathDetail
+            | AssistantToolName::SystemGetMountDetail => {
+                if let Some(query) = extract_mount_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetMountDetail,
+                        AssistantToolInput::SystemService { query },
+                    );
+                } else if let Some(query) = extract_storage_path_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetStoragePathDetail,
+                        AssistantToolInput::SystemService { query },
+                    );
+                } else if is_storage_query(&message.to_ascii_lowercase()) {
                     push_tool(
                         planned,
                         seen,
                         AssistantToolName::SystemGetStorageSummary,
                         AssistantToolInput::None,
                     );
+                }
+            }
+            AssistantToolName::MemoryListRecentFacts
+            | AssistantToolName::MemoryListRecentEntities
+            | AssistantToolName::MemorySearchFacts
+            | AssistantToolName::MemorySearchEntities
+            | AssistantToolName::MemoryFindExactEntity
+            | AssistantToolName::MemoryGetEntityRelations
+            | AssistantToolName::MemoryGetEntityRelationPath
+            | AssistantToolName::MemoryListRecentChanges
+            | AssistantToolName::MemoryListConflictingFacts
+            | AssistantToolName::MemoryGetEntityProvenance => {
+                let lower = message.to_ascii_lowercase();
+                if !message_has_other_domain_context(&lower)
+                    && extract_memory_relation_path_query(message).is_some()
+                {
+                    if let Some((source, target)) = extract_memory_relation_path_query(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::MemoryGetEntityRelationPath,
+                            AssistantToolInput::SystemService {
+                                query: format!("{source} || {target}"),
+                            },
+                        );
+                    }
+                } else if !message_has_other_domain_context(&lower)
+                    && is_memory_relation_query(&lower)
+                {
+                    if let Some(query) = extract_memory_relation_query(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::MemoryGetEntityRelations,
+                            AssistantToolInput::SystemService { query },
+                        );
+                    }
+                } else if !message_has_other_domain_context(&lower)
+                    && is_memory_recent_changes_query(&lower)
+                {
+                    let input = extract_memory_recent_changes_query(message)
+                        .map(|query| AssistantToolInput::SystemService { query })
+                        .unwrap_or(AssistantToolInput::None);
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::MemoryListRecentChanges,
+                        input,
+                    );
+                } else if !message_has_other_domain_context(&lower)
+                    && is_memory_conflict_query(&lower)
+                {
+                    let input = extract_memory_conflict_query(message)
+                        .map(|query| AssistantToolInput::SystemService { query })
+                        .unwrap_or(AssistantToolInput::None);
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::MemoryListConflictingFacts,
+                        input,
+                    );
+                } else if !message_has_other_domain_context(&lower)
+                    && is_memory_provenance_query(&lower)
+                {
+                    if let Some(query) = extract_memory_provenance_query(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::MemoryGetEntityProvenance,
+                            AssistantToolInput::SystemService { query },
+                        );
+                    }
+                } else if !message_has_other_domain_context(&lower)
+                    && is_memory_recent_entity_query(&lower)
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::MemoryListRecentEntities,
+                        AssistantToolInput::None,
+                    );
+                } else if !message_has_other_domain_context(&lower)
+                    && is_memory_recent_query(&lower)
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::MemoryListRecentFacts,
+                        AssistantToolInput::None,
+                    );
+                } else if !message_has_other_domain_context(&lower)
+                    && is_memory_exact_entity_query(&lower)
+                {
+                    if let Some(query) = extract_memory_exact_entity_query(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::MemoryFindExactEntity,
+                            AssistantToolInput::SystemService { query },
+                        );
+                    }
+                } else if let Some(query) = extract_memory_query(message) {
+                    if is_memory_entity_query(&lower) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::MemorySearchEntities,
+                            AssistantToolInput::SystemService { query },
+                        );
+                    } else {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::MemorySearchFacts,
+                            AssistantToolInput::SystemService { query },
+                        );
+                    }
                 }
             }
             AssistantToolName::SystemGetRecentErrors => {
@@ -2851,6 +5177,7 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
+            _ => {}
         }
     }
 }
@@ -2888,7 +5215,10 @@ fn apply_follow_up_entity_reference(
     };
 
     match context.tool.as_str() {
-        "calendar_list_events" | "calendar_get_next_event" | "calendar_get_event_details" => {
+        "calendar_list_events"
+        | "calendar_get_next_event"
+        | "calendar_get_next_event_timing"
+        | "calendar_get_event_details" => {
             push_tool(
                 planned,
                 seen,
@@ -2914,6 +5244,25 @@ fn apply_follow_up_entity_reference(
                         .clone()
                         .unwrap_or_else(|| "the current calendar window".to_string()),
                     query: Some(entity.label.clone()),
+                },
+            );
+            true
+        }
+        "calendar_count_events" | "calendar_list_busy_days" => {
+            let selected_date = entity
+                .identifier
+                .clone()
+                .or_else(|| context.input_hint.calendar_from_date.clone())
+                .unwrap_or_else(|| assistant_local_today().format("%F").to_string());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::CalendarListEvents,
+                AssistantToolInput::CalendarWindow {
+                    from_date: selected_date.clone(),
+                    to_date: selected_date,
+                    label: entity.label.clone(),
+                    query: None,
                 },
             );
             true
@@ -2955,11 +5304,43 @@ fn apply_follow_up_entity_reference(
             );
             true
         }
-        "library_search_titles" | "library_get_item_summary" | "libraries_get_recently_added" => {
+        "libraries_list_accessible" => {
             push_tool(
                 planned,
                 seen,
-                AssistantToolName::LibraryGetItemSummary,
+                AssistantToolName::LibrariesGetLibrarySummary,
+                AssistantToolInput::LibrarySearch {
+                    query: entity.label.clone(),
+                },
+            );
+            true
+        }
+        "libraries_get_library_summary" => {
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::LibrariesGetLibrarySummary,
+                AssistantToolInput::LibrarySearch {
+                    query: entity.label.clone(),
+                },
+            );
+            true
+        }
+        "library_search_titles"
+        | "library_get_item_summary"
+        | "library_get_item_media_details"
+        | "libraries_get_recently_added" => {
+            let tool = if message_has_library_media_follow_up_hint(message)
+                || extract_library_media_detail_query(message).is_some()
+            {
+                AssistantToolName::LibraryGetItemMediaDetails
+            } else {
+                AssistantToolName::LibraryGetItemSummary
+            };
+            push_tool(
+                planned,
+                seen,
+                tool,
                 AssistantToolInput::LibrarySearch {
                     query: entity.label.clone(),
                 },
@@ -2970,12 +5351,179 @@ fn apply_follow_up_entity_reference(
             push_tool(
                 planned,
                 seen,
-                AssistantToolName::DownloadsListAvailableArtifacts,
+                AssistantToolName::DownloadsGetArtifactDetails,
                 AssistantToolInput::DownloadsFilter {
                     query: Some(entity.label.clone()),
                     availability: extract_downloads_availability(message)
                         .or_else(|| context.input_hint.downloads_availability.clone()),
                 },
+            );
+            true
+        }
+        "downloads_get_artifact_details" => {
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::DownloadsGetArtifactDetails,
+                AssistantToolInput::DownloadsFilter {
+                    query: Some(entity.label.clone()),
+                    availability: extract_downloads_availability(message)
+                        .or_else(|| context.input_hint.downloads_availability.clone()),
+                },
+            );
+            true
+        }
+        "network_get_topology_summary" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::NetworkGetInterfaceDetails,
+                AssistantToolInput::NetworkInterface { query },
+            );
+            true
+        }
+        "network_get_interface_details" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::NetworkGetInterfaceDetails,
+                AssistantToolInput::NetworkInterface { query },
+            );
+            true
+        }
+        "network_get_default_route" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::NetworkGetDefaultRoute,
+                AssistantToolInput::NetworkDefaultRoute { query: Some(query) },
+            );
+            true
+        }
+        "network_get_hostname_aliases" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::NetworkGetHostnameAliases,
+                AssistantToolInput::NetworkHostnameAliases { query: Some(query) },
+            );
+            true
+        }
+        "system_get_service_health" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetServiceDetail,
+                AssistantToolInput::SystemService { query },
+            );
+            true
+        }
+        "system_get_service_detail" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetServiceDetail,
+                AssistantToolInput::SystemService { query },
+            );
+            true
+        }
+        "system_get_mount_detail" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetMountDetail,
+                AssistantToolInput::SystemService { query },
+            );
+            true
+        }
+        "system_get_port_conflicts" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetPortConflicts,
+                AssistantToolInput::SystemPortConflicts { query: Some(query) },
+            );
+            true
+        }
+        "system_get_port_conflict_detail" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetPortConflictDetail,
+                AssistantToolInput::SystemPortConflicts { query: Some(query) },
+            );
+            true
+        }
+        "system_get_failed_units" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetFailedUnitDetail,
+                AssistantToolInput::SystemFailedUnits { query: Some(query) },
+            );
+            true
+        }
+        "system_get_failed_unit_detail" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetFailedUnitDetail,
+                AssistantToolInput::SystemFailedUnits { query: Some(query) },
             );
             true
         }
@@ -3034,10 +5582,317 @@ fn recent_single_calendar_entity_label(history: &[AssistantHistoryMessage]) -> O
     let context = contexts.iter().find(|context| {
         matches!(
             context.tool.as_str(),
-            "calendar_list_events" | "calendar_get_next_event" | "calendar_get_event_details"
+            "calendar_list_events"
+                | "calendar_get_next_event"
+                | "calendar_get_next_event_timing"
+                | "calendar_list_date_conflicts"
+                | "calendar_list_free_days"
+                | "calendar_count_events"
+                | "calendar_list_busy_days"
+                | "calendar_get_event_details"
         ) && context.entities.len() == 1
     })?;
     Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_download_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "downloads_list_available_artifacts"
+                | "downloads_get_artifact_details"
+                | "downloads_get_artifact_checksum"
+                | "downloads_get_artifact_install_steps"
+                | "downloads_get_artifact_compatibility"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_network_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "network_get_topology_summary" | "network_get_interface_details"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_service_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "system_get_service_health" | "system_get_service_detail"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_failed_unit_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "system_get_failed_units" | "system_get_failed_unit_detail"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_storage_path_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "system_get_storage_summary" | "system_get_storage_path_detail"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_library_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "libraries_list_accessible"
+                | "libraries_get_library_summary"
+                | "library_search_titles"
+                | "library_get_item_summary"
+                | "library_get_item_media_details"
+                | "libraries_get_recently_added"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_library_item_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "library_search_titles"
+                | "library_get_item_summary"
+                | "library_get_item_media_details"
+                | "libraries_get_recently_added"
+                | "libraries_list_missing_metadata"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn message_has_library_media_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    extract_library_media_detail_query(message).is_some()
+        || has_any(
+            &lower,
+            &[
+                "its path",
+                "it path",
+                "the path",
+                "file path",
+                "media path",
+                "what is its path",
+                "what's its path",
+                "what is its file path",
+                "what's its file path",
+                "what is its media path",
+                "what's its media path",
+                "what is its poster",
+                "what's its poster",
+                "what is its artwork",
+                "what's its artwork",
+                "where is it stored",
+                "where's it stored",
+                "where is this stored",
+                "where's this stored",
+                "show me the artwork",
+                "tell me the artwork",
+                "tell me more about the artwork",
+            ],
+        )
+}
+
+fn message_has_storage_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    extract_storage_path_detail_query(message).is_some()
+        || has_any(
+            &lower,
+            &[
+                "its path",
+                "it path",
+                "the path",
+                "file path",
+                "storage path",
+                "mount point",
+                "where is it stored",
+                "where's it stored",
+                "where is this stored",
+                "where's this stored",
+                "how much space is on it",
+                "how much free space is on it",
+                "that path",
+                "that directory",
+                "that folder",
+                "storage details",
+            ],
+        )
+}
+
+fn is_single_library_media_detail_follow_up(
+    message: &str,
+    history: &[AssistantHistoryMessage],
+) -> bool {
+    if recent_single_library_item_entity_label(history).is_none() {
+        return false;
+    }
+
+    message_has_library_media_follow_up_hint(message)
+}
+
+fn is_single_storage_path_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_storage_path_entity_label(history).is_none() {
+        return false;
+    }
+
+    message_has_storage_follow_up_hint(message)
+}
+
+fn is_single_network_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_network_entity_label(history).is_none() {
+        return false;
+    }
+
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "its details",
+            "it details",
+            "the details",
+            "what are its details",
+            "what is its details",
+            "what's its details",
+            "whats its details",
+            "what is its ip",
+            "what's its ip",
+            "what is its address",
+            "tell me more about it",
+            "more about it",
+            "describe it",
+        ],
+    )
+}
+
+fn is_single_service_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_service_entity_label(history).is_none() {
+        return false;
+    }
+
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "its details",
+            "it details",
+            "the details",
+            "what are its details",
+            "what is its details",
+            "what's its details",
+            "whats its details",
+            "what is its status",
+            "what's its status",
+            "what is its health",
+            "what's its health",
+            "tell me more about it",
+            "more about it",
+            "describe it",
+        ],
+    )
+}
+
+fn recent_single_mount_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "system_get_storage_summary"
+                | "system_get_storage_path_detail"
+                | "system_get_mount_detail"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_port_conflict_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "system_get_port_conflicts" | "system_get_port_conflict_detail"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn is_single_mount_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_mount_entity_label(history).is_none() {
+        return false;
+    }
+
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "its details",
+            "it details",
+            "the details",
+            "what are its details",
+            "what is its details",
+            "what's its details",
+            "whats its details",
+            "what is it mounted on",
+            "what's it mounted on",
+            "what filesystem is it on",
+            "what file system is it on",
+            "what is it on",
+            "what is it mounted on",
+            "tell me more about it",
+            "more about it",
+            "describe it",
+        ],
+    )
+}
+
+fn is_single_port_conflict_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_port_conflict_entity_label(history).is_none() {
+        return false;
+    }
+
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "its details",
+            "it details",
+            "the details",
+            "what are its details",
+            "what is its details",
+            "what's its details",
+            "whats its details",
+            "who is using it",
+            "what process is using it",
+            "what is listening on it",
+            "what is using it",
+            "tell me more about it",
+            "more about it",
+            "describe it",
+        ],
+    )
 }
 
 fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message: &str) -> bool {
@@ -3045,9 +5900,19 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
     match context.tool.as_str() {
         "calendar_list_events"
         | "calendar_get_next_event"
+        | "calendar_get_next_event_timing"
+        | "calendar_list_date_conflicts"
+        | "calendar_list_free_days"
+        | "calendar_count_events"
+        | "calendar_list_busy_days"
         | "calendar_upcoming_birthdays"
         | "calendar_get_event_details" => {
             message_has_calendar_follow_up_hint(message)
+                || is_calendar_conflict_query(&lower)
+                || is_calendar_free_days_query(&lower)
+                || is_calendar_busy_days_query(&lower)
+                || is_calendar_event_count_query(&lower)
+                || is_next_calendar_event_timing_query(&lower)
                 || extract_calendar_event_detail_query(message).is_some()
                 || extract_birthday_query(message).is_some()
                 || has_any(
@@ -3067,7 +5932,14 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
         "rooms_list_active" | "rooms_list_joinable" | "rooms_get_room_summary" => {
             detect_room_mode(message).is_some() || has_any(&lower, &["room", "rooms"])
         }
-        "library_search_titles" | "library_get_item_summary" | "libraries_get_recently_added" => {
+        "libraries_list_accessible"
+        | "libraries_get_library_summary"
+        | "library_search_titles"
+        | "library_get_item_summary"
+        | "library_get_item_media_details"
+        | "libraries_get_recently_added"
+        | "libraries_find_duplicate_titles"
+        | "libraries_list_missing_metadata" => {
             has_any(
                 &lower,
                 &[
@@ -3082,22 +5954,46 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
                     "library",
                     "libraries",
                 ],
-            )
+            ) || extract_library_detail_query(message).is_some()
+                || message_has_library_media_follow_up_hint(message)
+                || extract_library_media_detail_query(message).is_some()
+                || is_library_duplicate_titles_query(&lower)
+                || is_library_missing_metadata_query(&lower)
         }
-        "downloads_list_available_artifacts" => has_any(
-            &lower,
-            &[
-                "download",
-                "downloads",
-                "extension",
-                "browser extension",
-                "app",
-                "planned",
-                "available",
-                "unavailable",
-                "companion",
-            ],
-        ),
+        "downloads_list_available_artifacts"
+        | "downloads_get_artifact_details"
+        | "downloads_get_artifact_checksum"
+        | "downloads_get_artifact_install_steps"
+        | "downloads_get_artifact_compatibility" => {
+            has_any(
+                &lower,
+                &[
+                    "download",
+                    "downloads",
+                    "artifact",
+                    "artifacts",
+                    "extension",
+                    "browser extension",
+                    "app",
+                    "planned",
+                    "available",
+                    "unavailable",
+                    "companion",
+                    "checksum",
+                    "hash",
+                    "install",
+                    "installation",
+                    "setup",
+                    "compatible",
+                    "compatibility",
+                    "platform",
+                    "architecture",
+                ],
+            ) || extract_download_artifact_detail_query(message).is_some()
+                || extract_download_artifact_checksum_query(message).is_some()
+                || extract_download_artifact_install_steps_query(message).is_some()
+                || extract_download_artifact_compatibility_query(message).is_some()
+        }
         "weather_get_current" | "weather_get_forecast" | "weather_get_history" => {
             !is_current_datetime_query(&lower)
                 && !message_has_current_datetime_follow_up_hint(message)
@@ -3110,6 +6006,44 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
             extract_public_web_url(message).is_some()
                 || extract_public_web_search_query(message).is_some()
         }
+        "network_get_topology_summary" | "network_get_interface_details" => {
+            extract_network_interface_query(message).is_some()
+                || message_has_network_follow_up_hint(message)
+        }
+        "network_get_default_route" => {
+            extract_network_default_route_query(message).is_some()
+                || message_has_network_follow_up_hint(message)
+        }
+        "network_get_hostname_aliases" => {
+            extract_network_hostname_aliases_query(message).is_some()
+                || message_has_network_follow_up_hint(message)
+        }
+        "network_get_dns_servers" => {
+            extract_network_dns_servers_query(message).is_some()
+                || message_has_network_follow_up_hint(message)
+        }
+        "system_get_service_health" | "system_get_service_detail" => {
+            extract_service_detail_query(message).is_some()
+                || message_has_service_health_follow_up_hint(message)
+        }
+        "system_get_port_conflicts" | "system_get_port_conflict_detail" => {
+            extract_port_conflicts_query(message).is_some()
+                || extract_port_conflict_detail_query(message).is_some()
+                || message_has_port_conflicts_follow_up_hint(message)
+        }
+        "system_get_failed_units" | "system_get_failed_unit_detail" => {
+            extract_failed_units_query(message).is_some()
+                || extract_failed_unit_detail_query(message).is_some()
+                || message_has_failed_units_follow_up_hint(message)
+        }
+        "system_get_storage_summary"
+        | "system_get_storage_path_detail"
+        | "system_get_mount_detail" => {
+            is_storage_query(&lower)
+                || extract_mount_detail_query(message).is_some()
+                || extract_storage_path_detail_query(message).is_some()
+                || message_has_storage_follow_up_hint(message)
+        }
         "system_get_current_datetime" => {
             is_current_datetime_query(&lower)
                 || message_has_current_datetime_tool_follow_up_hint(message)
@@ -3119,9 +6053,7 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
         }
         "system_get_host_runtime_summary" => is_host_runtime_query(&lower),
         "system_get_backup_summary" => is_backup_query(&lower),
-        "system_get_service_health" => is_service_health_query(&lower),
         "system_get_transcode_summary" => is_transcode_query(&lower),
-        "system_get_storage_summary" => is_storage_query(&lower),
         "system_get_recent_errors" => is_recent_errors_query(&lower),
         _ => false,
     }
@@ -3194,6 +6126,8 @@ fn resolve_follow_up_entity<'a>(
 fn message_has_calendar_follow_up_hint(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     calendar_query_has_explicit_window(&lower)
+        || is_calendar_next_free_day_query(&lower)
+        || is_calendar_overlapping_events_query(&lower)
         || has_any(
             &lower,
             &[
@@ -3229,6 +6163,179 @@ fn is_single_event_detail_follow_up(message: &str, history: &[AssistantHistoryMe
     )
 }
 
+fn is_single_download_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_download_entity_label(history).is_none() {
+        return false;
+    }
+
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "its details",
+            "it details",
+            "the details",
+            "what are its details",
+            "what is its details",
+            "what's its details",
+            "whats its details",
+            "what is its package",
+            "what's its package",
+            "what does it include",
+            "what is its checksum",
+            "what's its checksum",
+            "what is its install steps",
+            "what's its install steps",
+            "what is its compatibility",
+            "what's its compatibility",
+            "what platform is it for",
+            "what architecture is it for",
+            "tell me more about it",
+            "more about it",
+            "describe it",
+        ],
+    )
+}
+
+fn message_has_download_checksum_hint(message: &str) -> bool {
+    has_any(
+        &message.to_ascii_lowercase(),
+        &[
+            "checksum",
+            "sha256",
+            "sha-256",
+            "sha1",
+            "hash",
+            "verify",
+            "verification",
+        ],
+    )
+}
+
+fn message_has_download_install_steps_hint(message: &str) -> bool {
+    has_any(
+        &message.to_ascii_lowercase(),
+        &[
+            "install steps",
+            "installation",
+            "install it",
+            "how do i install",
+            "how to install",
+            "setup",
+            "setup steps",
+        ],
+    )
+}
+
+fn message_has_download_compatibility_hint(message: &str) -> bool {
+    has_any(
+        &message.to_ascii_lowercase(),
+        &[
+            "compatible",
+            "compatibility",
+            "platform",
+            "architecture",
+            "supported on",
+            "works on",
+            "linux",
+            "windows",
+            "mac",
+            "arm64",
+            "aarch64",
+            "amd64",
+            "x86_64",
+        ],
+    )
+}
+
+fn message_has_download_source_hint(message: &str) -> bool {
+    has_any(
+        &message.to_ascii_lowercase(),
+        &[
+            "source",
+            "source url",
+            "download source",
+            "package path",
+            "where from",
+            "origin",
+            "url",
+        ],
+    )
+}
+
+fn message_has_download_release_notes_hint(message: &str) -> bool {
+    has_any(
+        &message.to_ascii_lowercase(),
+        &[
+            "release notes",
+            "release note",
+            "notes",
+            "changelog",
+            "changes",
+            "what changed",
+            "update notes",
+        ],
+    )
+}
+
+fn is_single_library_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_library_entity_label(history).is_none() {
+        return false;
+    }
+
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "its details",
+            "it details",
+            "the details",
+            "what are its details",
+            "what is its details",
+            "what's its details",
+            "whats its details",
+            "what is its summary",
+            "what's its summary",
+            "what is its path",
+            "what are its paths",
+            "what are its settings",
+            "tell me more about it",
+            "more about it",
+            "describe it",
+        ],
+    )
+}
+
+fn is_single_library_source_paths_follow_up(
+    message: &str,
+    history: &[AssistantHistoryMessage],
+) -> bool {
+    if recent_single_library_item_entity_label(history).is_none() {
+        return false;
+    }
+
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "its paths",
+            "it paths",
+            "the paths",
+            "what are its paths",
+            "what is its paths",
+            "what's its paths",
+            "whats its paths",
+            "what is its file path",
+            "what are its file paths",
+            "where is it stored",
+            "where are its files",
+            "tell me more about it",
+            "more about it",
+            "describe it",
+        ],
+    )
+}
+
 fn is_next_calendar_event_query(message_lower: &str) -> bool {
     has_any(
         message_lower,
@@ -3251,6 +6358,135 @@ fn is_next_calendar_event_query(message_lower: &str) -> bool {
             "whats the next thing coming up in my calendar",
         ],
     ) && !has_any(message_lower, &["birthday", "birthdays"])
+}
+
+fn is_next_calendar_event_timing_query(message_lower: &str) -> bool {
+    is_next_calendar_event_query(message_lower)
+        && has_any(
+            message_lower,
+            &[
+                "how long",
+                "time until",
+                "days until",
+                "how far until",
+                "when is it",
+                "how many days",
+            ],
+        )
+}
+
+fn is_calendar_conflict_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "conflict",
+            "conflicts",
+            "clash",
+            "clashes",
+            "double booked",
+            "double-booked",
+            "overlap",
+            "overlapping",
+            "busy on",
+            "same day",
+            "same date",
+        ],
+    )
+}
+
+fn is_calendar_free_days_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "free day",
+            "free days",
+            "open day",
+            "open days",
+            "available day",
+            "available days",
+            "when am i free",
+            "what days am i free",
+            "what days are free",
+            "which days are free",
+            "what dates are free",
+            "which dates are free",
+            "when are we free",
+            "calendar gaps",
+            "open slots",
+        ],
+    )
+}
+
+fn is_calendar_next_free_day_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "next free day",
+            "next open day",
+            "first free day",
+            "next available day",
+            "next available date",
+            "when am i next free",
+            "when are we next free",
+            "when is the next free day",
+            "what is the next free day",
+            "what's the next free day",
+            "whats the next free day",
+        ],
+    )
+}
+
+fn is_calendar_overlapping_events_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "overlapping events",
+            "overlapping event",
+            "calendar overlaps",
+            "calendar overlap",
+            "overlap events",
+            "overlap calendar",
+        ],
+    )
+}
+
+fn is_calendar_busy_days_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "busy day",
+            "busy days",
+            "busiest day",
+            "busiest days",
+            "busiest",
+            "how busy",
+            "what days are busy",
+            "which days are busy",
+            "when am i busy",
+            "when are we busy",
+            "days with the most events",
+            "most booked",
+            "most packed",
+        ],
+    )
+}
+
+fn is_calendar_event_count_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "how many events",
+            "event count",
+            "count my events",
+            "count events",
+            "how full is my calendar",
+            "how full is the calendar",
+            "how busy is my calendar",
+            "how busy is the calendar",
+            "how packed is my calendar",
+            "how packed is the calendar",
+        ],
+    )
 }
 
 fn message_has_channel_follow_up_hint(message: &str) -> bool {
@@ -3360,14 +6596,1011 @@ fn message_has_network_follow_up_hint(message: &str) -> bool {
             "address",
             "addresses",
             "hostname",
+            "hostname aliases",
+            "host aliases",
+            "dns",
+            "dns servers",
+            "nameserver",
+            "nameservers",
+            "resolver",
+            "resolvers",
+            "resolv.conf",
+            "default route",
+            "default gateway",
+            "gateway",
             "remote access",
             "trusted proxy",
             "trusted proxies",
             "proxy",
             "proxies",
             "lan",
+            "/etc/hosts",
+            "what about it",
+            "tell me more about it",
+            "more about it",
+            "describe it",
+        ],
+    ) || extract_network_interface_query(message).is_some()
+        || extract_network_default_route_query(message).is_some()
+        || extract_network_hostname_aliases_query(message).is_some()
+        || extract_network_dns_servers_query(message).is_some()
+}
+
+fn message_has_service_health_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "service", "services", "agent", "agents", "healthy", "health", "status", "up", "down",
+            "runtime",
+        ],
+    ) || extract_service_detail_query(message).is_some()
+        || message_has_failed_units_follow_up_hint(message)
+        || message_has_port_conflicts_follow_up_hint(message)
+}
+
+fn message_has_port_conflicts_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "port conflict",
+            "port conflicts",
+            "conflicting port",
+            "conflicting ports",
+            "port in use",
+            "ports in use",
+            "listening socket",
+            "listening sockets",
+            "bound port",
+            "bound ports",
+            "what about it",
+            "tell me more about it",
+            "more about it",
         ],
     )
+}
+
+fn message_has_failed_units_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "failed unit",
+            "failed units",
+            "failed service",
+            "failed services",
+            "failed systemd",
+            "systemd failed",
+            "systemd units failed",
+            "systemd units are failed",
+            "what about it",
+            "tell me more about it",
+            "more about it",
+        ],
+    ) || extract_failed_unit_detail_query(message).is_some()
+}
+
+fn extract_network_default_route_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &["default route", "default gateway", "gateway", "route"],
+    ) {
+        return None;
+    }
+
+    extract_quoted_phrase(message).or_else(|| {
+        for marker in [
+            "for the default route to ",
+            "for default route to ",
+            "for the default route on ",
+            "for default route on ",
+            "for the gateway to ",
+            "for gateway to ",
+            "for the gateway on ",
+            "for gateway on ",
+            "for the route to ",
+            "for route to ",
+            "for the route on ",
+            "for route on ",
+        ] {
+            if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+                let candidate = candidate
+                    .trim()
+                    .trim_matches(|ch: char| {
+                        ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch)
+                    })
+                    .to_string();
+                if !candidate.is_empty() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    })
+}
+
+fn extract_network_hostname_aliases_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "hostname aliases",
+            "host aliases",
+            "hostnames",
+            "/etc/hosts",
+        ],
+    ) {
+        return None;
+    }
+
+    extract_quoted_phrase(message).or_else(|| {
+        for marker in [
+            "for the hostname aliases of ",
+            "for hostname aliases of ",
+            "for the host aliases of ",
+            "for host aliases of ",
+            "for the hostnames of ",
+            "for hostnames of ",
+        ] {
+            if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+                let candidate = candidate
+                    .trim()
+                    .trim_matches(|ch: char| {
+                        ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch)
+                    })
+                    .to_string();
+                if !candidate.is_empty() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    })
+}
+
+fn extract_network_dns_servers_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "dns",
+            "dns servers",
+            "nameserver",
+            "nameservers",
+            "resolver",
+            "resolvers",
+        ],
+    ) {
+        return None;
+    }
+
+    extract_quoted_phrase(message).or_else(|| {
+        for marker in [
+            "for the dns servers on ",
+            "for dns servers on ",
+            "for the dns servers of ",
+            "for dns servers of ",
+            "for the nameservers on ",
+            "for nameservers on ",
+            "for the resolvers on ",
+            "for resolvers on ",
+            "on interface ",
+            "for interface ",
+            "on the interface ",
+            "for the interface ",
+            "on ",
+            "for ",
+        ] {
+            if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+                let candidate = candidate
+                    .trim()
+                    .trim_matches(|ch: char| {
+                        ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch)
+                    })
+                    .to_string();
+                if !candidate.is_empty() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    })
+}
+
+fn extract_port_conflicts_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "port conflict",
+            "port conflicts",
+            "port in use",
+            "ports in use",
+            "listening socket",
+            "listening sockets",
+            "bound port",
+            "bound ports",
+            "what port",
+            "which port",
+            "port ",
+            "ports ",
+        ],
+    ) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "port ",
+        "port:",
+        "ports ",
+        "ports:",
+        "using port ",
+        "held on port ",
+        "held by port ",
+        "listening on port ",
+        "conflict on port ",
+        "conflicts on port ",
+    ] {
+        if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+            let candidate = candidate
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+                .to_string();
+            if !candidate.is_empty() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_port_conflict_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "who is using port",
+            "what is using port",
+            "what's using port",
+            "what process is using port",
+            "which process is using port",
+            "what is listening on port",
+            "what's listening on port",
+            "what is on port",
+            "what's on port",
+            "who is listening on port",
+            "what listens on port",
+            "which service is using port",
+            "which listener is using port",
+            "port listener",
+            "port detail",
+            "listener on port",
+            "socket on port",
+        ],
+    ) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        let quoted = quoted
+            .trim()
+            .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+            .to_string();
+        if !quoted.is_empty() {
+            return Some(quoted);
+        }
+    }
+
+    if let Some(port) = extract_port_number_candidate(message) {
+        return Some(port);
+    }
+
+    for marker in [
+        "using port ",
+        "listening on port ",
+        "on port ",
+        "port ",
+        "port:",
+        "socket ",
+        "socket:",
+        "listener ",
+        "listener:",
+    ] {
+        if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+            let candidate = candidate
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+                .to_string();
+            if !candidate.is_empty() {
+                if candidate.chars().any(|ch| ch.is_ascii_digit()) {
+                    return Some(candidate);
+                }
+                if has_any(
+                    &lower,
+                    &["socket", "listener", "listening", "using", "process"],
+                ) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_process_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "process detail",
+            "process details",
+            "process info",
+            "process information",
+            "which process",
+            "what process",
+            "find process",
+            "lookup process",
+            "pid ",
+            "ps ",
+            "command line",
+            "command-line",
+            "cmdline",
+        ],
+    ) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "pid ",
+        "pid:",
+        "process ",
+        "process:",
+        "process named ",
+        "process called ",
+        "command line ",
+        "command-line ",
+        "cmdline ",
+        "cmd ",
+    ] {
+        if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+            let candidate = candidate
+                .trim()
+                .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+                .to_string();
+            if !candidate.is_empty() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_listener_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "listener detail",
+            "listener details",
+            "listener info",
+            "listener information",
+            "socket detail",
+            "socket details",
+            "which listener",
+            "what listener",
+            "which socket",
+            "what socket",
+            "who is listening",
+            "what is listening on",
+            "what's listening on",
+            "listening on port",
+            "port listener",
+            "listener on port",
+        ],
+    ) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "port ",
+        "port:",
+        "socket ",
+        "socket:",
+        "listener ",
+        "listener:",
+        "listening on port ",
+        "listening on ",
+        "listening at ",
+        "bound to ",
+    ] {
+        if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+            let candidate = candidate
+                .trim()
+                .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+                .to_string();
+            if !candidate.is_empty() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_disk_usage_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "disk usage detail",
+            "disk usage",
+            "disk space",
+            "storage usage",
+            "filesystem usage",
+            "how much space",
+            "how much free space",
+            "how full is",
+            "how full are",
+            "used space",
+            "free space",
+        ],
+    ) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "on ",
+        "for ",
+        "path ",
+        "path:",
+        "mount ",
+        "mount:",
+        "filesystem ",
+        "filesystem:",
+        "directory ",
+        "directory:",
+        "folder ",
+        "folder:",
+    ] {
+        if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+            let candidate = candidate
+                .trim()
+                .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+                .to_string();
+            if !candidate.is_empty() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_port_number_candidate(message: &str) -> Option<String> {
+    for token in message.split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '(' | ')'))
+    {
+        let token =
+            token.trim_matches(|ch: char| ['"', '\'', '.', '?', '!', ':', ']'].contains(&ch));
+        if token.is_empty() {
+            continue;
+        }
+
+        let port_candidate = token.rsplit(':').next().unwrap_or(token);
+        let port_candidate = port_candidate
+            .trim_matches(|ch: char| !ch.is_ascii_digit())
+            .trim();
+        if port_candidate.is_empty() || port_candidate.len() > 5 {
+            continue;
+        }
+        if !port_candidate.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        if port_candidate.parse::<u16>().is_ok() {
+            return Some(port_candidate.to_string());
+        }
+    }
+    None
+}
+
+fn extract_failed_units_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "failed unit",
+            "failed units",
+            "failed service",
+            "failed services",
+            "systemd units failed",
+            "systemd units are failed",
+            "which systemd units are failed",
+            "what systemd units are failed",
+        ],
+    ) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "failed unit ",
+        "failed units ",
+        "failed service ",
+        "failed services ",
+        "systemd failed unit ",
+        "systemd failed services ",
+        "systemctl failed unit ",
+        "systemctl failed units ",
+    ] {
+        if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+            let candidate = candidate
+                .trim()
+                .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+                .to_string();
+            if !candidate.is_empty() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn is_failed_unit_detail_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "unit status",
+            "service status",
+            "status of",
+            "logs for",
+            "log for",
+            "why is",
+            "why did",
+            "what happened to",
+            "inspect",
+            "detail for",
+            "details for",
+        ],
+    )
+}
+
+fn extract_failed_unit_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !is_failed_unit_detail_query(&lower) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "details for the ",
+        "details for ",
+        "detail for the ",
+        "detail for ",
+        "status of the ",
+        "status of ",
+        "logs for the ",
+        "logs for ",
+        "log for the ",
+        "log for ",
+        "why is the ",
+        "why is ",
+        "why did the ",
+        "why did ",
+        "what happened to the ",
+        "what happened to ",
+        "inspect the ",
+        "inspect ",
+        "show me the ",
+        "show me ",
+    ] {
+        if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+            let candidate = candidate
+                .trim()
+                .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+                .to_string();
+            if !candidate.is_empty() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    extract_failed_units_query(message)
+}
+
+fn extract_network_interface_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let network_context = has_any(
+        &lower,
+        &[
+            "network",
+            "interface",
+            "interfaces",
+            "ip",
+            "ip address",
+            "address",
+            "hostname",
+            "host name",
+            "lan",
+            "local network",
+            "rustyfin",
+        ],
+    );
+    if !network_context {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        let quoted = normalize_download_artifact_query_candidate(&quoted);
+        if !quoted.is_empty() {
+            return Some(quoted);
+        }
+    }
+
+    for marker in [
+        "details for the ",
+        "details for ",
+        "summary of the ",
+        "summary of ",
+        "interface ",
+        "network interface ",
+        "ip of the ",
+        "ip of ",
+        "ip for the ",
+        "ip for ",
+        "address of the ",
+        "address of ",
+        "address for the ",
+        "address for ",
+        "hostname of the ",
+        "hostname of ",
+        "host name of the ",
+        "host name of ",
+        "host of the ",
+        "host of ",
+        "for the interface ",
+        "for interface ",
+        "what about ",
+        "how about ",
+        "and ",
+        "what else about ",
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker)
+            .and_then(|candidate| normalize_network_interface_query_candidate(&candidate))
+        else {
+            continue;
+        };
+        return Some(candidate);
+    }
+
+    None
+}
+
+fn normalize_network_interface_query_candidate(candidate: &str) -> Option<String> {
+    let mut normalized = candidate
+        .trim()
+        .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+        .to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    for prefix in [
+        "the ",
+        "network ",
+        "interface ",
+        "ip address ",
+        "ip ",
+        "address ",
+        "hostname ",
+        "host name ",
+        "host ",
+        "lan ",
+        "local ",
+    ] {
+        let lower = normalized.to_ascii_lowercase();
+        if lower.starts_with(prefix) {
+            normalized = normalized[prefix.len()..].trim().to_string();
+        }
+    }
+
+    loop {
+        let lower = normalized.to_ascii_lowercase();
+        let mut stripped = false;
+        for suffix in [
+            " interface",
+            " network",
+            " ip address",
+            " ip",
+            " address",
+            " hostname",
+            " host name",
+            " host",
+            " lan",
+            " local network",
+        ] {
+            if lower.ends_with(suffix) {
+                let keep_len = normalized.len().saturating_sub(suffix.len());
+                normalized.truncate(keep_len);
+                normalized = normalized.trim().to_string();
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn extract_service_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let service_context = has_any(
+        &lower,
+        &[
+            "service",
+            "services",
+            "agent",
+            "agents",
+            "healthy",
+            "health",
+            "status",
+            "runtime",
+            "backend",
+            "core api",
+            "inference",
+            "transcription",
+            "tmdb",
+            "youtube",
+            "rustyvault",
+            "minecraft",
+        ],
+    );
+    if !service_context {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        let quoted = normalize_download_artifact_query_candidate(&quoted);
+        if !quoted.is_empty() {
+            return Some(quoted);
+        }
+    }
+
+    for marker in [
+        "service health for the ",
+        "service health for ",
+        "service health of the ",
+        "service health of ",
+        "service status for the ",
+        "service status for ",
+        "service status of the ",
+        "service status of ",
+        "health of the ",
+        "health of ",
+        "status of the ",
+        "status of ",
+        "is the ",
+        "is my ",
+        "is ",
+        "how is the ",
+        "how is ",
+        "what about the ",
+        "what about ",
+        "how about the ",
+        "how about ",
+        "and ",
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker)
+            .and_then(|candidate| normalize_service_detail_query_candidate(&candidate))
+        else {
+            continue;
+        };
+        if marker == "and " {
+            let candidate_lower = candidate.to_ascii_lowercase();
+            if has_any(
+                &candidate_lower,
+                &[
+                    "what ", "who ", "where ", "when ", "why ", "how ", "is ", "are ", "do ",
+                    "does ", "did ", "can ", "could ", "should ", "would ", "will ",
+                ],
+            ) {
+                continue;
+            }
+        }
+        return Some(candidate);
+    }
+
+    None
+}
+
+fn normalize_service_detail_query_candidate(candidate: &str) -> Option<String> {
+    let mut normalized = candidate
+        .trim()
+        .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+
+    for prefix in ["the ", "my ", "service ", "agent ", "component "] {
+        let lower = normalized.to_ascii_lowercase();
+        if lower.starts_with(prefix) {
+            normalized = normalized[prefix.len()..].trim().to_string();
+        }
+    }
+
+    loop {
+        let lower = normalized.to_ascii_lowercase();
+        let mut stripped = false;
+        for suffix in [
+            " healthy",
+            " health",
+            " status",
+            " service",
+            " agent",
+            " component",
+            " service health",
+            " service status",
+            " up",
+            " down",
+        ] {
+            if lower.ends_with(suffix) {
+                let keep_len = normalized.len().saturating_sub(suffix.len());
+                normalized.truncate(keep_len);
+                normalized = normalized.trim().to_string();
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn extract_storage_path_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if let Some(path) = extract_posix_path_candidate(message) {
+        return Some(path);
+    }
+
+    for (needle, canonical) in [
+        ("ai model dir", "ai_model_dir"),
+        ("ai model directory", "ai_model_dir"),
+        ("model dir", "ai_model_dir"),
+        ("model directory", "ai_model_dir"),
+        ("model folder", "ai_model_dir"),
+        ("cache dir", "cache_dir"),
+        ("cache directory", "cache_dir"),
+        ("watch party audio dir", "watch_party_audio_dir"),
+        ("watch party audio directory", "watch_party_audio_dir"),
+        ("media root", "media_root"),
+        ("media path", "media_root"),
+        ("storage path", "storage"),
+    ] {
+        if lower.contains(needle) {
+            return Some(canonical.to_string());
+        }
+    }
+
+    None
+}
+
+fn extract_mount_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "mount point",
+            "mounted on",
+            "mounted at",
+            "filesystem",
+            "file system",
+            "volume",
+            "partition",
+            "mount details",
+            "mount detail",
+        ],
+    ) {
+        return None;
+    }
+
+    if let Some(path) = extract_posix_path_candidate(message) {
+        return Some(path);
+    }
+
+    for (needle, canonical) in [
+        ("ai model dir", "ai_model_dir"),
+        ("ai model directory", "ai_model_dir"),
+        ("model dir", "ai_model_dir"),
+        ("model directory", "ai_model_dir"),
+        ("model folder", "ai_model_dir"),
+        ("cache dir", "cache_dir"),
+        ("cache directory", "cache_dir"),
+        ("watch party audio dir", "watch_party_audio_dir"),
+        ("watch party audio directory", "watch_party_audio_dir"),
+        ("media root", "media_root"),
+        ("media path", "media_root"),
+        ("mount point", "mount"),
+        ("mounted on", "mount"),
+        ("mounted at", "mount"),
+        ("filesystem", "mount"),
+        ("file system", "mount"),
+        ("volume", "mount"),
+        ("partition", "mount"),
+    ] {
+        if lower.contains(needle) {
+            return Some(canonical.to_string());
+        }
+    }
+
+    None
+}
+
+fn extract_posix_path_candidate(message: &str) -> Option<String> {
+    for token in message.split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '(' | ')'))
+    {
+        let token =
+            token.trim_matches(|ch: char| ['"', '\'', '.', '?', '!', ':', ']'].contains(&ch));
+        if token.is_empty() || token.contains("://") {
+            continue;
+        }
+        if token.starts_with('/') || token.starts_with('~') || token.contains('/') {
+            let candidate = token.trim_end_matches(|ch: char| {
+                ['"', '\'', '.', '?', '!', ':', ',', ';'].contains(&ch)
+            });
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn message_has_library_listing_follow_up_hint(message: &str) -> bool {
@@ -3447,7 +7680,11 @@ fn is_transcript_summary_query(message_lower: &str) -> bool {
 
 fn message_has_downloads_follow_up_hint(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
-    extract_downloads_query(message).is_some()
+    extract_download_artifact_detail_query(message).is_some()
+        || extract_download_artifact_checksum_query(message).is_some()
+        || extract_download_artifact_install_steps_query(message).is_some()
+        || extract_download_artifact_compatibility_query(message).is_some()
+        || extract_downloads_query(message).is_some()
         || extract_downloads_follow_up_query(message).is_some()
         || extract_downloads_availability(message).is_some()
         || has_any(
@@ -3455,14 +7692,358 @@ fn message_has_downloads_follow_up_hint(message: &str) -> bool {
             &[
                 "download",
                 "downloads",
+                "artifact",
+                "artifacts",
                 "extension",
                 "app",
                 "planned",
                 "available",
                 "unavailable",
                 "companion",
+                "source",
+                "release notes",
+                "changelog",
             ],
         )
+}
+
+fn extract_download_artifact_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let detail_hint = has_any(
+        &lower,
+        &[
+            "details",
+            "detail",
+            "summary",
+            "tell me more",
+            "tell me about",
+            "more about",
+            "what is",
+            "what's",
+            "what does",
+            "what comes with",
+            "what is included",
+            "included",
+            "install",
+            "package",
+        ],
+    );
+    let download_context = has_any(
+        &lower,
+        &[
+            "download",
+            "downloads",
+            "artifact",
+            "artifacts",
+            "extension",
+            "app",
+            "companion",
+            "browser extension",
+        ],
+    );
+    if !detail_hint && !download_context {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        if detail_hint || download_context {
+            return Some(quoted);
+        }
+    }
+
+    for marker in [
+        "tell me about the ",
+        "tell me about ",
+        "tell me more about the ",
+        "tell me more about ",
+        "details for the ",
+        "details for ",
+        "summary of the ",
+        "summary of ",
+        "what is the ",
+        "what is this ",
+        "what does the ",
+        "what does this ",
+        "what comes with the ",
+        "what comes with ",
+        "package for the ",
+        "package for ",
+    ] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let mut candidate = rest[..end].trim().to_string();
+        for suffix in [
+            " package",
+            " download",
+            " downloads",
+            " artifact",
+            " artifacts",
+            " extension",
+            " app",
+            " companion",
+        ] {
+            if candidate.to_ascii_lowercase().ends_with(suffix) {
+                let keep_len = candidate.len().saturating_sub(suffix.len());
+                candidate.truncate(keep_len);
+                candidate = candidate.trim().to_string();
+            }
+        }
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn normalize_download_artifact_query_candidate(candidate: &str) -> String {
+    let mut normalized = candidate.trim().trim_matches(['"', '\'', '`']).to_string();
+    for suffix in [
+        " package",
+        " download",
+        " downloads",
+        " artifact",
+        " artifacts",
+        " extension",
+        " app",
+        " companion",
+        " install steps",
+        " installation",
+        " setup",
+        " compatibility",
+    ] {
+        if normalized.to_ascii_lowercase().ends_with(suffix) {
+            let keep_len = normalized.len().saturating_sub(suffix.len());
+            normalized.truncate(keep_len);
+            normalized = normalized.trim().to_string();
+        }
+    }
+    normalized
+}
+
+fn extract_download_artifact_checksum_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "checksum",
+            "sha256",
+            "sha-256",
+            "sha1",
+            "hash",
+            "verify",
+            "verification",
+        ],
+    ) {
+        return None;
+    }
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        let quoted = normalize_download_artifact_query_candidate(&quoted);
+        if !quoted.is_empty() {
+            return Some(quoted);
+        }
+    }
+    for marker in [
+        "checksum for the ",
+        "checksum for ",
+        "sha256 for the ",
+        "sha256 for ",
+        "sha-256 for the ",
+        "sha-256 for ",
+        "hash for the ",
+        "hash for ",
+        "verify the ",
+        "verify ",
+    ] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let candidate = normalize_download_artifact_query_candidate(&rest[..end]);
+        if !candidate.is_empty() {
+            return Some(candidate.to_string());
+        }
+    }
+    extract_download_artifact_detail_query(message)
+        .or_else(|| extract_downloads_follow_up_query(message))
+        .or_else(|| extract_downloads_query(message))
+}
+
+fn extract_download_artifact_install_steps_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "install steps",
+            "installation",
+            "install it",
+            "how do i install",
+            "how to install",
+            "setup",
+            "setup steps",
+        ],
+    ) {
+        return None;
+    }
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+    for marker in [
+        "install steps for the ",
+        "install steps for ",
+        "installation steps for the ",
+        "installation steps for ",
+        "how do i install the ",
+        "how do i install ",
+        "how to install the ",
+        "how to install ",
+        "setup for the ",
+        "setup for ",
+    ] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let candidate = normalize_download_artifact_query_candidate(&rest[..end]);
+        if !candidate.is_empty() {
+            return Some(candidate.to_string());
+        }
+    }
+    extract_download_artifact_detail_query(message)
+        .or_else(|| extract_downloads_follow_up_query(message))
+        .or_else(|| extract_downloads_query(message))
+}
+
+fn extract_download_artifact_compatibility_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "compatible",
+            "compatibility",
+            "platform",
+            "architecture",
+            "supported on",
+            "works on",
+            "linux",
+            "windows",
+            "mac",
+            "arm64",
+            "aarch64",
+            "amd64",
+            "x86_64",
+        ],
+    ) {
+        return None;
+    }
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+    if let Some(idx) = lower.find(" compatible with ") {
+        let candidate = strip_download_question_prefix(message[..idx].trim());
+        let candidate = normalize_download_artifact_query_candidate(candidate);
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+    for marker in [
+        "compatible with the ",
+        "compatible with ",
+        "compatibility for the ",
+        "compatibility for ",
+        "compatibility of the ",
+        "compatibility of ",
+        "compatible for the ",
+        "compatible for ",
+        "works on the ",
+        "works on ",
+        "platform for the ",
+        "platform for ",
+        "architecture for the ",
+        "architecture for ",
+    ] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let candidate = normalize_download_artifact_query_candidate(&rest[..end]);
+        if !candidate.is_empty() {
+            return Some(candidate.to_string());
+        }
+    }
+    extract_download_artifact_detail_query(message)
+        .or_else(|| extract_downloads_follow_up_query(message))
+        .or_else(|| extract_downloads_query(message))
+}
+
+fn extract_download_artifact_source_query(message: &str) -> Option<String> {
+    if !message_has_download_source_hint(message) {
+        return None;
+    }
+
+    extract_download_artifact_detail_query(message)
+        .or_else(|| extract_downloads_follow_up_query(message))
+        .or_else(|| extract_downloads_query(message))
+}
+
+fn extract_download_artifact_release_notes_query(message: &str) -> Option<String> {
+    if !message_has_download_release_notes_hint(message) {
+        return None;
+    }
+
+    extract_download_artifact_detail_query(message)
+        .or_else(|| extract_downloads_follow_up_query(message))
+        .or_else(|| extract_downloads_query(message))
+}
+
+fn strip_download_question_prefix(candidate: &str) -> &str {
+    let trimmed = candidate.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for prefix in [
+        "is the ",
+        "is a ",
+        "is an ",
+        "is ",
+        "are the ",
+        "are a ",
+        "are an ",
+        "are ",
+        "what is the ",
+        "what is a ",
+        "what is an ",
+        "what is ",
+        "what's the ",
+        "what's a ",
+        "what's an ",
+        "what's ",
+        "tell me about the ",
+        "tell me about ",
+        "show me the ",
+        "show me ",
+    ] {
+        if lower.starts_with(prefix) {
+            return trimmed[prefix.len()..].trim();
+        }
+    }
+    trimmed
 }
 
 fn extract_downloads_filter(message: &str) -> AssistantToolInput {
@@ -3560,6 +8141,21 @@ fn extract_calendar_event_detail_query(message: &str) -> Option<String> {
             "describe",
         ],
     );
+    if has_any(
+        &lower,
+        &[
+            "failed unit",
+            "failed units",
+            "failed service",
+            "failed services",
+            "systemd failed",
+            "systemctl failed",
+            "systemd unit",
+            "systemd service",
+        ],
+    ) {
+        return None;
+    }
     if !detail_hint && !has_any(&lower, &["calendar", "event", "events", "schedule"]) {
         return None;
     }
@@ -3719,6 +8315,16 @@ fn weather_tool_call_for_location(
         ));
     }
 
+    if is_weather_timezone_query(&lower) {
+        return Some((
+            AssistantToolName::WeatherResolveLocationAlias,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: None,
+            },
+        ));
+    }
+
     if weather_prefers_current(&lower) {
         return Some((
             AssistantToolName::WeatherGetCurrent,
@@ -3801,6 +8407,15 @@ fn extract_weather_follow_up_call(
         .or(standalone_location)
         .map(|location| merge_weather_follow_up_location(&location, &hint.location))
         .unwrap_or_else(|| hint.location.clone());
+    if is_weather_timezone_query(&lower) {
+        return Some((
+            AssistantToolName::WeatherResolveLocationAlias,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: None,
+            },
+        ));
+    }
     if is_weather_query(&lower)
         || lower.contains("today")
         || lower.contains("tomorrow")
@@ -3828,6 +8443,31 @@ fn extract_weather_follow_up_call(
         )),
         AssistantToolName::WeatherGetHistory => Some((
             AssistantToolName::WeatherGetHistory,
+            AssistantToolInput::WeatherHistory {
+                location,
+                start_date: hint.start_date?,
+                end_date: hint.end_date?,
+                label: hint
+                    .label
+                    .unwrap_or_else(|| "the same recent weather window".to_string()),
+            },
+        )),
+        AssistantToolName::WeatherResolveLocationAlias => Some((
+            AssistantToolName::WeatherResolveLocationAlias,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: None,
+            },
+        )),
+        AssistantToolName::WeatherGetForecastForDate => Some((
+            AssistantToolName::WeatherGetForecastForDate,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: hint.forecast_days.or(Some(3)),
+            },
+        )),
+        AssistantToolName::WeatherGetRecentHistoryForDate => Some((
+            AssistantToolName::WeatherGetRecentHistoryForDate,
             AssistantToolInput::WeatherHistory {
                 location,
                 start_date: hint.start_date?,
@@ -3897,6 +8537,10 @@ fn message_has_weather_follow_up_hint(message_lower: &str) -> bool {
             "sunny",
             "cloudy",
             "storm",
+            "timezone",
+            "time zone",
+            "utc offset",
+            "location alias",
         ],
     )
 }
@@ -3907,6 +8551,11 @@ fn recent_weather_hint(history: &[AssistantHistoryMessage]) -> Option<RecentWeat
             "weather_get_current" => AssistantToolName::WeatherGetCurrent,
             "weather_get_forecast" => AssistantToolName::WeatherGetForecast,
             "weather_get_history" => AssistantToolName::WeatherGetHistory,
+            "weather_resolve_location_alias" => AssistantToolName::WeatherResolveLocationAlias,
+            "weather_get_forecast_for_date" => AssistantToolName::WeatherGetForecastForDate,
+            "weather_get_recent_history_for_date" => {
+                AssistantToolName::WeatherGetRecentHistoryForDate
+            }
             _ => continue,
         };
         let location = context.input_hint.weather_location.clone()?;
@@ -3956,6 +8605,9 @@ fn is_weather_query(message_lower: &str) -> bool {
             "storm",
             "hot in ",
             "cold in ",
+            "timezone",
+            "time zone",
+            "utc offset",
         ],
     )
 }
@@ -3981,6 +8633,22 @@ fn weather_prefers_history(message_lower: &str) -> bool {
     has_any(
         message_lower,
         &["yesterday", "last night", "last week", "earlier today"],
+    )
+}
+
+fn is_weather_timezone_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "timezone",
+            "time zone",
+            "utc offset",
+            "what time zone",
+            "which timezone",
+            "which time zone",
+            "resolve location",
+            "canonical location",
+        ],
     )
 }
 
@@ -4315,6 +8983,120 @@ fn extract_public_web_search_query(message: &str) -> Option<String> {
     None
 }
 
+fn extract_library_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("what libraries")
+        || lower.contains("which libraries")
+        || lower.contains("do i have access to any libraries")
+        || lower.contains("what libraries do i have")
+    {
+        return None;
+    }
+
+    let detail_hint = has_any(
+        &lower,
+        &[
+            "tell me about",
+            "tell me more",
+            "details",
+            "detail",
+            "summary",
+            "what is my",
+            "what are my",
+            "what kind of",
+            "paths",
+            "settings",
+            "item count",
+            "items count",
+            "how many items",
+            "collection",
+        ],
+    );
+    let library_context = has_any(
+        &lower,
+        &[
+            "library",
+            "libraries",
+            "collection",
+            "collections",
+            "movie",
+            "movies",
+            "show",
+            "shows",
+            "song",
+            "songs",
+            "track",
+            "tracks",
+            "album",
+            "albums",
+            "artist",
+            "artists",
+        ],
+    );
+    if !detail_hint && !library_context {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        if detail_hint || library_context {
+            return Some(quoted);
+        }
+    }
+
+    for marker in [
+        "tell me about the ",
+        "tell me about my ",
+        "tell me about ",
+        "tell me more about the ",
+        "tell me more about my ",
+        "tell me more about ",
+        "details for the ",
+        "details for my ",
+        "details for ",
+        "summary of the ",
+        "summary of my ",
+        "summary of ",
+        "what is the ",
+        "what are the ",
+        "what is my ",
+        "what are my ",
+        "what kind of library is the ",
+        "what kind of library is my ",
+        "what kind of library is ",
+        "paths for the ",
+        "paths for my ",
+        "paths for ",
+        "settings for the ",
+        "settings for my ",
+        "settings for ",
+        "how many items in the ",
+        "how many items in my ",
+        "how many items in ",
+    ] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let mut candidate = rest[..end].trim().to_string();
+        for suffix in [" library", " libraries", " collection", " collections"] {
+            if candidate.to_ascii_lowercase().ends_with(suffix) {
+                let keep_len = candidate.len().saturating_sub(suffix.len());
+                candidate.truncate(keep_len);
+                candidate = candidate.trim().to_string();
+            }
+        }
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
 fn extract_library_search_query(message: &str) -> Option<String> {
     let lower = message.to_ascii_lowercase();
     if lower.contains("access to") {
@@ -4478,6 +9260,474 @@ fn extract_library_follow_up_query(message: &str) -> Option<String> {
     None
 }
 
+fn is_library_duplicate_titles_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "duplicate titles",
+            "duplicate title",
+            "duplicate library titles",
+            "duplicate library title",
+            "title collisions",
+            "title collision",
+            "same title",
+            "duplicates",
+            "duplicate items",
+        ],
+    ) && has_any(
+        message_lower,
+        &[
+            "library",
+            "libraries",
+            "movie",
+            "movies",
+            "show",
+            "shows",
+            "song",
+            "songs",
+            "album",
+            "albums",
+            "artist",
+            "artists",
+            "collection",
+            "collections",
+            "title",
+            "titles",
+            "item",
+            "items",
+            "media",
+        ],
+    )
+}
+
+fn is_library_missing_metadata_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "missing metadata",
+            "incomplete metadata",
+            "metadata gaps",
+            "missing metadata fields",
+            "missing fields",
+            "metadata audit",
+            "incomplete library records",
+            "missing information",
+        ],
+    ) && has_any(
+        message_lower,
+        &[
+            "library",
+            "libraries",
+            "movie",
+            "movies",
+            "show",
+            "shows",
+            "song",
+            "songs",
+            "album",
+            "albums",
+            "artist",
+            "artists",
+            "collection",
+            "collections",
+            "metadata",
+            "item",
+            "items",
+            "media",
+        ],
+    )
+}
+
+fn extract_library_media_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let media_hint = has_any(
+        &lower,
+        &[
+            "file path",
+            "media path",
+            "poster",
+            "backdrop",
+            "thumbnail",
+            "thumb",
+            "logo",
+            "artwork",
+            "cover",
+            "stored",
+            "location",
+            "where is",
+            "where's",
+        ],
+    );
+    if !media_hint {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "what is the file path for the ",
+        "what's the file path for the ",
+        "what is the file path for ",
+        "what's the file path for ",
+        "what is the media path for the ",
+        "what's the media path for the ",
+        "what is the media path for ",
+        "what's the media path for ",
+        "what is the poster for the ",
+        "what's the poster for the ",
+        "what is the poster for ",
+        "what's the poster for ",
+        "what is the artwork for the ",
+        "what's the artwork for the ",
+        "what is the artwork for ",
+        "what's the artwork for ",
+        "what is the backdrop for the ",
+        "what's the backdrop for the ",
+        "what is the backdrop for ",
+        "what's the backdrop for ",
+        "what is the thumbnail for the ",
+        "what's the thumbnail for the ",
+        "what is the thumbnail for ",
+        "what's the thumbnail for ",
+        "what is the logo for the ",
+        "what's the logo for the ",
+        "what is the logo for ",
+        "what's the logo for ",
+        "tell me the artwork for the ",
+        "tell me the artwork for ",
+        "show me the artwork for the ",
+        "show me the artwork for ",
+        "where is the ",
+        "where's the ",
+        "where is ",
+        "where's ",
+        "where is my ",
+        "where's my ",
+        "where is this ",
+        "where's this ",
+    ] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let mut candidate_text = rest[..end].trim().to_string();
+        if let Some(and_idx) = candidate_text.to_ascii_lowercase().find(" and ") {
+            let after_and = candidate_text[and_idx + 5..].trim_start();
+            if has_any(
+                &after_and.to_ascii_lowercase(),
+                &[
+                    "what ", "who ", "where ", "when ", "why ", "how ", "is ", "are ", "do ",
+                    "does ", "did ", "can ", "could ", "should ", "would ", "will ",
+                ],
+            ) {
+                candidate_text.truncate(and_idx);
+                candidate_text = candidate_text.trim().to_string();
+            }
+        }
+        let candidate = normalize_library_media_detail_query_candidate(&candidate_text);
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    extract_library_follow_up_query(message).or_else(|| extract_library_search_query(message))
+}
+
+fn normalize_library_media_detail_query_candidate(candidate: &str) -> String {
+    let mut normalized = candidate.trim().trim_matches(['"', '\'', '`']).to_string();
+    for suffix in [
+        " file path",
+        " media path",
+        " poster",
+        " backdrop",
+        " thumbnail",
+        " thumb",
+        " logo",
+        " artwork",
+        " cover",
+        " movie",
+        " show",
+        " song",
+        " track",
+        " album",
+        " artist",
+        " item",
+        " stored",
+    ] {
+        if normalized.to_ascii_lowercase().ends_with(suffix) {
+            let keep_len = normalized.len().saturating_sub(suffix.len());
+            normalized.truncate(keep_len);
+            normalized = normalized.trim().to_string();
+        }
+    }
+
+    normalized
+}
+
+fn extract_memory_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if message_has_other_domain_context(&lower) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        if is_memory_query(&lower) {
+            return Some(quoted);
+        }
+    }
+
+    for marker in [
+        "what do you know about ",
+        "what do you remember about ",
+        "what can you tell me about ",
+        "tell me about ",
+        "remember that ",
+        "remember ",
+        "who is in my ",
+        "who are in my ",
+        "who is my ",
+        "who are my ",
+        "who is ",
+        "who's ",
+        "whos ",
+        "who are ",
+        "what is my ",
+        "what are my ",
+        "what's my ",
+        "whats my ",
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker) else {
+            continue;
+        };
+        let candidate = normalize_memory_query_candidate(&candidate);
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn extract_library_source_paths_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let source_hint = has_any(
+        &lower,
+        &[
+            "source path",
+            "source paths",
+            "file path",
+            "file paths",
+            "media path",
+            "media paths",
+            "where is the file",
+            "where is the media",
+            "where are the files",
+            "where are the paths",
+        ],
+    );
+    if !source_hint {
+        return None;
+    }
+
+    extract_library_media_detail_query(message)
+        .or_else(|| extract_library_detail_query(message))
+        .or_else(|| extract_library_follow_up_query(message))
+        .or_else(|| extract_library_search_query(message))
+}
+
+fn extract_memory_exact_entity_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if message_has_other_domain_context(&lower) {
+        return None;
+    }
+    if !has_any(
+        &lower,
+        &[
+            "exact",
+            "exactly",
+            "specific",
+            "precise",
+            "full name",
+            "spelled",
+            "spelling",
+            "exact match",
+        ],
+    ) {
+        return None;
+    }
+
+    extract_memory_query(message)
+        .map(|candidate| normalize_memory_exact_entity_query_candidate(&candidate))
+        .filter(|candidate| !candidate.is_empty())
+}
+
+fn normalize_memory_exact_entity_query_candidate(candidate: &str) -> String {
+    let mut normalized = normalize_memory_query_candidate(candidate);
+    for prefix in [
+        "the exact ",
+        "the specific ",
+        "the precise ",
+        "the full name ",
+        "exact ",
+        "specific ",
+        "precise ",
+    ] {
+        let lower = normalized.to_ascii_lowercase();
+        if lower.starts_with(prefix) {
+            normalized = normalized[prefix.len()..].trim().to_string();
+        }
+    }
+    normalized
+}
+
+fn extract_memory_relation_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if message_has_other_domain_context(&lower) {
+        return None;
+    }
+
+    for marker in [
+        "who is related to ",
+        "who are related to ",
+        "who is connected to ",
+        "who are connected to ",
+        "who is linked to ",
+        "who are linked to ",
+        "who is associated with ",
+        "who are associated with ",
+        "what is the relation of ",
+        "what are the relations of ",
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker) else {
+            continue;
+        };
+        let candidate = normalize_memory_relation_query_candidate(&candidate);
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    extract_memory_query(message)
+        .map(|candidate| normalize_memory_relation_query_candidate(&candidate))
+        .filter(|candidate| !candidate.is_empty())
+}
+
+fn extract_memory_relation_path_query(message: &str) -> Option<(String, String)> {
+    let lower = message.to_ascii_lowercase();
+    if message_has_other_domain_context(&lower) {
+        return None;
+    }
+
+    for (marker, separator) in [
+        ("how is ", " related to "),
+        ("how are ", " related to "),
+        ("what is the relation between ", " and "),
+        ("what are the relations between ", " and "),
+        ("what is the relationship between ", " and "),
+        ("what is the connection between ", " and "),
+        ("relationship between ", " and "),
+        ("relation between ", " and "),
+        ("connection between ", " and "),
+        ("path between ", " and "),
+        ("between ", " and "),
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker) else {
+            continue;
+        };
+        if let Some((source, target)) = split_memory_relation_path_candidate(&candidate, separator)
+        {
+            return Some((
+                normalize_memory_relation_path_query_candidate(&source),
+                normalize_memory_relation_path_query_candidate(&target),
+            ));
+        }
+    }
+
+    None
+}
+
+fn normalize_memory_query_candidate(candidate: &str) -> String {
+    candidate
+        .trim()
+        .trim_matches(|ch: char| ['"', '\'', '`', '(', ')', ',', '.', '?', '!'].contains(&ch))
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn split_memory_relation_path_candidate(
+    candidate: &str,
+    separator: &str,
+) -> Option<(String, String)> {
+    let (left, right) = candidate.split_once(separator)?;
+    let source = left.trim();
+    let target = right.trim();
+    if source.is_empty() || target.is_empty() {
+        return None;
+    }
+    Some((source.to_string(), target.to_string()))
+}
+
+fn normalize_memory_relation_path_query_candidate(candidate: &str) -> String {
+    let mut normalized = normalize_memory_query_candidate(candidate);
+    let lower = normalized.to_ascii_lowercase();
+    for suffix in [
+        " related",
+        " related to",
+        " connected",
+        " connected to",
+        " linked",
+        " linked to",
+        " associated",
+        " associated with",
+        " relation",
+        " relations",
+        " connection",
+        " connections",
+    ] {
+        if lower.ends_with(suffix) {
+            let keep_len = normalized.len().saturating_sub(suffix.len());
+            normalized.truncate(keep_len);
+            normalized = normalized.trim().to_string();
+            break;
+        }
+    }
+    normalized
+}
+
+fn normalize_memory_relation_query_candidate(candidate: &str) -> String {
+    let mut normalized = normalize_memory_query_candidate(candidate);
+    let lower = normalized.to_ascii_lowercase();
+    for suffix in [
+        " related to",
+        " connected to",
+        " linked to",
+        " associated with",
+        " relation",
+        " relations",
+        " connection",
+        " connections",
+        " family tree",
+        " family relation",
+        " family relations",
+    ] {
+        if lower.ends_with(suffix) {
+            let keep_len = normalized.len().saturating_sub(suffix.len());
+            normalized.truncate(keep_len);
+            normalized = normalized.trim().to_string();
+            break;
+        }
+    }
+    normalized
+}
+
 fn extract_room_filter(message: &str) -> AssistantToolInput {
     AssistantToolInput::RoomsFilter {
         room_mode: detect_room_mode(message),
@@ -4590,6 +9840,10 @@ fn extract_server_filter(message: &str) -> AssistantToolInput {
 }
 
 fn is_ai_runtime_query(message_lower: &str) -> bool {
+    if is_storage_query(message_lower) {
+        return false;
+    }
+
     let explicit = has_any(
         message_lower,
         &[
@@ -4718,6 +9972,409 @@ fn is_backup_query(message_lower: &str) -> bool {
     )
 }
 
+fn is_memory_recent_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "what do you remember",
+            "what memories",
+            "recent memory",
+            "recent memories",
+            "recent facts",
+            "show me my memories",
+            "show me recent memories",
+            "what stored facts",
+            "what facts do you remember",
+        ],
+    )
+}
+
+fn is_memory_recent_changes_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "what changed recently",
+            "what changed in my memory",
+            "what changed in memory",
+            "what changed about",
+            "what updated about",
+            "recent changes",
+            "recent updates",
+            "what's new",
+            "whats new",
+            "what's new in my memory",
+            "what's new in memory",
+        ],
+    )
+}
+
+fn extract_memory_recent_changes_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if message_has_other_domain_context(&lower) {
+        return None;
+    }
+
+    for marker in [
+        "what changed recently about ",
+        "what changed about ",
+        "what updated about ",
+        "what's new about ",
+        "whats new about ",
+        "what's new in my memory about ",
+        "what's new in memory about ",
+        "what changed in my memory about ",
+        "what changed in memory about ",
+        "recent changes about ",
+        "recent updates about ",
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker) else {
+            continue;
+        };
+        let candidate = normalize_memory_query_candidate(&candidate);
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn is_memory_recent_entity_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "what people do you remember",
+            "who do you remember",
+            "recent people",
+            "recent entities",
+            "show me remembered people",
+            "show me recent people",
+            "list remembered people",
+            "list remembered entities",
+            "what entities do you remember",
+            "people you remember",
+            "entities you remember",
+        ],
+    )
+}
+
+fn is_memory_conflict_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "conflicting facts",
+            "contradictory facts",
+            "inconsistent facts",
+            "memory conflicts",
+            "what conflicts do you have about",
+            "what conflicting facts do you have about",
+            "what contradictory facts do you have about",
+            "what inconsistent facts do you have about",
+            "conflicts about",
+            "conflicting facts about",
+            "contradictory facts about",
+            "inconsistent facts about",
+        ],
+    )
+}
+
+fn extract_memory_conflict_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if message_has_other_domain_context(&lower) {
+        return None;
+    }
+
+    for marker in [
+        "what conflicting facts do you have about ",
+        "what contradictory facts do you have about ",
+        "what inconsistent facts do you have about ",
+        "what conflicts do you have about ",
+        "conflicting facts about ",
+        "contradictory facts about ",
+        "inconsistent facts about ",
+        "conflicts about ",
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker) else {
+            continue;
+        };
+        let candidate = normalize_memory_query_candidate(&candidate);
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn is_memory_provenance_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "where did you learn about",
+            "where did you learn ",
+            "what is the source of",
+            "what's the source of",
+            "what is the source for",
+            "what's the source for",
+            "what is the provenance of",
+            "what's the provenance of",
+            "source of",
+            "source for",
+            "origin of",
+            "origin for",
+            "where did you get the information about",
+            "where did that come from",
+        ],
+    )
+}
+
+fn extract_memory_provenance_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if message_has_other_domain_context(&lower) {
+        return None;
+    }
+
+    for marker in [
+        "where did you learn about ",
+        "where did you learn ",
+        "what is the source of ",
+        "what's the source of ",
+        "what is the source for ",
+        "what's the source for ",
+        "what is the provenance of ",
+        "what's the provenance of ",
+        "source of ",
+        "source for ",
+        "origin of ",
+        "origin for ",
+        "where did you get the information about ",
+        "where did that come from ",
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker) else {
+            continue;
+        };
+        let candidate = normalize_memory_query_candidate(&candidate);
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn is_memory_fact_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "what do you know about",
+            "what do you remember about",
+            "what can you tell me about",
+            "tell me about",
+            "remember that",
+            "what is my ",
+            "what are my ",
+            "what's my ",
+            "whats my ",
+            "my favorite",
+            "my preference",
+            "my preferences",
+            "my allergy",
+            "my allergies",
+            "my memory",
+            "my memories",
+            "my note",
+            "my notes",
+        ],
+    )
+}
+
+fn is_memory_exact_entity_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "exact",
+            "exactly",
+            "specific",
+            "precise",
+            "full name",
+            "spelled",
+            "spelling",
+            "exact match",
+        ],
+    ) && is_memory_entity_query(message_lower)
+        || has_any(
+            message_lower,
+            &[
+                "exact",
+                "exactly",
+                "specific",
+                "precise",
+                "full name",
+                "spelled",
+                "spelling",
+                "exact match",
+            ],
+        ) && is_memory_fact_query(message_lower)
+}
+
+fn is_memory_entity_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "who is ",
+            "who's ",
+            "whos ",
+            "who are ",
+            "who is in my",
+            "who are in my",
+            "who is my",
+            "who are my",
+            "family group",
+            "my family",
+            "my group",
+            "my people",
+            "my person",
+            "mother",
+            "father",
+            "brother",
+            "sister",
+            "sibling",
+            "partner",
+            "spouse",
+            "friend",
+            "coworker",
+            "colleague",
+        ],
+    )
+}
+
+fn is_memory_relation_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "related to",
+            "connected to",
+            "linked to",
+            "associated with",
+            "relation",
+            "relations",
+            "family tree",
+            "family relation",
+            "family relations",
+            "who is related to",
+            "who are related to",
+            "who is connected to",
+            "who are connected to",
+            "who is linked to",
+            "who are linked to",
+            "who is associated with",
+            "who are associated with",
+            "what is the relation of",
+            "what are the relations of",
+        ],
+    )
+}
+
+fn is_memory_relation_path_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    (has_any(
+        message_lower,
+        &[
+            "related to",
+            "connected to",
+            "linked to",
+            "associated with",
+            "relation between",
+            "relationship between",
+            "connection between",
+            "path between",
+        ],
+    ) && has_any(
+        message_lower,
+        &[
+            " and ",
+            " between ",
+            " how is ",
+            " how are ",
+            "what is the relation between",
+            "what are the relations between",
+        ],
+    )) || has_any(message_lower, &["||"])
+}
+
+fn is_memory_query(message_lower: &str) -> bool {
+    is_memory_recent_query(message_lower)
+        || is_memory_recent_entity_query(message_lower)
+        || is_memory_fact_query(message_lower)
+        || is_memory_entity_query(message_lower)
+        || is_memory_relation_query(message_lower)
+        || is_memory_exact_entity_query(message_lower)
+        || is_memory_relation_path_query(message_lower)
+        || is_memory_recent_changes_query(message_lower)
+        || is_memory_conflict_query(message_lower)
+        || is_memory_provenance_query(message_lower)
+}
+
+fn message_has_other_domain_context(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "calendar",
+            "birthday",
+            "download",
+            "library",
+            "movie",
+            "show",
+            "weather",
+            "network",
+            "server",
+            "room",
+            "transcript",
+            "service health",
+            "backup",
+            "storage",
+            "ai runtime",
+            "current date",
+            "current time",
+        ],
+    )
+}
+
 fn is_service_health_query(message_lower: &str) -> bool {
     has_any(
         message_lower,
@@ -4731,6 +10388,98 @@ fn is_service_health_query(message_lower: &str) -> bool {
             "what services are down",
             "is the system healthy",
             "internal services",
+        ],
+    )
+}
+
+fn is_failed_units_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "failed unit",
+            "failed units",
+            "failed service",
+            "failed services",
+            "systemd failed",
+            "systemctl failed",
+            "systemd units failed",
+            "systemd units are failed",
+            "which systemd units are failed",
+            "what systemd units are failed",
+            "what failed",
+            "what services failed",
+            "what units failed",
+            "which services failed",
+            "which units failed",
+        ],
+    )
+}
+
+fn is_port_conflicts_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "port conflict",
+            "port conflicts",
+            "port in use",
+            "ports in use",
+            "listening socket",
+            "listening sockets",
+            "bound port",
+            "bound ports",
+            "what port is in use",
+            "which port is in use",
+            "what is using port",
+            "which process is using port",
+        ],
+    )
+}
+
+fn is_network_default_route_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "default route",
+            "default gateway",
+            "gateway",
+            "outbound route",
+            "outbound gateway",
+            "which route",
+            "what route",
+            "how does traffic leave",
+            "route to the internet",
+        ],
+    )
+}
+
+fn is_network_hostname_aliases_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "hostname aliases",
+            "host aliases",
+            "hostnames",
+            "/etc/hosts",
+            "host name aliases",
+            "what names does this host have",
+            "what host names does this host have",
+        ],
+    )
+}
+
+fn is_network_dns_servers_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "dns",
+            "dns servers",
+            "dns server",
+            "nameserver",
+            "nameservers",
+            "resolver",
+            "resolvers",
+            "resolv.conf",
+            "resolvectl",
         ],
     )
 }
@@ -4751,6 +10500,11 @@ fn is_direct_model_chat_request(message: &str, history: &[AssistantHistoryMessag
         || clarification_for_message(message).is_some()
         || is_non_birthday_calendar_query(trimmed)
         || is_next_calendar_event_query(trimmed)
+        || is_next_calendar_event_timing_query(trimmed)
+        || is_calendar_conflict_query(trimmed)
+        || is_calendar_free_days_query(trimmed)
+        || is_calendar_busy_days_query(trimmed)
+        || is_calendar_event_count_query(trimmed)
         || extract_calendar_event_detail_query(message).is_some()
         || extract_birthday_query(message).is_some()
         || is_channel_activity_query(trimmed)
@@ -4761,7 +10515,10 @@ fn is_direct_model_chat_request(message: &str, history: &[AssistantHistoryMessag
         || is_ai_runtime_query(trimmed)
         || is_host_runtime_query(trimmed)
         || is_backup_query(trimmed)
+        || is_memory_query(trimmed)
         || is_service_health_query(trimmed)
+        || is_failed_units_query(trimmed)
+        || is_failed_unit_detail_query(trimmed)
         || is_transcode_query(trimmed)
         || is_storage_query(trimmed)
         || is_recent_errors_query(trimmed)
@@ -4769,8 +10526,26 @@ fn is_direct_model_chat_request(message: &str, history: &[AssistantHistoryMessag
         || extract_weather_location(message).is_some()
         || extract_public_web_url(message).is_some()
         || extract_public_web_search_query(message).is_some()
+        || extract_download_artifact_detail_query(message).is_some()
+        || extract_download_artifact_checksum_query(message).is_some()
+        || extract_download_artifact_install_steps_query(message).is_some()
+        || extract_download_artifact_compatibility_query(message).is_some()
+        || message_has_downloads_follow_up_hint(message)
+        || extract_network_interface_query(message).is_some()
+        || is_network_default_route_query(trimmed)
+        || is_network_hostname_aliases_query(trimmed)
+        || is_network_dns_servers_query(trimmed)
+        || extract_network_dns_servers_query(message).is_some()
+        || extract_service_detail_query(message).is_some()
+        || extract_failed_unit_detail_query(message).is_some()
+        || extract_library_detail_query(message).is_some()
+        || extract_library_media_detail_query(message).is_some()
+        || message_has_library_media_follow_up_hint(message)
+        || is_single_library_media_detail_follow_up(message, history)
         || extract_library_search_query(message).is_some()
         || is_recent_library_query(trimmed)
+        || is_library_duplicate_titles_query(trimmed)
+        || is_library_missing_metadata_query(trimmed)
         || message_has_library_listing_follow_up_hint(message)
         || extract_server_query(message).is_some()
         || extract_server_availability(message).is_some()
@@ -5370,6 +11145,13 @@ fn is_network_query(message_lower: &str) -> bool {
             "network status",
             "network interfaces",
             "network interface",
+            "dns",
+            "dns servers",
+            "nameserver",
+            "nameservers",
+            "resolver",
+            "resolvers",
+            "resolv.conf",
             "remote access",
             "trusted proxy",
             "trusted proxies",
@@ -5379,6 +11161,10 @@ fn is_network_query(message_lower: &str) -> bool {
             "local ip",
             "ip address",
             "ip addresses",
+            "default route",
+            "default gateway",
+            "hostname aliases",
+            "host aliases",
             "local network",
             "connect to rustyfin",
             "open rustyfin",
@@ -5938,12 +11724,12 @@ fn next_n_months_window(today: NaiveDate, months: i64) -> (NaiveDate, NaiveDate)
 #[cfg(test)]
 mod tests {
     use super::{
-        AssistantToolName, PlannerAst, clarification_for_message,
-        deterministic_current_datetime_reply, deterministic_tool_inventory_reply,
-        extract_birthday_query, parse_planner_ast, plan_tool_calls, plan_tool_calls_with_history,
-        plan_tool_calls_with_model_assist, status_label_for_tool_call,
-        unsafe_action_response_for_message, unsupported_write_response_for_message,
-        validate_planner_ast,
+        AssistantToolName, MAX_TOOL_CALLS_PER_TURN, PlannedToolCall, PlannerAst,
+        clarification_for_message, deterministic_current_datetime_reply,
+        deterministic_tool_inventory_reply, extract_birthday_query, parse_planner_ast,
+        plan_tool_calls, plan_tool_calls_with_history, plan_tool_calls_with_model_assist,
+        status_label_for_tool_call, unsafe_action_response_for_message,
+        unsupported_write_response_for_message, validate_planner_ast,
     };
     use crate::ai_assistant::dates::assistant_local_today;
     use crate::ai_assistant::types::{
@@ -6005,6 +11791,17 @@ mod tests {
             }],
             grounding_chunks: Vec::new(),
         }]
+    }
+
+    fn assert_tools_include(tools: &[PlannedToolCall], expected: &[AssistantToolName]) {
+        for tool_name in expected {
+            assert!(
+                tools.iter().any(|tool| tool.tool == *tool_name),
+                "expected tool {:?} to be planned, got {:?}",
+                tool_name,
+                tools.iter().map(|tool| tool.tool).collect::<Vec<_>>()
+            );
+        }
     }
 
     fn grounded_datetime_block(local_date: &str, weekday: &str) -> AssistantToolContextBlock {
@@ -6129,7 +11926,17 @@ mod tests {
         let tools = plan_tool_calls(
             "Who am I, what events are coming up, what rooms are active, what libraries do I have, and what servers are online?",
         );
-        assert_eq!(tools.len(), 3);
+        assert!(tools.len() <= MAX_TOOL_CALLS_PER_TURN);
+        assert_tools_include(
+            &tools,
+            &[
+                AssistantToolName::AccountGetProfileSummary,
+                AssistantToolName::CalendarListEvents,
+                AssistantToolName::RoomsListActive,
+                AssistantToolName::LibrariesListAccessible,
+                AssistantToolName::ServersListMinecraftStatus,
+            ],
+        );
     }
 
     #[test]
@@ -6140,6 +11947,17 @@ mod tests {
         match &tools[0].input {
             AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Interstellar"),
             _ => panic!("expected library search input"),
+        }
+    }
+
+    #[test]
+    fn planner_extracts_library_summary_query() {
+        let tools = plan_tool_calls("Tell me about my Movies library.");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::LibrariesGetLibrarySummary);
+        match &tools[0].input {
+            AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Movies"),
+            _ => panic!("expected library summary input"),
         }
     }
 
@@ -6171,10 +11989,30 @@ mod tests {
     }
 
     #[test]
-    fn planner_routes_vram_questions_to_ai_runtime_tool() {
+    fn planner_routes_vram_questions_to_ai_runtime_tool_direct() {
         let tools = plan_tool_calls("How much VRAM are the GPUs using right now?");
+        let ai_runtime = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::SystemGetAiRuntimeSummary)
+            .expect("expected AI runtime tool to be planned");
+        assert!(matches!(ai_runtime.input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_host_diagnostics_follow_up_to_gpu_inventory() {
+        let history = grounded_history(&["system_get_host_runtime_summary"]);
+        let tools = plan_tool_calls_with_history("What about the GPU?", &history);
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::SystemGetAiRuntimeSummary);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetGpuInventory);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_network_follow_up_to_vpn_status() {
+        let history = grounded_history(&["network_get_topology_summary"]);
+        let tools = plan_tool_calls_with_history("What about the VPN?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::NetworkGetVpnStatus);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
     }
 
@@ -6199,11 +12037,105 @@ mod tests {
     }
 
     #[test]
+    fn planner_extracts_download_artifact_detail_query() {
+        let tools = plan_tool_calls("Tell me more about the RustyVault browser extension package.");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::DownloadsGetArtifactDetails
+        );
+        match &tools[0].input {
+            AssistantToolInput::DownloadsFilter { query, .. } => {
+                assert_eq!(query.as_deref(), Some("RustyVault browser extension"));
+            }
+            _ => panic!("expected download detail filter"),
+        }
+    }
+
+    #[test]
     fn planner_detects_network_query() {
         let tools = plan_tool_calls("What network interfaces are active right now?");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::NetworkGetTopologySummary);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_detects_default_route_query() {
+        let tools = plan_tool_calls("What is the default route on this machine?");
+        assert_eq!(tools[0].tool, AssistantToolName::NetworkGetDefaultRoute);
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.tool == AssistantToolName::NetworkGetDefaultRoute)
+        );
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::NetworkDefaultRoute { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_detects_hostname_aliases_query() {
+        let tools = plan_tool_calls("What hostname aliases does this host have?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::NetworkGetHostnameAliases);
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::NetworkHostnameAliases { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_detects_dns_servers_query() {
+        let tools = plan_tool_calls("What DNS servers does this host use?");
+        assert_eq!(tools[0].tool, AssistantToolName::NetworkGetDnsServers);
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.tool == AssistantToolName::NetworkGetDnsServers)
+        );
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::NetworkDnsServers { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_routes_network_diagnostics_queries() {
+        let tools = plan_tool_calls(
+            "Show me the route table, active connections, interface counters, Wi-Fi status, and VPN status on this host.",
+        );
+        assert_tools_include(
+            &tools,
+            &[
+                AssistantToolName::NetworkGetRouteTable,
+                AssistantToolName::NetworkGetActiveConnections,
+                AssistantToolName::NetworkGetInterfaceCounters,
+                AssistantToolName::NetworkGetWifiStatus,
+                AssistantToolName::NetworkGetVpnStatus,
+            ],
+        );
+    }
+
+    #[test]
+    fn planner_routes_system_diagnostics_queries() {
+        let tools = plan_tool_calls(
+            "Show me the kernel info, CPU topology, temperature sensors, GPU inventory, PCI devices, USB devices, boot logs, and journal summary on this host.",
+        );
+        assert_tools_include(
+            &tools,
+            &[
+                AssistantToolName::SystemGetKernelInfo,
+                AssistantToolName::SystemGetCpuTopology,
+                AssistantToolName::SystemGetTemperatureSensors,
+                AssistantToolName::SystemGetGpuInventory,
+                AssistantToolName::SystemGetPciDevices,
+                AssistantToolName::SystemGetUsbDevices,
+                AssistantToolName::SystemGetBootLogSummary,
+                AssistantToolName::SystemGetJournalSummary,
+            ],
+        );
     }
 
     #[test]
@@ -6256,6 +12188,131 @@ mod tests {
             }
             _ => panic!("expected weather input"),
         }
+    }
+
+    #[test]
+    fn planner_detects_qualified_weekday_weather_forecast_query() {
+        let message = "What's the weather next Tuesday in Campile, Ireland?";
+        let tools = plan_tool_calls(message);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecast);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                let today = assistant_local_today();
+                let (date, _) =
+                    crate::ai_assistant::dates::extract_single_calendar_date(message, today)
+                        .expect("expected qualified weekday date");
+                assert_eq!(location, "Campile, Ireland");
+                assert_eq!(
+                    *forecast_days,
+                    Some(((date - today).num_days() + 1).clamp(1, 7) as u8)
+                );
+            }
+            _ => panic!("expected weather input"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_calendar_conflict_query() {
+        let message = "Do I have any calendar conflicts next Tuesday?";
+        let tools = plan_tool_calls(message);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarListDateConflicts);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow {
+                from_date,
+                to_date,
+                label,
+                ..
+            } => {
+                let today = assistant_local_today();
+                let (date, _) =
+                    crate::ai_assistant::dates::extract_single_calendar_date(message, today)
+                        .expect("expected qualified weekday date");
+                let expected = date.format("%F").to_string();
+                assert_eq!(from_date, &expected);
+                assert_eq!(to_date, &expected);
+                assert!(label.contains("next Tuesday"));
+            }
+            _ => panic!("expected calendar window input"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_calendar_free_days_query() {
+        let tools = plan_tool_calls("What days are free next week?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarListFreeDays);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow {
+                from_date,
+                to_date,
+                label,
+                ..
+            } => {
+                let today = assistant_local_today();
+                let (expected_from, expected_to, expected_label) = super::next_week_window(today);
+                assert_eq!(from_date, &expected_from.format("%F").to_string());
+                assert_eq!(to_date, &expected_to.format("%F").to_string());
+                assert_eq!(label, &expected_label);
+            }
+            _ => panic!("expected calendar window input"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_calendar_event_count_query() {
+        let tools = plan_tool_calls("How many events do I have next week?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarCountEvents);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow {
+                from_date,
+                to_date,
+                label,
+                ..
+            } => {
+                let today = assistant_local_today();
+                let (expected_from, expected_to, expected_label) = super::next_week_window(today);
+                assert_eq!(from_date, &expected_from.format("%F").to_string());
+                assert_eq!(to_date, &expected_to.format("%F").to_string());
+                assert_eq!(label, &expected_label);
+            }
+            _ => panic!("expected calendar window input"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_calendar_busy_days_query() {
+        let tools = plan_tool_calls("Which days are busiest next week?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarListBusyDays);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow {
+                from_date,
+                to_date,
+                label,
+                ..
+            } => {
+                let today = assistant_local_today();
+                let (expected_from, expected_to, expected_label) = super::next_week_window(today);
+                assert_eq!(from_date, &expected_from.format("%F").to_string());
+                assert_eq!(to_date, &expected_to.format("%F").to_string());
+                assert_eq!(label, &expected_label);
+            }
+            _ => panic!("expected calendar window input"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_next_event_timing_query() {
+        let tools = plan_tool_calls("How long until my next event?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetNextEventTiming);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
     }
 
     #[test]
@@ -6826,6 +12883,22 @@ mod tests {
     }
 
     #[test]
+    fn planner_uses_library_summary_follow_up_history() {
+        let history = history_with_follow_up_context(
+            "libraries_get_library_summary",
+            &["Movies"],
+            AssistantFollowUpInputHint::default(),
+        );
+        let tools = plan_tool_calls_with_history("Tell me more about it.", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::LibrariesGetLibrarySummary);
+        match &tools[0].input {
+            AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Movies"),
+            _ => panic!("expected library summary"),
+        }
+    }
+
+    #[test]
     fn planner_uses_downloads_follow_up_history() {
         let history = grounded_history(&["downloads_list_available_artifacts"]);
         let tools = plan_tool_calls_with_history("What about the planned ones?", &history);
@@ -7005,19 +13078,33 @@ mod tests {
     }
 
     #[test]
+    fn planner_routes_vram_questions_to_ai_runtime_tool_follow_up() {
+        let tools = plan_tool_calls("How much VRAM are the GPUs using right now?");
+        let ai_runtime = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::SystemGetAiRuntimeSummary)
+            .expect("expected AI runtime tool to be planned");
+        assert!(matches!(ai_runtime.input, AssistantToolInput::None));
+    }
+
+    #[test]
     fn planner_routes_next_event_queries_to_deterministic_tool() {
         let tools = plan_tool_calls("What's my next event?");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetNextEvent);
-        assert!(matches!(tools[0].input, AssistantToolInput::None));
+        let next_event = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::CalendarGetNextEvent)
+            .expect("expected next event tool to be planned");
+        assert!(matches!(next_event.input, AssistantToolInput::None));
     }
 
     #[test]
     fn planner_routes_next_thing_coming_up_queries_to_deterministic_tool() {
         let tools = plan_tool_calls("What is the next thing coming up in my calendar?");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetNextEvent);
-        assert!(matches!(tools[0].input, AssistantToolInput::None));
+        let next_event = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::CalendarGetNextEvent)
+            .expect("expected next event tool to be planned");
+        assert!(matches!(next_event.input, AssistantToolInput::None));
     }
 
     #[test]
@@ -7127,6 +13214,281 @@ mod tests {
     }
 
     #[test]
+    fn planner_detects_library_media_detail_query() {
+        let tools = plan_tool_calls("Where is Interstellar stored and what artwork does it have?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::LibraryGetItemMediaDetails);
+        match &tools[0].input {
+            AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Interstellar"),
+            _ => panic!("expected library media detail query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_storage_path_detail_query() {
+        let tools = plan_tool_calls("How much space is on the AI model dir?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetStoragePathDetail);
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "ai_model_dir"),
+            _ => panic!("expected storage path detail query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_mount_detail_query() {
+        let tools = plan_tool_calls("What filesystem is mounted on /srv/media?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetMountDetail);
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "/srv/media"),
+            _ => panic!("expected mount detail query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_port_conflicts_query() {
+        let tools = plan_tool_calls("What ports in use?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetPortConflicts);
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::SystemPortConflicts { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_detects_port_conflict_detail_query() {
+        let tools = plan_tool_calls("What process is using port 3008?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::SystemGetPortConflictDetail
+        );
+        match &tools[0].input {
+            AssistantToolInput::SystemPortConflicts { query } => {
+                assert_eq!(query.as_deref(), Some("3008"))
+            }
+            _ => panic!("expected port conflict detail query"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_process_detail_query() {
+        let tools = plan_tool_calls("Show me process detail for pid 1234");
+        let process_detail = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::SystemGetProcessDetail)
+            .expect("expected process detail tool to be planned");
+        match &process_detail.input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "1234"),
+            _ => panic!("expected process detail query"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_listener_detail_query() {
+        let tools = plan_tool_calls("What listener is using port 3008?");
+        let listener_detail = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::SystemGetListenerDetail)
+            .expect("expected listener detail tool to be planned");
+        match &listener_detail.input {
+            AssistantToolInput::SystemPortConflicts { query } => {
+                assert_eq!(query.as_deref(), Some("3008"))
+            }
+            _ => panic!("expected listener detail query"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_disk_usage_detail_query() {
+        let tools = plan_tool_calls("How much disk space is on /srv/media?");
+        let disk_usage_detail = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::SystemGetDiskUsageDetail)
+            .expect("expected disk usage detail tool to be planned");
+        match &disk_usage_detail.input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "/srv/media"),
+            _ => panic!("expected disk usage detail query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_failed_units_query() {
+        let tools = plan_tool_calls("Which systemd units are failed?");
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetFailedUnits);
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.tool == AssistantToolName::SystemGetFailedUnits)
+        );
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::SystemFailedUnits { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_detects_failed_unit_detail_query() {
+        let tools = plan_tool_calls("Show me details for the failed unit rustfin.service.");
+        assert!(!tools.is_empty());
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetFailedUnitDetail);
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::SystemFailedUnits { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_detects_memory_fact_query() {
+        let tools = plan_tool_calls("What do you know about Rachel?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::MemorySearchFacts);
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "Rachel"),
+            _ => panic!("expected memory fact query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_memory_entity_query() {
+        let tools = plan_tool_calls("Who is Rachel in my family?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::MemorySearchEntities);
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => {
+                assert_eq!(query, "Rachel in my family")
+            }
+            _ => panic!("expected memory entity query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_memory_recent_entities_query() {
+        let tools = plan_tool_calls("Who do you remember?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::MemoryListRecentEntities);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_detects_memory_recent_changes_query() {
+        let tools = plan_tool_calls("What's new in my memory?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::MemoryListRecentChanges);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_detects_memory_conflicting_facts_query() {
+        let tools = plan_tool_calls("What conflicting facts do you have about Rachel?");
+        let conflict_tool = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::MemoryListConflictingFacts)
+            .expect("expected memory conflict tool");
+        match &conflict_tool.input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "Rachel"),
+            _ => panic!("expected memory conflict query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_memory_provenance_query() {
+        let tools = plan_tool_calls("Where did you learn about Rachel?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::MemoryGetEntityProvenance);
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "Rachel"),
+            _ => panic!("expected memory provenance query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_memory_relation_query() {
+        let tools = plan_tool_calls("Who is Rachel related to?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::MemoryGetEntityRelations);
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "Rachel"),
+            _ => panic!("expected memory relation query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_memory_exact_entity_query() {
+        let tools = plan_tool_calls("Who is the exact Rachel in my family?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::MemoryFindExactEntity);
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => {
+                assert_eq!(query, "Rachel in my family")
+            }
+            _ => panic!("expected memory exact entity query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_memory_relation_path_query() {
+        let tools = plan_tool_calls("How is Rachel related to Bob?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::MemoryGetEntityRelationPath
+        );
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => {
+                assert_eq!(query, "Rachel || Bob")
+            }
+            _ => panic!("expected memory relation path query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_calendar_next_free_day_query() {
+        let tools = plan_tool_calls("When is the next free day?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetNextFreeDay);
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::CalendarWindow { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_detects_calendar_overlapping_events_query() {
+        let tools = plan_tool_calls("Are there any overlapping events next week?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::CalendarListOverlappingEvents
+        );
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::CalendarWindow { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_resolves_library_media_follow_up_to_media_tool() {
+        let history = history_with_follow_up_context(
+            "library_get_item_summary",
+            &["Interstellar"],
+            AssistantFollowUpInputHint {
+                library_query: Some("science fiction".to_string()),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("What is its file path?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::LibraryGetItemMediaDetails);
+        match &tools[0].input {
+            AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Interstellar"),
+            _ => panic!("expected library media detail query"),
+        }
+    }
+
+    #[test]
     fn planner_resolves_download_entity_follow_up() {
         let history = history_with_follow_up_context(
             "downloads_list_available_artifacts",
@@ -7159,11 +13521,83 @@ mod tests {
     }
 
     #[test]
+    fn planner_detects_download_artifact_checksum_query() {
+        let tools = plan_tool_calls("What is the checksum for the Rustyfin App package?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::DownloadsGetArtifactChecksum
+        );
+        match &tools[0].input {
+            AssistantToolInput::DownloadsFilter { query, .. } => {
+                assert_eq!(query.as_deref(), Some("Rustyfin"));
+            }
+            _ => panic!("expected download checksum filter"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_download_artifact_install_steps_query() {
+        let tools = plan_tool_calls("How do I install the Rustyfin App?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::DownloadsGetArtifactInstallSteps
+        );
+        match &tools[0].input {
+            AssistantToolInput::DownloadsFilter { query, .. } => {
+                assert_eq!(query.as_deref(), Some("Rustyfin"));
+            }
+            _ => panic!("expected download install steps filter"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_download_artifact_compatibility_query() {
+        let tools = plan_tool_calls("Is the Rustyfin App compatible with Linux?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::DownloadsGetArtifactCompatibility
+        );
+        match &tools[0].input {
+            AssistantToolInput::DownloadsFilter { query, .. } => {
+                assert_eq!(query.as_deref(), Some("Rustyfin"));
+            }
+            _ => panic!("expected download compatibility filter"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_library_duplicate_titles_query() {
+        let tools = plan_tool_calls("Do I have duplicate titles in my libraries?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::LibrariesFindDuplicateTitles
+        );
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_detects_library_missing_metadata_query() {
+        let tools = plan_tool_calls("What library items are missing metadata?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::LibrariesListMissingMetadata
+        );
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
     fn planner_routes_calendar_detail_queries() {
         let tools = plan_tool_calls("Tell me more about the \"Team Meeting\" event.");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetEventDetails);
-        match &tools[0].input {
+        let event_details = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::CalendarGetEventDetails)
+            .expect("expected calendar detail tool to be planned");
+        match &event_details.input {
             AssistantToolInput::CalendarWindow { query, .. } => {
                 assert_eq!(query.as_deref(), Some("Team Meeting"));
             }
@@ -7184,9 +13618,11 @@ mod tests {
             },
         );
         let tools = plan_tool_calls_with_history("what is its description?", &history);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetEventDetails);
-        match &tools[0].input {
+        let event_details = tools
+            .iter()
+            .find(|tool| tool.tool == AssistantToolName::CalendarGetEventDetails)
+            .expect("expected calendar detail tool to be planned");
+        match &event_details.input {
             AssistantToolInput::CalendarWindow { query, .. } => {
                 assert_eq!(query.as_deref(), Some("Iwans birthday (2026-06-09)"));
             }
@@ -7268,15 +13704,24 @@ mod tests {
     #[test]
     fn planner_routes_admin_ops_queries() {
         let tools = plan_tool_calls("What services are down right now?");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::SystemGetServiceHealth);
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.tool == AssistantToolName::SystemGetServiceHealth)
+        );
 
         let tools = plan_tool_calls("Summarize recent errors.");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::SystemGetRecentErrors);
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.tool == AssistantToolName::SystemGetRecentErrors)
+        );
 
         let tools = plan_tool_calls("How much free space is left on disk?");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::SystemGetStorageSummary);
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.tool == AssistantToolName::SystemGetStorageSummary)
+        );
     }
 }

@@ -4,6 +4,7 @@ use chrono::NaiveDate;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
+use super::dates::{assistant_local_today, extract_single_calendar_date};
 use super::types::{
     AssistantToolContextBlock, decode_assistant_clarification_message,
     encode_assistant_clarification_message,
@@ -927,6 +928,25 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
         );
     }
 
+    if let Some(requested_day) = exact_requested_forecast_day(message) {
+        if let Some(focus_day) = forecast
+            .forecast_days
+            .iter()
+            .find(|day| day.date == requested_day.format("%F").to_string())
+        {
+            return format_forecast_single_day_reply(
+                message,
+                &forecast.resolved_location,
+                focus_day,
+            );
+        }
+        return format!(
+            "I loaded the forecast for {}, but the returned forecast window does not include {} yet.",
+            forecast.resolved_location,
+            format_weather_display_date(&requested_day.format("%F").to_string())
+        );
+    }
+
     let focus_day = if lower.contains("tomorrow") && forecast.forecast_days.len() >= 2 {
         &forecast.forecast_days[1]
     } else {
@@ -966,19 +986,7 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
     }
 
     if forecast.forecast_days.len() == 1 {
-        return format!(
-            "Forecast for {} on {}: {}. High {}, low {}. Precipitation probability up to {}.",
-            forecast.resolved_location,
-            focus_day_label,
-            focus_day.condition,
-            optional_temperature(focus_day.temperature_max_c),
-            optional_temperature(focus_day.temperature_min_c),
-            format_percent(
-                focus_day
-                    .precipitation_probability_max_percent
-                    .unwrap_or(0.0)
-            )
-        );
+        return format_forecast_single_day_reply(message, &forecast.resolved_location, focus_day);
     }
 
     let warmest = forecast
@@ -1033,6 +1041,53 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
         optional_temperature(coldest),
         wettest_summary.unwrap_or_else(|| "No precipitation signal was returned.".to_string()),
         focus_summary
+    )
+}
+
+fn exact_requested_forecast_day(message: &str) -> Option<NaiveDate> {
+    let (date, matched_text) = extract_single_calendar_date(message, assistant_local_today())?;
+    match matched_text.to_ascii_lowercase().as_str() {
+        "today" | "tomorrow" | "yesterday" | "day after tomorrow" => None,
+        _ => Some(date),
+    }
+}
+
+fn format_forecast_single_day_reply(
+    message: &str,
+    resolved_location: &str,
+    focus_day: &PublicWeatherForecastDay,
+) -> String {
+    let lower = message.to_ascii_lowercase();
+    let focus_day_label = format_weather_display_date(&focus_day.date);
+
+    if lower.contains("rain") || lower.contains("raining") || lower.contains("precip") {
+        let probability = focus_day
+            .precipitation_probability_max_percent
+            .unwrap_or(0.0);
+        return format!(
+            "{} in {} on {}. Condition: {}. High {}, low {}. Precipitation probability up to {}.",
+            rain_probability_sentence(probability),
+            resolved_location,
+            focus_day_label,
+            focus_day.condition,
+            optional_temperature(focus_day.temperature_max_c),
+            optional_temperature(focus_day.temperature_min_c),
+            format_percent(probability)
+        );
+    }
+
+    format!(
+        "Forecast for {} on {}: {}. High {}, low {}. Precipitation probability up to {}.",
+        resolved_location,
+        focus_day_label,
+        focus_day.condition,
+        optional_temperature(focus_day.temperature_max_c),
+        optional_temperature(focus_day.temperature_min_c),
+        format_percent(
+            focus_day
+                .precipitation_probability_max_percent
+                .unwrap_or(0.0)
+        )
     )
 }
 
@@ -1548,6 +1603,81 @@ mod tests {
         .expect("expected deterministic reply");
         assert!(reply.contains("There is a 99% chance of rain on Saturday, 04-04-26."));
         assert!(reply.contains("Tomorrow looks like drizzle on Saturday, 04-04-26."));
+    }
+
+    #[test]
+    fn deterministic_weather_reply_uses_exact_requested_forecast_day_for_next_tuesday() {
+        let message = "What's the weather next Tuesday in Campile, Ireland?";
+        let today = crate::ai_assistant::dates::assistant_local_today();
+        let (requested_date, _) =
+            crate::ai_assistant::dates::extract_single_calendar_date(message, today)
+                .expect("expected qualified weekday date");
+        let start_date = requested_date - chrono::Duration::days(6);
+        let expected_label = requested_date.format("%A, %d-%m-%y").to_string();
+
+        let reply = deterministic_weather_reply(
+            message,
+            &[super::AssistantToolContextBlock {
+                tool: "weather_get_forecast",
+                label: "7-day weather forecast for Campile, County Wexford, Leinster, Ireland"
+                    .to_string(),
+                status: "ok",
+                data: serde_json::to_value(PublicWeatherForecastSummary {
+                    source: "open_meteo".to_string(),
+                    location_query: "Campile, Ireland".to_string(),
+                    resolved_location: "Campile, County Wexford, Leinster, Ireland".to_string(),
+                    timezone: "Europe/Dublin".to_string(),
+                    current: PublicWeatherCurrentSummary {
+                        source: "open_meteo".to_string(),
+                        location_query: "Campile, Ireland".to_string(),
+                        resolved_location: "Campile, County Wexford, Leinster, Ireland".to_string(),
+                        timezone: "Europe/Dublin".to_string(),
+                        observed_at: "2026-04-02T10:00".to_string(),
+                        condition: "Cloudy".to_string(),
+                        temperature_c: 11.0,
+                        apparent_temperature_c: Some(10.0),
+                        humidity_percent: Some(84.0),
+                        wind_speed_kmh: Some(12.0),
+                    },
+                    forecast_days: (0..7)
+                        .map(|offset| {
+                            let date = start_date + chrono::Duration::days(offset);
+                            let is_requested = date == requested_date;
+                            PublicWeatherForecastDay {
+                                date: date.format("%F").to_string(),
+                                condition: if is_requested {
+                                    "Sunny".to_string()
+                                } else {
+                                    "Cloudy".to_string()
+                                },
+                                temperature_min_c: Some(if is_requested { 9.0 } else { 6.0 }),
+                                temperature_max_c: Some(if is_requested { 18.0 } else { 12.0 }),
+                                precipitation_probability_max_percent: Some(if is_requested {
+                                    5.0
+                                } else {
+                                    20.0
+                                }),
+                                precipitation_sum_mm: Some(0.0),
+                                precipitation_hours: Some(0.0),
+                                rain_sum_mm: Some(0.0),
+                                showers_sum_mm: Some(0.0),
+                                snowfall_sum_cm: Some(0.0),
+                            }
+                        })
+                        .collect(),
+                })
+                .unwrap(),
+            }],
+        )
+        .expect("expected exact-day weather reply");
+
+        assert!(reply.contains(&format!(
+            "Forecast for Campile, County Wexford, Leinster, Ireland on {expected_label}: Sunny."
+        )));
+        assert!(reply.contains("High 18C, low 9C."));
+        assert!(!reply.contains("over the next 7 days"));
+        assert!(!reply.contains("\n- "));
+        assert!(!reply.contains("Cloudy"));
     }
 
     #[test]

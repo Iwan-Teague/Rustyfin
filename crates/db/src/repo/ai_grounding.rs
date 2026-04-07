@@ -649,6 +649,71 @@ pub async fn search_retrieval_chunks(
         .collect::<Result<Vec<_>, sqlx::Error>>()
 }
 
+pub async fn get_retrieval_chunk_for_user_by_key(
+    pool: &DbPool,
+    user_id: &str,
+    is_admin: bool,
+    allowed_library_ids: Option<&[String]>,
+    chunk_key: &str,
+) -> Result<Option<AiRetrievalChunkRow>, sqlx::Error> {
+    let chunk_key = chunk_key.trim();
+    if chunk_key.is_empty() {
+        return Ok(None);
+    }
+
+    let mut next_param = 2usize;
+    let scope_clause = retrieval_scope_clause(
+        is_admin,
+        allowed_library_ids,
+        "owner_user_id",
+        "access_key",
+        &mut next_param,
+    );
+    let sql = format!(
+        "SELECT id, chunk_key, source_kind, source_id, source_sub_id, owner_user_id, access_scope,
+                access_key, topic_key, title, excerpt, search_text, score_boost, metadata_json,
+                source_ts, updated_ts
+         FROM ai_retrieval_chunk
+         WHERE chunk_key = $1 AND {scope_clause}"
+    );
+
+    let mut query_builder = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+            f64,
+            String,
+            i64,
+            i64,
+        ),
+    >(&sql)
+    .bind(chunk_key)
+    .bind(is_admin)
+    .bind(user_id);
+
+    if let Some(library_ids) = allowed_library_ids
+        && !is_admin
+    {
+        for library_id in library_ids {
+            query_builder = query_builder.bind(library_id);
+        }
+    }
+
+    let row = query_builder.fetch_optional(pool).await?;
+    Ok(row.map(map_retrieval_chunk_row))
+}
+
 pub async fn upsert_entity_node(
     pool: &DbPool,
     params: UpsertAiEntityNodeParams<'_>,
@@ -813,6 +878,89 @@ pub async fn search_entity_nodes_for_user(
     if let Some(query) = normalized_query {
         query_builder = query_builder.bind(query);
     }
+
+    let rows = query_builder.fetch_all(pool).await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(AiEntityNodeHit {
+                row: AiEntityNodeRow {
+                    id: row.try_get("id")?,
+                    node_key: row.try_get("node_key")?,
+                    owner_user_id: row.try_get("owner_user_id")?,
+                    conversation_id: row.try_get("conversation_id")?,
+                    turn_id: row.try_get("turn_id")?,
+                    entity_kind: row.try_get("entity_kind")?,
+                    label: row.try_get("label")?,
+                    identifier: row.try_get("identifier")?,
+                    topic_key: row.try_get("topic_key")?,
+                    source_chunk_id: row.try_get("source_chunk_id")?,
+                    access_scope: row.try_get("access_scope")?,
+                    access_key: row.try_get("access_key")?,
+                    ordinal: row.try_get("ordinal")?,
+                    metadata_json: row.try_get("metadata_json")?,
+                    created_ts: row.try_get("created_ts")?,
+                    updated_ts: row.try_get("updated_ts")?,
+                },
+                rank: row.try_get("rank")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+}
+
+pub async fn find_exact_entity_nodes_for_user(
+    pool: &DbPool,
+    user_id: &str,
+    is_admin: bool,
+    topic_key: Option<&str>,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<AiEntityNodeHit>, sqlx::Error> {
+    let normalized_query = query.trim();
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let query_param_index = 3 + usize::from(topic_key.is_some());
+    let mut sql = String::from(
+        "SELECT id, node_key, owner_user_id, conversation_id, turn_id, entity_kind, label, identifier,
+                topic_key, source_chunk_id, access_scope, access_key, ordinal, metadata_json,
+                created_ts, updated_ts,
+                CASE
+                    WHEN lower(trim(coalesce(label, ''))) = lower(trim($QUERY_PARAM)) THEN 1.0
+                    WHEN lower(trim(coalesce(identifier, ''))) = lower(trim($QUERY_PARAM)) THEN 0.95
+                    WHEN lower(trim(coalesce(node_key, ''))) = lower(trim($QUERY_PARAM)) THEN 0.9
+                    WHEN regexp_replace(lower(coalesce(label, '')), '[^[:alnum:]]+', ' ', 'g') = regexp_replace(lower($QUERY_PARAM), '[^[:alnum:]]+', ' ', 'g') THEN 0.85
+                    WHEN regexp_replace(lower(coalesce(identifier, '')), '[^[:alnum:]]+', ' ', 'g') = regexp_replace(lower($QUERY_PARAM), '[^[:alnum:]]+', ' ', 'g') THEN 0.8
+                    WHEN regexp_replace(lower(coalesce(node_key, '')), '[^[:alnum:]]+', ' ', 'g') = regexp_replace(lower($QUERY_PARAM), '[^[:alnum:]]+', ' ', 'g') THEN 0.75
+                    ELSE 0.5
+                END AS rank",
+    );
+    sql = sql.replace("$QUERY_PARAM", &format!("${query_param_index}"));
+    sql.push_str(" FROM ai_entity_node WHERE ");
+    sql.push_str(&memory_scope_clause("owner_user_id"));
+
+    if let Some(topic_key) = topic_key {
+        sql.push_str(&format!(" AND topic_key = $3"));
+        let _ = topic_key;
+    }
+    sql.push_str(&format!(
+        " AND (
+            lower(trim(coalesce(label, ''))) = lower(trim(${query_param_index}))
+            OR lower(trim(coalesce(identifier, ''))) = lower(trim(${query_param_index}))
+            OR lower(trim(coalesce(node_key, ''))) = lower(trim(${query_param_index}))
+            OR regexp_replace(lower(coalesce(label, '')), '[^[:alnum:]]+', ' ', 'g') = regexp_replace(lower(${query_param_index}), '[^[:alnum:]]+', ' ', 'g')
+            OR regexp_replace(lower(coalesce(identifier, '')), '[^[:alnum:]]+', ' ', 'g') = regexp_replace(lower(${query_param_index}), '[^[:alnum:]]+', ' ', 'g')
+            OR regexp_replace(lower(coalesce(node_key, '')), '[^[:alnum:]]+', ' ', 'g') = regexp_replace(lower(${query_param_index}), '[^[:alnum:]]+', ' ', 'g')
+        )"
+    ));
+    sql.push_str(" ORDER BY rank DESC, updated_ts DESC, ordinal ASC, node_key ASC LIMIT ");
+    sql.push_str(&limit.clamp(1, 200).to_string());
+
+    let mut query_builder = sqlx::query(&sql).bind(is_admin).bind(user_id);
+    if let Some(topic_key) = topic_key {
+        query_builder = query_builder.bind(topic_key);
+    }
+    query_builder = query_builder.bind(normalized_query);
 
     let rows = query_builder.fetch_all(pool).await?;
     rows.into_iter()

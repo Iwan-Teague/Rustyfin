@@ -1,15 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStrExt;
 
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use serde::Serialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sqlx::Row;
 
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, assistant_local_year};
+use super::diagnostics;
 use super::outcomes::normalize_tool_result;
 use super::provider::{ToolExecutionProfile, default_tool_registry};
 use super::registry::AssistantToolName;
@@ -33,6 +35,312 @@ struct AccountProfileSummary {
     accessible_library_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct MemoryFactSummary {
+    id: String,
+    memory_key: String,
+    memory_type: String,
+    topic_key: Option<String>,
+    title: String,
+    content: String,
+    weight: f64,
+    created_ts: i64,
+    updated_ts: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryFactsEnvelope {
+    query: Option<String>,
+    topic_key: Option<String>,
+    total_count: usize,
+    facts: Vec<MemoryFactSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MemoryEntitySummary {
+    id: String,
+    node_key: String,
+    entity_kind: String,
+    label: String,
+    identifier: Option<String>,
+    topic_key: Option<String>,
+    source_chunk_id: Option<String>,
+    access_scope: String,
+    ordinal: i64,
+    created_ts: i64,
+    updated_ts: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryEntitiesEnvelope {
+    query: Option<String>,
+    total_count: usize,
+    entities: Vec<MemoryEntitySummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryExactEntitiesEnvelope {
+    query: Option<String>,
+    matched_by: String,
+    total_count: usize,
+    entities: Vec<MemoryEntitySummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryRecentChangesEnvelope {
+    query: Option<String>,
+    fact_count: usize,
+    entity_count: usize,
+    facts: Vec<MemoryFactSummary>,
+    entities: Vec<MemoryEntitySummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryFactConflictSummary {
+    topic_key: Option<String>,
+    title: String,
+    fact_count: usize,
+    distinct_content_count: usize,
+    facts: Vec<MemoryFactSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryConflictingFactsEnvelope {
+    query: Option<String>,
+    total_count: usize,
+    conflict_group_count: usize,
+    conflicts: Vec<MemoryFactConflictSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MemoryEntityProvenanceSummary {
+    id: String,
+    node_key: String,
+    conversation_id: Option<String>,
+    turn_id: Option<String>,
+    entity_kind: String,
+    label: String,
+    identifier: Option<String>,
+    topic_key: Option<String>,
+    source_chunk_id: Option<String>,
+    access_scope: String,
+    ordinal: i64,
+    created_ts: i64,
+    updated_ts: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MemoryProvenanceChunkSummary {
+    chunk_key: String,
+    source_kind: String,
+    source_id: String,
+    source_sub_id: Option<String>,
+    owner_user_id: Option<String>,
+    access_scope: String,
+    access_key: Option<String>,
+    topic_key: Option<String>,
+    title: String,
+    excerpt: String,
+    source_ts: i64,
+    updated_ts: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryEntityProvenanceEnvelope {
+    query: String,
+    matched_by: String,
+    entity: Option<MemoryEntityProvenanceSummary>,
+    source_chunk: Option<MemoryProvenanceChunkSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryPersonSummaryEnvelope {
+    query: String,
+    matched_by: String,
+    person: MemoryEntitySummary,
+    relation_count: usize,
+    relations: Vec<MemoryEntityRelationSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MemoryEntityRelationSummary {
+    direction: String,
+    relation: String,
+    weight: f64,
+    created_ts: i64,
+    entity: MemoryEntitySummary,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryEntityRelationsEnvelope {
+    query: String,
+    matched_by: String,
+    total_count: usize,
+    root: Option<MemoryEntitySummary>,
+    relations: Vec<MemoryEntityRelationSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryEntityRelationPathEnvelope {
+    query: String,
+    source_query: String,
+    target_query: String,
+    matched_by: String,
+    total_hops: usize,
+    path_found: bool,
+    root: Option<MemoryEntitySummary>,
+    target: Option<MemoryEntitySummary>,
+    path: Vec<MemoryEntityRelationSummary>,
+}
+
+fn memory_fact_summary_from_row(
+    row: rustfin_db::repo::ai_grounding::AiMemoryItemRow,
+) -> MemoryFactSummary {
+    MemoryFactSummary {
+        id: row.id,
+        memory_key: row.memory_key,
+        memory_type: row.memory_type,
+        topic_key: row.topic_key,
+        title: row.title,
+        content: row.content,
+        weight: row.weight,
+        created_ts: row.created_ts,
+        updated_ts: row.updated_ts,
+    }
+}
+
+fn memory_entity_summary_from_row(
+    row: rustfin_db::repo::ai_grounding::AiEntityNodeRow,
+) -> MemoryEntitySummary {
+    MemoryEntitySummary {
+        id: row.id,
+        node_key: row.node_key,
+        entity_kind: row.entity_kind,
+        label: row.label,
+        identifier: row.identifier,
+        topic_key: row.topic_key,
+        source_chunk_id: row.source_chunk_id,
+        access_scope: row.access_scope,
+        ordinal: row.ordinal,
+        created_ts: row.created_ts,
+        updated_ts: row.updated_ts,
+    }
+}
+
+fn memory_entity_summary_from_pg_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<MemoryEntitySummary, sqlx::Error> {
+    Ok(MemoryEntitySummary {
+        id: row.try_get("id")?,
+        node_key: row.try_get("node_key")?,
+        entity_kind: row.try_get("entity_kind")?,
+        label: row.try_get("label")?,
+        identifier: row.try_get("identifier")?,
+        topic_key: row.try_get("topic_key")?,
+        source_chunk_id: row.try_get("source_chunk_id")?,
+        access_scope: row.try_get("access_scope")?,
+        ordinal: row.try_get("ordinal")?,
+        created_ts: row.try_get("created_ts")?,
+        updated_ts: row.try_get("updated_ts")?,
+    })
+}
+
+fn memory_entity_provenance_summary_from_row(
+    row: rustfin_db::repo::ai_grounding::AiEntityNodeRow,
+) -> MemoryEntityProvenanceSummary {
+    MemoryEntityProvenanceSummary {
+        id: row.id,
+        node_key: row.node_key,
+        conversation_id: row.conversation_id,
+        turn_id: row.turn_id,
+        entity_kind: row.entity_kind,
+        label: row.label,
+        identifier: row.identifier,
+        topic_key: row.topic_key,
+        source_chunk_id: row.source_chunk_id,
+        access_scope: row.access_scope,
+        ordinal: row.ordinal,
+        created_ts: row.created_ts,
+        updated_ts: row.updated_ts,
+    }
+}
+
+fn memory_provenance_chunk_summary_from_row(
+    row: rustfin_db::repo::ai_grounding::AiRetrievalChunkRow,
+) -> MemoryProvenanceChunkSummary {
+    MemoryProvenanceChunkSummary {
+        chunk_key: row.chunk_key,
+        source_kind: row.source_kind,
+        source_id: row.source_id,
+        source_sub_id: row.source_sub_id,
+        owner_user_id: row.owner_user_id,
+        access_scope: row.access_scope,
+        access_key: row.access_key,
+        topic_key: row.topic_key,
+        title: row.title,
+        excerpt: row.excerpt,
+        source_ts: row.source_ts,
+        updated_ts: row.updated_ts,
+    }
+}
+
+async fn memory_relation_rows_for_node(
+    pool: &sqlx::PgPool,
+    user_id: &str,
+    is_admin: bool,
+    node_key: &str,
+    direction: &str,
+    limit: i64,
+) -> Result<Vec<MemoryEntityRelationSummary>, String> {
+    let neighbor_column = if direction == "outgoing" {
+        "to_node_key"
+    } else {
+        "from_node_key"
+    };
+    let match_column = if direction == "outgoing" {
+        "from_node_key"
+    } else {
+        "to_node_key"
+    };
+    let sql = format!(
+        "SELECT e.relation, e.weight, e.created_ts AS relation_created_ts,
+                n.id, n.node_key, n.owner_user_id, n.conversation_id, n.turn_id,
+                n.entity_kind, n.label, n.identifier, n.topic_key, n.source_chunk_id,
+                n.access_scope, n.access_key, n.ordinal, n.metadata_json,
+                n.created_ts, n.updated_ts
+         FROM ai_entity_edge e
+         JOIN ai_entity_node n ON n.node_key = e.{neighbor_column}
+         WHERE e.{match_column} = $1
+           AND (n.access_scope = 'shared'
+                OR (n.access_scope = 'admin' AND $2)
+                OR (n.access_scope = 'user' AND n.owner_user_id = $3))
+         ORDER BY e.weight DESC, e.created_ts DESC, n.ordinal ASC
+         LIMIT $4"
+    );
+
+    let rows = sqlx::query(&sql)
+        .bind(node_key)
+        .bind(is_admin)
+        .bind(user_id)
+        .bind(limit.clamp(1, 16))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("failed to load memory relations: {e}"))?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(MemoryEntityRelationSummary {
+                direction: direction.to_string(),
+                relation: row.try_get("relation")?,
+                weight: row.try_get("weight")?,
+                created_ts: row.try_get("relation_created_ts")?,
+                entity: memory_entity_summary_from_pg_row(&row)?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(|e| format!("failed to parse memory relations: {e}"))
+}
+
 #[derive(Debug, Serialize)]
 struct LibrarySummary {
     library_id: String,
@@ -51,6 +359,231 @@ struct DownloadArtifactSummary {
     install_mode: Option<String>,
     summary: String,
     detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DownloadArtifactDetailSummary {
+    query: Option<String>,
+    matched_by: String,
+    #[serde(flatten)]
+    artifact: crate::downloads::DownloadArtifactResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct DownloadArtifactSourceSummary {
+    query: Option<String>,
+    matched_by: String,
+    source_url: Option<String>,
+    download_path: Option<String>,
+    external_url: Option<String>,
+    #[serde(flatten)]
+    artifact: crate::downloads::DownloadArtifactResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct DownloadArtifactReleaseNotesSummary {
+    query: Option<String>,
+    matched_by: String,
+    release_notes: String,
+    #[serde(flatten)]
+    artifact: crate::downloads::DownloadArtifactResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct LibraryDuplicateTitleSummary {
+    title: String,
+    item_count: usize,
+    library_count: usize,
+    libraries: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LibraryMissingMetadataItemSummary {
+    library_id: String,
+    library_name: Option<String>,
+    id: String,
+    title: String,
+    kind: String,
+    year: Option<i64>,
+    missing_fields: Vec<String>,
+    created_ts: i64,
+    updated_ts: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct NetworkInterfaceDetailSummary {
+    query: String,
+    matched_by: String,
+    host_label: Option<String>,
+    remote_access_enabled: bool,
+    access: crate::network_diagnostics::RustyfinNetworkAccess,
+    interface: crate::network_diagnostics::NetworkNodeSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct NetworkDefaultRouteSummary {
+    route: String,
+    gateway: Option<String>,
+    interface: Option<String>,
+    source: Option<String>,
+    metric: Option<u32>,
+    protocol: Option<String>,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NetworkDefaultRouteEnvelope {
+    query: Option<String>,
+    matched_by: String,
+    total_count: usize,
+    routes: Vec<NetworkDefaultRouteSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct NetworkHostnameAliasSummary {
+    name: String,
+    source: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NetworkHostnameAliasesEnvelope {
+    query: Option<String>,
+    matched_by: String,
+    host_label: Option<String>,
+    canonical_hostname: Option<String>,
+    fqdn: Option<String>,
+    total_count: usize,
+    aliases: Vec<NetworkHostnameAliasSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct NetworkDnsServerSummary {
+    scope: String,
+    interface: Option<String>,
+    server: String,
+    source: String,
+    raw_line: String,
+}
+
+#[derive(Debug, Serialize)]
+struct NetworkDnsServersEnvelope {
+    query: Option<String>,
+    matched_by: String,
+    total_count: usize,
+    dns_servers: Vec<NetworkDnsServerSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SystemPortConflictProcessSummary {
+    name: String,
+    pid: Option<u32>,
+    fd: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SystemPortConflictSummary {
+    protocol: String,
+    state: String,
+    local_address: String,
+    local_port: Option<u16>,
+    peer_address: Option<String>,
+    raw_entry: String,
+    processes: Vec<SystemPortConflictProcessSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemPortConflictsEnvelope {
+    query: Option<String>,
+    matched_by: String,
+    total_count: usize,
+    conflicts: Vec<SystemPortConflictSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemPortConflictDetailEnvelope {
+    query: Option<String>,
+    matched_by: String,
+    total_count: usize,
+    #[serde(flatten)]
+    conflict: SystemPortConflictSummary,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SystemFailedUnitSummary {
+    name: String,
+    load: String,
+    active: String,
+    sub: String,
+    description: String,
+    recent_log_excerpt: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SystemFailedUnitsEnvelope {
+    query: Option<String>,
+    matched_by: String,
+    total_count: usize,
+    units: Vec<SystemFailedUnitSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SystemFailedUnitDetailStatusSummary {
+    fragment_path: Option<String>,
+    unit_file_state: Option<String>,
+    main_pid: Option<u32>,
+    exec_main_code: Option<String>,
+    exec_main_status: Option<String>,
+    status_excerpt: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SystemFailedUnitDetailSummary {
+    unit: SystemFailedUnitSummary,
+    status: SystemFailedUnitDetailStatusSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemFailedUnitDetailEnvelope {
+    #[serde(default)]
+    query: Option<String>,
+    matched_by: String,
+    detail: SystemFailedUnitDetailSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemProcessDetailEnvelope {
+    query: String,
+    matched_by: String,
+    total_count: usize,
+    processes: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemListenerDetailEnvelope {
+    query: String,
+    matched_by: String,
+    total_count: usize,
+    listeners: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct SystemDiskUsageDetailEnvelope {
+    query: String,
+    matched_by: String,
+    mount_point: String,
+    source: String,
+    fs_type: String,
+    root: String,
+    mount_id: u64,
+    parent_id: u64,
+    major_minor: String,
+    options: String,
+    super_options: String,
+    total_bytes: u64,
+    free_bytes: u64,
+    available_bytes: u64,
+    used_bytes: u64,
+    used_percent: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,6 +606,66 @@ struct LibraryItemDetailSummary {
     library_name: Option<String>,
     overview: Option<String>,
     duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct LibraryItemMediaDetailSummary {
+    query: String,
+    matched_by: String,
+    library_id: String,
+    id: String,
+    title: String,
+    kind: String,
+    year: Option<i64>,
+    library_name: Option<String>,
+    overview: Option<String>,
+    duration_ms: Option<i64>,
+    parent_id: Option<String>,
+    media_path: Option<String>,
+    resolved_media_path: Option<String>,
+    first_descendant_media_path: Option<String>,
+    poster_url: Option<String>,
+    backdrop_url: Option<String>,
+    logo_url: Option<String>,
+    thumb_url: Option<String>,
+    created_ts: i64,
+    updated_ts: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct LibraryPathSummary {
+    id: String,
+    path: String,
+    is_read_only: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LibrarySettingsSummary {
+    show_images: bool,
+    prefer_local_artwork: bool,
+    fetch_online_artwork: bool,
+    tmdb_store_in_media_dir: bool,
+    tmdb_sync_on_new_media: bool,
+    tmdb_sync_schedule: String,
+    tmdb_last_sync_ts: Option<i64>,
+    tmdb_fetch_posters: bool,
+    tmdb_fetch_backdrops: bool,
+    tmdb_fetch_metadata: bool,
+    tmdb_fetch_reviews: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LibraryDetailSummary {
+    query: Option<String>,
+    matched_by: String,
+    id: String,
+    name: String,
+    kind: String,
+    item_count: i64,
+    paths: Vec<LibraryPathSummary>,
+    settings: LibrarySettingsSummary,
+    created_ts: i64,
+    updated_ts: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -171,6 +764,21 @@ struct CalendarEventDetailSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct CalendarEventSeriesSummary {
+    query: String,
+    matched_by: String,
+    title: String,
+    event_type: String,
+    recurrence: String,
+    scope: String,
+    owner_username: Option<String>,
+    total_count: usize,
+    first_event_date: Option<String>,
+    last_event_date: Option<String>,
+    occurrences: Vec<CalendarEventSummary>,
+}
+
+#[derive(Debug, Serialize)]
 struct NextCalendarEventSummary {
     id: String,
     title: String,
@@ -180,6 +788,41 @@ struct NextCalendarEventSummary {
     owner_username: Option<String>,
     recurrence: String,
     next_occurs_on: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CalendarEventOccurrenceSummary {
+    title: String,
+    event_date: String,
+    occurs_on: String,
+    scope: String,
+    event_type: String,
+    owner_username: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CalendarConflictDaySummary {
+    date: String,
+    event_count: usize,
+    events: Vec<CalendarEventOccurrenceSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct CalendarFreeDaySummary {
+    date: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CalendarDayCountSummary {
+    date: String,
+    event_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CalendarBusyDaySummary {
+    date: String,
+    event_count: usize,
+    events: Vec<CalendarEventOccurrenceSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -329,7 +972,7 @@ struct BackupAssistantSummary {
     message: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ServiceHealthComponentSummary {
     name: String,
     status: String,
@@ -342,6 +985,13 @@ struct ServiceHealthComponentSummary {
 struct ServiceHealthAssistantSummary {
     all_healthy: bool,
     components: Vec<ServiceHealthComponentSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct ServiceDetailSummary {
+    query: String,
+    matched_by: String,
+    component: ServiceHealthComponentSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -400,6 +1050,23 @@ struct StorageAssistantSummary {
     reason: Option<String>,
     mounts: Vec<StorageMountSummary>,
     paths: Vec<StoragePathSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct StoragePathDetailSummary {
+    query: String,
+    matched_by: String,
+    #[serde(flatten)]
+    path: StoragePathSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct StorageMountDetailEnvelope {
+    query: String,
+    matched_by: String,
+    total_count: usize,
+    #[serde(flatten)]
+    mount: StorageMountSummary,
 }
 
 #[cfg(target_os = "linux")]
@@ -534,6 +1201,70 @@ pub(crate) async fn execute_account_provider_tool(
     tool_context_block_for_result(call.tool, result)
 }
 
+pub(crate) async fn execute_ai_runtime_provider_tool(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::AiListBackgroundJobs => ai_list_background_jobs(state).await,
+        AssistantToolName::AiGetJobStatus => ai_get_job_status(state).await,
+        AssistantToolName::AiGetToolRegistry => ai_get_tool_registry().await,
+        AssistantToolName::AiGetGroundingSummary => ai_get_grounding_summary(state).await,
+        AssistantToolName::AiGetLastToolFailureReason => {
+            ai_get_last_tool_failure_reason(state).await
+        }
+        _ => Err(format!(
+            "{} is not handled by the AI runtime provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_memory_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::MemoryListRecentFacts => memory_list_recent_facts(state, context).await,
+        AssistantToolName::MemoryListRecentEntities => {
+            memory_list_recent_entities(state, context).await
+        }
+        AssistantToolName::MemorySearchFacts => memory_search_facts(state, context, call).await,
+        AssistantToolName::MemorySearchEntities => {
+            memory_search_entities(state, context, call).await
+        }
+        AssistantToolName::MemoryFindExactEntity => {
+            memory_find_exact_entity(state, context, call).await
+        }
+        AssistantToolName::MemoryGetEntityRelations => {
+            memory_get_entity_relations(state, context, call).await
+        }
+        AssistantToolName::MemoryGetEntityRelationPath => {
+            memory_get_entity_relation_path(state, context, call).await
+        }
+        AssistantToolName::MemoryListRecentChanges => {
+            memory_list_recent_changes(state, context, call).await
+        }
+        AssistantToolName::MemoryListConflictingFacts => {
+            memory_list_conflicting_facts(state, context, call).await
+        }
+        AssistantToolName::MemoryGetEntityProvenance => {
+            memory_get_entity_provenance(state, context, call).await
+        }
+        AssistantToolName::MemoryGetPersonSummary => {
+            memory_get_person_summary(state, context, call).await
+        }
+        _ => Err(format!(
+            "{} is not handled by the memory provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
 pub(crate) async fn execute_calendar_provider_tool(
     state: &AppState,
     context: &AssistantContext,
@@ -542,6 +1273,37 @@ pub(crate) async fn execute_calendar_provider_tool(
     let result = match call.tool {
         AssistantToolName::CalendarListEvents => calendar_list_events(state, context, call).await,
         AssistantToolName::CalendarGetNextEvent => calendar_get_next_event(state, context).await,
+        AssistantToolName::CalendarListDateConflicts => {
+            calendar_list_date_conflicts(state, context, call).await
+        }
+        AssistantToolName::CalendarListFreeDays => {
+            calendar_list_free_days(state, context, call).await
+        }
+        AssistantToolName::CalendarGetNextFreeDay => {
+            calendar_get_next_free_day(state, context, call).await
+        }
+        AssistantToolName::CalendarGetEventByExactDateAndTitle => {
+            calendar_get_event_by_exact_date_and_title(state, context, call).await
+        }
+        AssistantToolName::CalendarGetEventSeriesSummary => {
+            calendar_get_event_series_summary(state, context, call).await
+        }
+        AssistantToolName::CalendarGetNextFreeSlot => {
+            calendar_get_next_free_slot(state, context, call).await
+        }
+        AssistantToolName::CalendarListBusySlots => {
+            calendar_list_busy_slots(state, context, call).await
+        }
+        AssistantToolName::CalendarGetNextEventTiming => {
+            calendar_get_next_event_timing(state, context).await
+        }
+        AssistantToolName::CalendarCountEvents => calendar_count_events(state, context, call).await,
+        AssistantToolName::CalendarListBusyDays => {
+            calendar_list_busy_days(state, context, call).await
+        }
+        AssistantToolName::CalendarListOverlappingEvents => {
+            calendar_list_overlapping_events(state, context, call).await
+        }
         AssistantToolName::CalendarUpcomingBirthdays => {
             calendar_upcoming_birthdays(state, context, call).await
         }
@@ -630,6 +1392,24 @@ pub(crate) async fn execute_downloads_provider_tool(
         AssistantToolName::DownloadsListAvailableArtifacts => {
             downloads_list_available_artifacts(state, context, call).await
         }
+        AssistantToolName::DownloadsGetArtifactDetails => {
+            downloads_get_artifact_details(state, context, call).await
+        }
+        AssistantToolName::DownloadsGetArtifactSource => {
+            downloads_get_artifact_source(state, context, call).await
+        }
+        AssistantToolName::DownloadsGetReleaseNotes => {
+            downloads_get_release_notes(state, context, call).await
+        }
+        AssistantToolName::DownloadsGetArtifactChecksum => {
+            downloads_get_artifact_checksum(state, context, call).await
+        }
+        AssistantToolName::DownloadsGetArtifactInstallSteps => {
+            downloads_get_artifact_install_steps(state, context, call).await
+        }
+        AssistantToolName::DownloadsGetArtifactCompatibility => {
+            downloads_get_artifact_compatibility(state, context, call).await
+        }
         _ => Err(format!(
             "{} is not handled by the downloads provider.",
             call.tool.as_str()
@@ -647,12 +1427,27 @@ pub(crate) async fn execute_libraries_provider_tool(
         AssistantToolName::LibrariesListAccessible => {
             libraries_list_accessible(state, context).await
         }
+        AssistantToolName::LibrariesGetLibrarySummary => {
+            libraries_get_library_summary(state, context, call).await
+        }
         AssistantToolName::LibrarySearchTitles => library_search_titles(state, context, call).await,
         AssistantToolName::LibraryGetItemSummary => {
             library_get_item_summary(state, context, call).await
         }
+        AssistantToolName::LibraryGetItemMediaDetails => {
+            library_get_item_media_details(state, context, call).await
+        }
+        AssistantToolName::LibraryGetItemSourcePaths => {
+            library_get_item_source_paths(state, context, call).await
+        }
         AssistantToolName::LibrariesGetRecentlyAdded => {
             libraries_get_recently_added(state, context, call).await
+        }
+        AssistantToolName::LibrariesFindDuplicateTitles => {
+            libraries_find_duplicate_titles(state, context).await
+        }
+        AssistantToolName::LibrariesListMissingMetadata => {
+            libraries_list_missing_metadata(state, context).await
         }
         _ => Err(format!(
             "{} is not handled by the libraries provider.",
@@ -671,6 +1466,27 @@ pub(crate) async fn execute_network_provider_tool(
         AssistantToolName::NetworkGetTopologySummary => {
             network_get_topology_summary(state, context).await
         }
+        AssistantToolName::NetworkGetInterfaceDetails => {
+            network_get_interface_details(state, context, call).await
+        }
+        AssistantToolName::NetworkGetDefaultRoute => {
+            network_get_default_route(state, context, call).await
+        }
+        AssistantToolName::NetworkGetHostnameAliases => {
+            network_get_hostname_aliases(state, context, call).await
+        }
+        AssistantToolName::NetworkGetDnsServers => {
+            network_get_dns_servers(state, context, call).await
+        }
+        AssistantToolName::NetworkGetRouteTable => diagnostics::network_get_route_table().await,
+        AssistantToolName::NetworkGetActiveConnections => {
+            diagnostics::network_get_active_connections().await
+        }
+        AssistantToolName::NetworkGetInterfaceCounters => {
+            diagnostics::network_get_interface_counters().await
+        }
+        AssistantToolName::NetworkGetWifiStatus => diagnostics::network_get_wifi_status().await,
+        AssistantToolName::NetworkGetVpnStatus => diagnostics::network_get_vpn_status().await,
         _ => Err(format!(
             "{} is not handled by the network provider.",
             call.tool.as_str()
@@ -729,9 +1545,59 @@ pub(crate) async fn execute_system_provider_tool(
         }
         AssistantToolName::SystemGetBackupSummary => system_get_backup_summary(state).await,
         AssistantToolName::SystemGetServiceHealth => system_get_service_health(state).await,
+        AssistantToolName::SystemGetServiceDetail => {
+            system_get_service_detail(state, context, call).await
+        }
         AssistantToolName::SystemGetTranscodeSummary => system_get_transcode_summary(state).await,
         AssistantToolName::SystemGetStorageSummary => system_get_storage_summary(state).await,
+        AssistantToolName::SystemGetStoragePathDetail => {
+            system_get_storage_path_detail(state, context, call).await
+        }
+        AssistantToolName::SystemGetMountDetail => {
+            system_get_mount_detail(state, context, call).await
+        }
+        AssistantToolName::SystemGetPortConflicts => {
+            system_get_port_conflicts(state, context, call).await
+        }
+        AssistantToolName::SystemGetPortConflictDetail => {
+            system_get_port_conflict_detail(state, context, call).await
+        }
+        AssistantToolName::SystemGetFailedUnits => {
+            system_get_failed_units(state, context, call).await
+        }
+        AssistantToolName::SystemGetFailedUnitDetail => {
+            system_get_failed_unit_detail(state, context, call).await
+        }
         AssistantToolName::SystemGetRecentErrors => system_get_recent_errors(state).await,
+        AssistantToolName::SystemGetKernelInfo => diagnostics::system_get_kernel_info().await,
+        AssistantToolName::SystemGetCpuTopology => diagnostics::system_get_cpu_topology().await,
+        AssistantToolName::SystemGetTemperatureSensors => {
+            diagnostics::system_get_temperature_sensors().await
+        }
+        AssistantToolName::SystemGetBlockDeviceInventory => {
+            diagnostics::system_get_block_device_inventory().await
+        }
+        AssistantToolName::SystemGetFilesystemTable => {
+            diagnostics::system_get_filesystem_table().await
+        }
+        AssistantToolName::SystemGetGpuInventory => diagnostics::system_get_gpu_inventory().await,
+        AssistantToolName::SystemGetPciDevices => diagnostics::system_get_pci_devices().await,
+        AssistantToolName::SystemGetUsbDevices => diagnostics::system_get_usb_devices().await,
+        AssistantToolName::SystemGetBootLogSummary => {
+            diagnostics::system_get_boot_log_summary().await
+        }
+        AssistantToolName::SystemGetJournalSummary => {
+            diagnostics::system_get_journal_summary().await
+        }
+        AssistantToolName::SystemGetProcessDetail => {
+            system_get_process_detail(state, context, call).await
+        }
+        AssistantToolName::SystemGetListenerDetail => {
+            system_get_listener_detail(state, context, call).await
+        }
+        AssistantToolName::SystemGetDiskUsageDetail => {
+            system_get_disk_usage_detail(state, context, call).await
+        }
         _ => Err(format!(
             "{} is not handled by the system provider.",
             call.tool.as_str()
@@ -749,6 +1615,15 @@ pub(crate) async fn execute_weather_provider_tool(
         AssistantToolName::WeatherGetCurrent => weather_get_current(state, context, call).await,
         AssistantToolName::WeatherGetForecast => weather_get_forecast(state, context, call).await,
         AssistantToolName::WeatherGetHistory => weather_get_history(state, context, call).await,
+        AssistantToolName::WeatherResolveLocationAlias => {
+            weather_resolve_location_alias(state, context, call).await
+        }
+        AssistantToolName::WeatherGetForecastForDate => {
+            weather_get_forecast_for_date(state, context, call).await
+        }
+        AssistantToolName::WeatherGetRecentHistoryForDate => {
+            weather_get_recent_history_for_date(state, context, call).await
+        }
         _ => Err(format!(
             "{} is not handled by the weather provider.",
             call.tool.as_str()
@@ -867,6 +1742,9 @@ pub fn build_follow_up_context(
         AssistantToolName::WeatherGetCurrent
             | AssistantToolName::WeatherGetForecast
             | AssistantToolName::WeatherGetHistory
+            | AssistantToolName::WeatherResolveLocationAlias
+            | AssistantToolName::WeatherGetForecastForDate
+            | AssistantToolName::WeatherGetRecentHistoryForDate
     ) {
         input_hint.weather_location = block
             .data
@@ -877,7 +1755,9 @@ pub fn build_follow_up_context(
             .map(str::to_string)
             .or(input_hint.weather_location);
     }
-    if call.tool == AssistantToolName::CalendarGetNextEvent {
+    if call.tool == AssistantToolName::CalendarGetNextEvent
+        || call.tool == AssistantToolName::CalendarGetNextEventTiming
+    {
         input_hint.calendar_label = Some("your next calendar event".to_string());
         input_hint.calendar_from_date = block
             .data
@@ -892,6 +1772,54 @@ pub fn build_follow_up_context(
             .and_then(|event| event.get("title"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+    } else if matches!(
+        call.tool,
+        AssistantToolName::CalendarListDateConflicts | AssistantToolName::CalendarListFreeDays
+    ) {
+        input_hint.calendar_label = Some(block.label.clone());
+        let first_date = if call.tool == AssistantToolName::CalendarListDateConflicts {
+            block
+                .data
+                .get("conflict_days")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|days| days.first())
+                .and_then(|day| day.get("date"))
+        } else {
+            block
+                .data
+                .get("free_days")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|days| days.first())
+                .and_then(|day| day.get("date"))
+        };
+        input_hint.calendar_from_date = first_date
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        input_hint.calendar_to_date = input_hint.calendar_from_date.clone();
+    } else if matches!(
+        call.tool,
+        AssistantToolName::CalendarCountEvents | AssistantToolName::CalendarListBusyDays
+    ) {
+        input_hint.calendar_label = Some(block.label.clone());
+        let first_date = if call.tool == AssistantToolName::CalendarCountEvents {
+            block
+                .data
+                .get("day_counts")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|days| days.first())
+                .and_then(|day| day.get("date"))
+        } else {
+            block
+                .data
+                .get("busy_days")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|days| days.first())
+                .and_then(|day| day.get("date"))
+        };
+        input_hint.calendar_from_date = first_date
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        input_hint.calendar_to_date = input_hint.calendar_from_date.clone();
     } else if matches!(
         call.tool,
         AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday
@@ -964,6 +1892,863 @@ async fn account_get_profile_summary(
     ))
 }
 
+async fn memory_list_recent_facts(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, serde_json::Value), String> {
+    let rows =
+        rustfin_db::repo::ai_grounding::list_memory_items_for_user(&state.db, &context.user_id, 12)
+            .await
+            .map_err(|e| format!("failed to load recent memory facts: {e}"))?;
+
+    let facts = rows
+        .into_iter()
+        .map(memory_fact_summary_from_row)
+        .collect::<Vec<_>>();
+
+    Ok((
+        "Recent stored memory facts".to_string(),
+        serde_json::to_value(MemoryFactsEnvelope {
+            query: None,
+            topic_key: None,
+            total_count: facts.len(),
+            facts,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_search_facts(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing memory query".to_string());
+    };
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("missing memory query".to_string());
+    }
+
+    let hits = rustfin_db::repo::ai_grounding::search_memory_items_for_user(
+        &state.db,
+        &context.user_id,
+        None,
+        Some(query),
+        12,
+    )
+    .await
+    .map_err(|e| format!("failed to search memory facts: {e}"))?;
+
+    let facts = hits
+        .into_iter()
+        .map(|hit| memory_fact_summary_from_row(hit.row))
+        .collect::<Vec<_>>();
+
+    Ok((
+        format!("Memory facts matching \"{query}\""),
+        serde_json::to_value(MemoryFactsEnvelope {
+            query: Some(query.to_string()),
+            topic_key: None,
+            total_count: facts.len(),
+            facts,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_search_entities(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing entity query".to_string());
+    };
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("missing entity query".to_string());
+    }
+
+    let hits = rustfin_db::repo::ai_grounding::search_entity_nodes_for_user(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        None,
+        Some(query),
+        12,
+    )
+    .await
+    .map_err(|e| format!("failed to search stored entities: {e}"))?;
+
+    let entities = hits
+        .into_iter()
+        .map(|hit| memory_entity_summary_from_row(hit.row))
+        .collect::<Vec<_>>();
+
+    Ok((
+        format!("Stored entities matching \"{query}\""),
+        serde_json::to_value(MemoryEntitiesEnvelope {
+            query: Some(query.to_string()),
+            total_count: entities.len(),
+            entities,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_list_recent_entities(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, serde_json::Value), String> {
+    let hits = rustfin_db::repo::ai_grounding::search_entity_nodes_for_user(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        None,
+        None,
+        12,
+    )
+    .await
+    .map_err(|e| format!("failed to load recent entities: {e}"))?;
+
+    let entities = hits
+        .into_iter()
+        .map(|hit| memory_entity_summary_from_row(hit.row))
+        .collect::<Vec<_>>();
+
+    Ok((
+        "Recent stored entities".to_string(),
+        serde_json::to_value(MemoryEntitiesEnvelope {
+            query: None,
+            total_count: entities.len(),
+            entities,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_list_recent_changes(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let query = match &call.input {
+        AssistantToolInput::SystemService { query } => {
+            let query = query.trim();
+            if query.is_empty() {
+                None
+            } else {
+                Some(query.to_string())
+            }
+        }
+        _ => None,
+    };
+
+    let fact_rows = if let Some(query) = query.as_deref() {
+        rustfin_db::repo::ai_grounding::search_memory_items_for_user(
+            &state.db,
+            &context.user_id,
+            None,
+            Some(query),
+            8,
+        )
+        .await
+        .map_err(|e| format!("failed to load recent memory changes: {e}"))?
+        .into_iter()
+        .map(|hit| hit.row)
+        .collect::<Vec<_>>()
+    } else {
+        rustfin_db::repo::ai_grounding::list_memory_items_for_user(&state.db, &context.user_id, 8)
+            .await
+            .map_err(|e| format!("failed to load recent memory changes: {e}"))?
+    };
+
+    let entity_hits = if let Some(query) = query.as_deref() {
+        rustfin_db::repo::ai_grounding::search_entity_nodes_for_user(
+            &state.db,
+            &context.user_id,
+            context.is_admin,
+            None,
+            Some(query),
+            8,
+        )
+        .await
+        .map_err(|e| format!("failed to load recent memory changes: {e}"))?
+    } else {
+        rustfin_db::repo::ai_grounding::search_entity_nodes_for_user(
+            &state.db,
+            &context.user_id,
+            context.is_admin,
+            None,
+            None,
+            8,
+        )
+        .await
+        .map_err(|e| format!("failed to load recent memory changes: {e}"))?
+    };
+
+    let mut facts = fact_rows
+        .into_iter()
+        .map(memory_fact_summary_from_row)
+        .collect::<Vec<_>>();
+    facts.sort_by(|left, right| {
+        right
+            .updated_ts
+            .cmp(&left.updated_ts)
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.memory_key.cmp(&right.memory_key))
+    });
+
+    let mut entities = entity_hits
+        .into_iter()
+        .map(|hit| memory_entity_summary_from_row(hit.row))
+        .collect::<Vec<_>>();
+    entities.sort_by(|left, right| {
+        right
+            .updated_ts
+            .cmp(&left.updated_ts)
+            .then_with(|| left.label.cmp(&right.label))
+            .then_with(|| left.node_key.cmp(&right.node_key))
+    });
+
+    let label = match query.as_deref() {
+        Some(query) => format!("Recent stored memory changes matching \"{query}\""),
+        None => "Recent stored memory changes".to_string(),
+    };
+
+    Ok((
+        label,
+        serde_json::to_value(MemoryRecentChangesEnvelope {
+            query,
+            fact_count: facts.len(),
+            entity_count: entities.len(),
+            facts,
+            entities,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_list_conflicting_facts(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let query = match &call.input {
+        AssistantToolInput::SystemService { query } => {
+            let query = query.trim();
+            if query.is_empty() {
+                None
+            } else {
+                Some(query.to_string())
+            }
+        }
+        _ => None,
+    };
+
+    let fact_rows = if let Some(query) = query.as_deref() {
+        rustfin_db::repo::ai_grounding::search_memory_items_for_user(
+            &state.db,
+            &context.user_id,
+            None,
+            Some(query),
+            40,
+        )
+        .await
+        .map_err(|e| format!("failed to load conflicting memory facts: {e}"))?
+        .into_iter()
+        .map(|hit| hit.row)
+        .collect::<Vec<_>>()
+    } else {
+        rustfin_db::repo::ai_grounding::list_memory_items_for_user(&state.db, &context.user_id, 40)
+            .await
+            .map_err(|e| format!("failed to load conflicting memory facts: {e}"))?
+    };
+
+    let mut grouped = BTreeMap::<String, MemoryFactConflictBuilder>::new();
+    for fact in fact_rows.iter() {
+        let normalized_title = normalize_memory_fact_key(&fact.title);
+        if normalized_title.is_empty() {
+            continue;
+        }
+        let group_key = format!(
+            "{}|{}",
+            fact.topic_key
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            normalized_title
+        );
+        let builder = grouped
+            .entry(group_key)
+            .or_insert_with(|| MemoryFactConflictBuilder::new(fact));
+        builder.push_fact(fact.clone());
+    }
+
+    let mut conflicts = grouped
+        .into_values()
+        .filter_map(MemoryFactConflictBuilder::into_summary)
+        .collect::<Vec<_>>();
+    conflicts.sort_by(|left, right| {
+        right
+            .fact_count
+            .cmp(&left.fact_count)
+            .then_with(|| {
+                right
+                    .distinct_content_count
+                    .cmp(&left.distinct_content_count)
+            })
+            .then_with(|| left.title.cmp(&right.title))
+    });
+
+    let label = match query.as_deref() {
+        Some(query) => format!("Conflicting stored memory facts matching \"{query}\""),
+        None => "Conflicting stored memory facts".to_string(),
+    };
+
+    Ok((
+        label,
+        serde_json::to_value(MemoryConflictingFactsEnvelope {
+            query,
+            total_count: fact_rows.len(),
+            conflict_group_count: conflicts.len(),
+            conflicts,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_get_entity_provenance(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing entity query".to_string());
+    };
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("missing entity query".to_string());
+    }
+
+    let (entity, matched_by) =
+        resolve_unique_memory_entity_for_query(state, context, query).await?;
+    let source_chunk = if let Some(source_chunk_id) = entity.source_chunk_id.as_deref() {
+        let allowed_library_ids = if context.is_admin {
+            None
+        } else {
+            Some(
+                rustfin_db::repo::users::get_library_access(&state.db, &context.user_id)
+                    .await
+                    .map_err(|e| format!("failed to load library permissions: {e}"))?
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        rustfin_db::repo::ai_grounding::get_retrieval_chunk_for_user_by_key(
+            &state.db,
+            &context.user_id,
+            context.is_admin,
+            allowed_library_ids.as_deref(),
+            source_chunk_id,
+        )
+        .await
+        .map_err(|e| format!("failed to load entity provenance: {e}"))?
+        .map(memory_provenance_chunk_summary_from_row)
+    } else {
+        None
+    };
+
+    let entity_summary = memory_entity_provenance_summary_from_row(entity);
+    let label = format!("Stored entity provenance for \"{query}\"");
+
+    Ok((
+        label,
+        serde_json::to_value(MemoryEntityProvenanceEnvelope {
+            query: query.to_string(),
+            matched_by,
+            entity: Some(entity_summary),
+            source_chunk,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+struct MemoryFactConflictBuilder {
+    topic_key: Option<String>,
+    title: String,
+    facts: Vec<MemoryFactSummary>,
+    distinct_contents: HashSet<String>,
+}
+
+impl MemoryFactConflictBuilder {
+    fn new(fact: &rustfin_db::repo::ai_grounding::AiMemoryItemRow) -> Self {
+        let summary = memory_fact_summary_from_row(fact.clone());
+        let mut distinct_contents = HashSet::new();
+        distinct_contents.insert(normalize_memory_fact_content_key(&summary.content));
+        Self {
+            topic_key: summary.topic_key.clone(),
+            title: summary.title.clone(),
+            facts: vec![summary],
+            distinct_contents,
+        }
+    }
+
+    fn push_fact(&mut self, fact: rustfin_db::repo::ai_grounding::AiMemoryItemRow) {
+        let summary = memory_fact_summary_from_row(fact);
+        self.distinct_contents
+            .insert(normalize_memory_fact_content_key(&summary.content));
+        self.facts.push(summary);
+    }
+
+    fn into_summary(mut self) -> Option<MemoryFactConflictSummary> {
+        if self.facts.len() < 2 || self.distinct_contents.len() < 2 {
+            return None;
+        }
+        self.facts.sort_by(|left, right| {
+            right
+                .updated_ts
+                .cmp(&left.updated_ts)
+                .then_with(|| left.title.cmp(&right.title))
+                .then_with(|| left.memory_key.cmp(&right.memory_key))
+        });
+        Some(MemoryFactConflictSummary {
+            topic_key: self.topic_key,
+            title: self.title,
+            fact_count: self.facts.len(),
+            distinct_content_count: self.distinct_contents.len(),
+            facts: self.facts,
+        })
+    }
+}
+
+fn normalize_memory_fact_key(value: &str) -> String {
+    normalize_memory_text_key(value)
+}
+
+fn normalize_memory_fact_content_key(value: &str) -> String {
+    normalize_memory_text_key(value)
+}
+
+fn normalize_memory_text_key(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch.is_ascii_whitespace() {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+async fn resolve_unique_memory_entity_for_query(
+    state: &AppState,
+    context: &AssistantContext,
+    query: &str,
+) -> Result<(rustfin_db::repo::ai_grounding::AiEntityNodeRow, String), String> {
+    let exact_hits = rustfin_db::repo::ai_grounding::find_exact_entity_nodes_for_user(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        None,
+        query,
+        8,
+    )
+    .await
+    .map_err(|e| format!("failed to load exact entity matches: {e}"))?;
+
+    if exact_hits.len() == 1 {
+        let hit = exact_hits
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("no stored entity matched \"{query}\""))?;
+        return Ok((hit.row, "exact entity search".to_string()));
+    }
+    if exact_hits.len() > 1 {
+        return Err(format!(
+            "multiple stored entities matched \"{query}\"; which one do you mean?"
+        ));
+    }
+
+    let fuzzy_hits = rustfin_db::repo::ai_grounding::search_entity_nodes_for_user(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        None,
+        Some(query),
+        8,
+    )
+    .await
+    .map_err(|e| format!("failed to search stored entities: {e}"))?;
+
+    if fuzzy_hits.len() == 1 {
+        let hit = fuzzy_hits
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("no stored entity matched \"{query}\""))?;
+        return Ok((hit.row, "entity search".to_string()));
+    }
+    if fuzzy_hits.is_empty() {
+        return Err(format!("no stored entity matched \"{query}\""));
+    }
+
+    Err(format!(
+        "multiple stored entities matched \"{query}\"; which one do you mean?"
+    ))
+}
+
+async fn memory_get_entity_relations(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing entity query".to_string());
+    };
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("missing entity query".to_string());
+    }
+
+    let root_hits = rustfin_db::repo::ai_grounding::search_entity_nodes_for_user(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        None,
+        Some(query),
+        1,
+    )
+    .await
+    .map_err(|e| format!("failed to load stored entity relations: {e}"))?;
+
+    let Some(root_hit) = root_hits.into_iter().next() else {
+        return Ok((
+            format!("Memory relations matching \"{query}\""),
+            serde_json::to_value(MemoryEntityRelationsEnvelope {
+                query: query.to_string(),
+                matched_by: "entity search".to_string(),
+                total_count: 0,
+                root: None,
+                relations: Vec::new(),
+            })
+            .unwrap_or_else(|_| json!({})),
+        ));
+    };
+
+    let root = root_hit.row;
+    let root_summary = memory_entity_summary_from_row(root.clone());
+    let mut relations = Vec::new();
+    relations.extend(
+        memory_relation_rows_for_node(
+            &state.db,
+            &context.user_id,
+            context.is_admin,
+            &root.node_key,
+            "outgoing",
+            8,
+        )
+        .await?,
+    );
+    relations.extend(
+        memory_relation_rows_for_node(
+            &state.db,
+            &context.user_id,
+            context.is_admin,
+            &root.node_key,
+            "incoming",
+            8,
+        )
+        .await?,
+    );
+    relations.sort_by(|left, right| {
+        right
+            .weight
+            .partial_cmp(&left.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.created_ts.cmp(&left.created_ts))
+    });
+
+    Ok((
+        format!("Stored entity relations for \"{query}\""),
+        serde_json::to_value(MemoryEntityRelationsEnvelope {
+            query: query.to_string(),
+            matched_by: "entity search".to_string(),
+            total_count: relations.len(),
+            root: Some(root_summary),
+            relations,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_find_exact_entity(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing entity query".to_string());
+    };
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("missing entity query".to_string());
+    }
+
+    let hits = rustfin_db::repo::ai_grounding::find_exact_entity_nodes_for_user(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        None,
+        query,
+        12,
+    )
+    .await
+    .map_err(|e| format!("failed to load exact stored entity matches: {e}"))?;
+
+    let entities = hits
+        .into_iter()
+        .map(|hit| memory_entity_summary_from_row(hit.row))
+        .collect::<Vec<_>>();
+
+    Ok((
+        format!("Exact stored entities matching \"{query}\""),
+        serde_json::to_value(MemoryExactEntitiesEnvelope {
+            query: Some(query.to_string()),
+            matched_by: "exact entity search".to_string(),
+            total_count: entities.len(),
+            entities,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_get_entity_relation_path(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing entity path query".to_string());
+    };
+    let Some((source_query, target_query)) = split_memory_relation_path_query(query) else {
+        return Err(
+            "memory relation path queries require two entity names joined with ||".to_string(),
+        );
+    };
+
+    let (root, root_match_by) =
+        resolve_unique_memory_entity_for_path(state, context, &source_query).await?;
+    let (target, target_match_by) =
+        resolve_unique_memory_entity_for_path(state, context, &target_query).await?;
+
+    let root_summary = memory_entity_summary_from_row(root.clone());
+    let target_summary = memory_entity_summary_from_row(target.clone());
+    let path =
+        memory_relation_path_between_entities(state, context, &root_summary, &target_summary, 3)
+            .await?;
+    let path_found = root_summary.node_key == target_summary.node_key || !path.is_empty();
+
+    Ok((
+        format!("Stored entity relation path between \"{source_query}\" and \"{target_query}\""),
+        serde_json::to_value(MemoryEntityRelationPathEnvelope {
+            query: query.trim().to_string(),
+            source_query,
+            target_query,
+            matched_by: format!("{root_match_by}; {target_match_by}"),
+            total_hops: path.len(),
+            path_found,
+            root: Some(root_summary),
+            target: Some(target_summary),
+            path,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn memory_get_person_summary(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing person query".to_string());
+    };
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("missing person query".to_string());
+    }
+
+    let (person, matched_by) =
+        resolve_unique_memory_entity_for_query(state, context, query).await?;
+    let summary = memory_entity_summary_from_row(person.clone());
+    let mut relations = Vec::new();
+    relations.extend(
+        memory_relation_rows_for_node(
+            &state.db,
+            &context.user_id,
+            context.is_admin,
+            &person.node_key,
+            "outgoing",
+            8,
+        )
+        .await?,
+    );
+    relations.extend(
+        memory_relation_rows_for_node(
+            &state.db,
+            &context.user_id,
+            context.is_admin,
+            &person.node_key,
+            "incoming",
+            8,
+        )
+        .await?,
+    );
+    relations.sort_by(|left, right| {
+        right
+            .weight
+            .partial_cmp(&left.weight)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.created_ts.cmp(&left.created_ts))
+    });
+
+    Ok((
+        format!("Stored person summary for \"{}\"", summary.label),
+        serde_json::to_value(MemoryPersonSummaryEnvelope {
+            query: query.to_string(),
+            matched_by,
+            person: summary,
+            relation_count: relations.len(),
+            relations,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+fn split_memory_relation_path_query(query: &str) -> Option<(String, String)> {
+    let trimmed = query.trim();
+    let (left, right) = trimmed.split_once("||")?;
+    let source = left.trim();
+    let target = right.trim();
+    if source.is_empty() || target.is_empty() {
+        return None;
+    }
+    Some((source.to_string(), target.to_string()))
+}
+
+async fn resolve_unique_memory_entity_for_path(
+    state: &AppState,
+    context: &AssistantContext,
+    query: &str,
+) -> Result<(rustfin_db::repo::ai_grounding::AiEntityNodeRow, String), String> {
+    resolve_unique_memory_entity_for_query(state, context, query).await
+}
+
+async fn memory_relation_path_between_entities(
+    state: &AppState,
+    context: &AssistantContext,
+    root: &MemoryEntitySummary,
+    target: &MemoryEntitySummary,
+    max_hops: usize,
+) -> Result<Vec<MemoryEntityRelationSummary>, String> {
+    if root.node_key == target.node_key {
+        return Ok(Vec::new());
+    }
+
+    let mut frontier = vec![root.node_key.clone()];
+    let mut visited = HashSet::from([root.node_key.clone()]);
+    let mut parents: HashMap<String, (String, MemoryEntityRelationSummary)> = HashMap::new();
+
+    for _depth in 0..max_hops {
+        let mut next_frontier = Vec::new();
+        for current_node_key in frontier {
+            let mut neighbors = memory_relation_rows_for_node(
+                &state.db,
+                &context.user_id,
+                context.is_admin,
+                &current_node_key,
+                "outgoing",
+                8,
+            )
+            .await?;
+            neighbors.extend(
+                memory_relation_rows_for_node(
+                    &state.db,
+                    &context.user_id,
+                    context.is_admin,
+                    &current_node_key,
+                    "incoming",
+                    8,
+                )
+                .await?,
+            );
+            neighbors.sort_by(|left, right| {
+                right
+                    .weight
+                    .partial_cmp(&left.weight)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| right.created_ts.cmp(&left.created_ts))
+                    .then_with(|| left.entity.label.cmp(&right.entity.label))
+            });
+
+            for hop in neighbors {
+                let neighbor_key = hop.entity.node_key.clone();
+                if visited.contains(&neighbor_key) {
+                    continue;
+                }
+                parents.insert(
+                    neighbor_key.clone(),
+                    (current_node_key.clone(), hop.clone()),
+                );
+                if neighbor_key == target.node_key {
+                    return Ok(reconstruct_memory_relation_path(
+                        &parents,
+                        &root.node_key,
+                        &target.node_key,
+                    ));
+                }
+                visited.insert(neighbor_key.clone());
+                next_frontier.push(neighbor_key);
+            }
+        }
+        if next_frontier.is_empty() {
+            break;
+        }
+        frontier = next_frontier;
+    }
+
+    Ok(Vec::new())
+}
+
+fn reconstruct_memory_relation_path(
+    parents: &HashMap<String, (String, MemoryEntityRelationSummary)>,
+    root_key: &str,
+    target_key: &str,
+) -> Vec<MemoryEntityRelationSummary> {
+    let mut current_key = target_key.to_string();
+    let mut path = Vec::new();
+
+    while current_key != root_key {
+        let Some((previous_key, hop)) = parents.get(&current_key) else {
+            break;
+        };
+        path.push(hop.clone());
+        current_key = previous_key.clone();
+    }
+
+    path.reverse();
+    path
+}
+
 async fn libraries_list_accessible(
     state: &AppState,
     context: &AssistantContext,
@@ -1022,6 +2807,81 @@ async fn libraries_list_accessible(
     ))
 }
 
+async fn libraries_get_library_summary(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::LibrarySearch { query } = &call.input else {
+        return Err("missing library summary query".to_string());
+    };
+
+    let allowed_library_ids = if context.is_admin {
+        None
+    } else {
+        Some(
+            rustfin_db::repo::users::get_library_access(&state.db, &context.user_id)
+                .await
+                .map_err(|e| format!("failed to load library permissions: {e}"))?
+                .into_iter()
+                .collect::<HashSet<_>>(),
+        )
+    };
+
+    let libraries = rustfin_db::repo::libraries::list_libraries(&state.db)
+        .await
+        .map_err(|e| format!("failed to load libraries: {e}"))?;
+
+    let libraries: Vec<_> = libraries
+        .into_iter()
+        .filter(|lib| {
+            allowed_library_ids
+                .as_ref()
+                .map(|allowed| allowed.contains(&lib.id))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let Some((library, matched_by)) = libraries_find_library_detail(&libraries, query) else {
+        return Err(format!("no accessible library matched \"{query}\""));
+    };
+
+    let item_count = rustfin_db::repo::libraries::count_library_items(&state.db, &library.id)
+        .await
+        .map_err(|e| format!("failed to count library items: {e}"))?;
+    let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &library.id)
+        .await
+        .map_err(|e| format!("failed to load library paths: {e}"))?;
+    let settings = rustfin_db::repo::libraries::get_library_settings(&state.db, &library.id)
+        .await
+        .map_err(|e| format!("failed to load library settings: {e}"))?
+        .unwrap_or_else(|| default_library_settings_row(&library.id));
+
+    Ok((
+        format!("Library summary for \"{}\"", library.name),
+        serde_json::to_value(LibraryDetailSummary {
+            query: Some(query.clone()),
+            matched_by,
+            id: library.id.clone(),
+            name: library.name.clone(),
+            kind: library.kind.clone(),
+            item_count,
+            paths: paths
+                .into_iter()
+                .map(|path| LibraryPathSummary {
+                    id: path.id,
+                    path: path.path,
+                    is_read_only: path.is_read_only,
+                })
+                .collect(),
+            settings: library_settings_summary(&settings),
+            created_ts: library.created_ts,
+            updated_ts: library.updated_ts,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
 async fn downloads_list_available_artifacts(
     state: &AppState,
     _context: &AssistantContext,
@@ -1077,6 +2937,184 @@ async fn downloads_list_available_artifacts(
     ))
 }
 
+async fn downloads_get_artifact_details(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (query, availability_filter) = downloads_filter_for_call(call);
+    let query = query.ok_or_else(|| "missing download artifact query".to_string())?;
+    let catalog = crate::downloads::build_download_catalog(state)
+        .await
+        .map_err(|error| format!("failed to build download catalog: {}", error.0))?;
+
+    let Some((artifact, matched_by)) =
+        downloads_find_artifact_detail(&catalog.items, &query, availability_filter.as_deref())
+    else {
+        return Err(format!("no download artifact matched \"{query}\""));
+    };
+
+    Ok((
+        format!("Download artifact details for \"{}\"", artifact.title),
+        serde_json::to_value(DownloadArtifactDetailSummary {
+            query: Some(query),
+            matched_by,
+            artifact: artifact.clone(),
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn downloads_get_artifact_source(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (query, availability_filter) = downloads_filter_for_call(call);
+    let query = query.ok_or_else(|| "missing download artifact query".to_string())?;
+    let catalog = crate::downloads::build_download_catalog(state)
+        .await
+        .map_err(|error| format!("failed to build download catalog: {}", error.0))?;
+
+    let Some((artifact, matched_by)) =
+        downloads_find_artifact_detail(&catalog.items, &query, availability_filter.as_deref())
+    else {
+        return Err(format!("no download artifact matched \"{query}\""));
+    };
+
+    let source_url = artifact
+        .external_url
+        .clone()
+        .or_else(|| artifact.download_path.clone())
+        .or_else(|| artifact.setup_path.clone());
+
+    Ok((
+        format!("Download artifact source for \"{}\"", artifact.title),
+        serde_json::to_value(DownloadArtifactSourceSummary {
+            query: Some(query),
+            matched_by,
+            source_url: source_url.clone(),
+            download_path: artifact.download_path.clone(),
+            external_url: artifact.external_url.clone(),
+            artifact: artifact.clone(),
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn downloads_get_release_notes(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (query, availability_filter) = downloads_filter_for_call(call);
+    let query = query.ok_or_else(|| "missing download artifact query".to_string())?;
+    let catalog = crate::downloads::build_download_catalog(state)
+        .await
+        .map_err(|error| format!("failed to build download catalog: {}", error.0))?;
+
+    let Some((artifact, matched_by)) =
+        downloads_find_artifact_detail(&catalog.items, &query, availability_filter.as_deref())
+    else {
+        return Err(format!("no download artifact matched \"{query}\""));
+    };
+
+    Ok((
+        format!("Download artifact release notes for \"{}\"", artifact.title),
+        serde_json::to_value(DownloadArtifactReleaseNotesSummary {
+            query: Some(query),
+            matched_by,
+            release_notes: artifact.detail.clone(),
+            artifact: artifact.clone(),
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn downloads_get_artifact_checksum(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (query, availability_filter) = downloads_filter_for_call(call);
+    let query = query.ok_or_else(|| "missing download artifact query".to_string())?;
+    let catalog = crate::downloads::build_download_catalog(state)
+        .await
+        .map_err(|error| format!("failed to build download catalog: {}", error.0))?;
+
+    let Some((artifact, matched_by)) =
+        downloads_find_artifact_detail(&catalog.items, &query, availability_filter.as_deref())
+    else {
+        return Err(format!("no download artifact matched \"{query}\""));
+    };
+
+    Ok((
+        format!("Download artifact checksum for \"{}\"", artifact.title),
+        serde_json::to_value(DownloadArtifactDetailSummary {
+            query: Some(query),
+            matched_by,
+            artifact: artifact.clone(),
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn downloads_get_artifact_install_steps(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (query, availability_filter) = downloads_filter_for_call(call);
+    let query = query.ok_or_else(|| "missing download artifact query".to_string())?;
+    let catalog = crate::downloads::build_download_catalog(state)
+        .await
+        .map_err(|error| format!("failed to build download catalog: {}", error.0))?;
+
+    let Some((artifact, matched_by)) =
+        downloads_find_artifact_detail(&catalog.items, &query, availability_filter.as_deref())
+    else {
+        return Err(format!("no download artifact matched \"{query}\""));
+    };
+
+    Ok((
+        format!("Download artifact install steps for \"{}\"", artifact.title),
+        serde_json::to_value(DownloadArtifactDetailSummary {
+            query: Some(query),
+            matched_by,
+            artifact: artifact.clone(),
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn downloads_get_artifact_compatibility(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (query, availability_filter) = downloads_filter_for_call(call);
+    let query = query.ok_or_else(|| "missing download artifact query".to_string())?;
+    let catalog = crate::downloads::build_download_catalog(state)
+        .await
+        .map_err(|error| format!("failed to build download catalog: {}", error.0))?;
+
+    let Some((artifact, matched_by)) =
+        downloads_find_artifact_detail(&catalog.items, &query, availability_filter.as_deref())
+    else {
+        return Err(format!("no download artifact matched \"{query}\""));
+    };
+
+    Ok((
+        format!("Download artifact compatibility for \"{}\"", artifact.title),
+        serde_json::to_value(DownloadArtifactDetailSummary {
+            query: Some(query),
+            matched_by,
+            artifact: artifact.clone(),
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
 async fn weather_get_current(
     _state: &AppState,
     _context: &AssistantContext,
@@ -1089,6 +3127,24 @@ async fn weather_get_current(
     Ok((
         format!("Current weather for {}", current.resolved_location),
         serde_json::to_value(current).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn weather_resolve_location_alias(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::Weather { location, .. } = &call.input else {
+        return Err("missing public weather location".to_string());
+    };
+    let alias = super::weather::resolve_public_location_timezone(location).await?;
+    Ok((
+        format!(
+            "Resolved public location alias for {}",
+            alias.resolved_location
+        ),
+        serde_json::to_value(alias).unwrap_or_else(|_| json!({})),
     ))
 }
 
@@ -1115,6 +3171,14 @@ async fn weather_get_forecast(
     ))
 }
 
+async fn weather_get_forecast_for_date(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    weather_get_forecast(state, context, call).await
+}
+
 async fn weather_get_history(
     _state: &AppState,
     _context: &AssistantContext,
@@ -1138,6 +3202,14 @@ async fn weather_get_history(
         format!("Recent weather history for {}", history.resolved_location),
         serde_json::to_value(history).unwrap_or_else(|_| json!({})),
     ))
+}
+
+async fn weather_get_recent_history_for_date(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    weather_get_history(state, context, call).await
 }
 
 async fn web_search_public_web(
@@ -1378,6 +3450,76 @@ async fn library_search_titles(
     ))
 }
 
+struct ResolvedLibraryItem {
+    query: String,
+    matched_by: String,
+    item: rustfin_db::repo::items::ItemRow,
+    library_name: Option<String>,
+}
+
+async fn resolve_library_item_by_query(
+    state: &AppState,
+    context: &AssistantContext,
+    query: &str,
+) -> Result<ResolvedLibraryItem, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("missing library item query".to_string());
+    }
+
+    let allowed_library_ids = if context.is_admin {
+        None
+    } else {
+        Some(
+            rustfin_db::repo::users::get_library_access(&state.db, &context.user_id)
+                .await
+                .map_err(|e| format!("failed to load library permissions: {e}"))?,
+        )
+    };
+
+    let matches = rustfin_db::repo::items::search_items_by_title(
+        &state.db,
+        query,
+        allowed_library_ids.as_deref(),
+        5,
+    )
+    .await
+    .map_err(|e| format!("failed to load library item matches: {e}"))?;
+    let Some(best_match) = matches.into_iter().next() else {
+        return Err(format!("no accessible library item matched \"{query}\""));
+    };
+
+    let item = rustfin_db::repo::items::get_item(&state.db, &best_match.id)
+        .await
+        .map_err(|e| format!("failed to load library item details: {e}"))?
+        .ok_or_else(|| format!("library item {} is no longer available", best_match.id))?;
+
+    let library_name = rustfin_db::repo::libraries::list_libraries(&state.db)
+        .await
+        .map_err(|e| format!("failed to load libraries: {e}"))?
+        .into_iter()
+        .find(|library| library.id == item.library_id)
+        .map(|library| library.name);
+
+    let matched_by = if best_match.title.eq_ignore_ascii_case(query)
+        || best_match
+            .sort_title
+            .as_deref()
+            .is_some_and(|sort_title| sort_title.eq_ignore_ascii_case(query))
+    {
+        "exact_title".to_string()
+    } else {
+        "title_search".to_string()
+    };
+
+    Ok(ResolvedLibraryItem {
+        query: query.to_string(),
+        matched_by,
+        item,
+        library_name,
+    })
+}
+
 async fn library_get_item_summary(
     state: &AppState,
     context: &AssistantContext,
@@ -1434,6 +3576,130 @@ async fn library_get_item_summary(
 
     Ok((
         format!("Library item summary for \"{}\"", summary.title),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn library_get_item_media_details(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::LibrarySearch { query } = &call.input else {
+        return Err("missing library item query".to_string());
+    };
+
+    let resolved = resolve_library_item_by_query(state, context, query).await?;
+    let ResolvedLibraryItem {
+        query,
+        matched_by,
+        item,
+        library_name,
+    } = resolved;
+
+    let artwork = rustfin_db::repo::items::get_item_artwork(&state.db, &item.id)
+        .await
+        .map_err(|e| format!("failed to load library item artwork: {e}"))?;
+    let media_path = rustfin_db::repo::items::get_item_media_path(&state.db, &item.id)
+        .await
+        .map_err(|e| format!("failed to load library item media path: {e}"))?;
+    let first_descendant_media_path =
+        rustfin_db::repo::items::get_first_descendant_media_path(&state.db, &item.id)
+            .await
+            .map_err(|e| format!("failed to load library item descendant media path: {e}"))?;
+    let (poster_url, backdrop_url, logo_url, thumb_url) =
+        artwork.unwrap_or_else(|| (None, None, None, None));
+    let resolved_media_path = media_path
+        .clone()
+        .or_else(|| first_descendant_media_path.clone());
+
+    let summary = LibraryItemMediaDetailSummary {
+        query,
+        matched_by,
+        library_id: item.library_id.clone(),
+        id: item.id,
+        title: item.title,
+        kind: item.kind,
+        year: item.year,
+        library_name,
+        overview: item.overview,
+        duration_ms: item.duration_ms,
+        parent_id: item.parent_id,
+        media_path,
+        resolved_media_path,
+        first_descendant_media_path,
+        poster_url,
+        backdrop_url,
+        logo_url,
+        thumb_url,
+        created_ts: item.created_ts,
+        updated_ts: item.updated_ts,
+    };
+
+    Ok((
+        format!("Library media details for \"{}\"", summary.title),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn library_get_item_source_paths(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::LibrarySearch { query } = &call.input else {
+        return Err("missing library item query".to_string());
+    };
+
+    let resolved = resolve_library_item_by_query(state, context, query).await?;
+    let ResolvedLibraryItem {
+        query,
+        matched_by,
+        item,
+        library_name,
+    } = resolved;
+
+    let artwork = rustfin_db::repo::items::get_item_artwork(&state.db, &item.id)
+        .await
+        .map_err(|e| format!("failed to load library item artwork: {e}"))?;
+    let media_path = rustfin_db::repo::items::get_item_media_path(&state.db, &item.id)
+        .await
+        .map_err(|e| format!("failed to load library item media path: {e}"))?;
+    let first_descendant_media_path =
+        rustfin_db::repo::items::get_first_descendant_media_path(&state.db, &item.id)
+            .await
+            .map_err(|e| format!("failed to load library item descendant media path: {e}"))?;
+    let (poster_url, backdrop_url, logo_url, thumb_url) =
+        artwork.unwrap_or_else(|| (None, None, None, None));
+    let resolved_media_path = media_path
+        .clone()
+        .or_else(|| first_descendant_media_path.clone());
+
+    let summary = LibraryItemMediaDetailSummary {
+        query,
+        matched_by,
+        library_id: item.library_id.clone(),
+        id: item.id,
+        title: item.title,
+        kind: item.kind,
+        year: item.year,
+        library_name,
+        overview: item.overview,
+        duration_ms: item.duration_ms,
+        parent_id: item.parent_id,
+        media_path,
+        resolved_media_path,
+        first_descendant_media_path,
+        poster_url,
+        backdrop_url,
+        logo_url,
+        thumb_url,
+        created_ts: item.created_ts,
+        updated_ts: item.updated_ts,
+    };
+
+    Ok((
+        format!("Library item source paths for \"{}\"", summary.title),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
 }
@@ -1553,6 +3819,337 @@ async fn network_get_topology_summary(
     ))
 }
 
+fn network_find_interface_detail(
+    snapshot: &crate::network_diagnostics::NetworkTopologySnapshot,
+    query: &str,
+) -> Option<(crate::network_diagnostics::NetworkNodeSummary, String)> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    let preferred_interface = snapshot.access.preferred_local_interface.as_deref();
+    let preferred_node = preferred_interface.and_then(|name| {
+        snapshot
+            .nodes
+            .iter()
+            .find(|node| node.name.eq_ignore_ascii_case(name))
+    });
+
+    if let Some(node) = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.name.eq_ignore_ascii_case(trimmed))
+    {
+        return Some((node.clone(), "exact_name".to_string()));
+    }
+    if let Some(node) = snapshot.nodes.iter().find(|node| {
+        node.addresses
+            .iter()
+            .any(|address| address.address.eq_ignore_ascii_case(trimmed))
+    }) {
+        return Some((node.clone(), "exact_address".to_string()));
+    }
+    if let Some(node) = snapshot.nodes.iter().find(|node| {
+        node.name.to_ascii_lowercase().contains(&lowered)
+            || node
+                .addresses
+                .iter()
+                .any(|address| address.address.to_ascii_lowercase().contains(&lowered))
+    }) {
+        return Some((node.clone(), "contains".to_string()));
+    }
+
+    if let Some(host_label) = snapshot.host_label.as_deref() {
+        if host_label.eq_ignore_ascii_case(trimmed) {
+            if let Some(node) = preferred_node {
+                return Some((node.clone(), "host_label".to_string()));
+            }
+        }
+    }
+
+    None
+}
+
+async fn network_get_interface_details(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::NetworkInterface { query } = &call.input else {
+        return Err("missing network interface query".to_string());
+    };
+
+    let snapshot =
+        crate::network_diagnostics::collect_network_topology_snapshot(state, context.is_admin)
+            .await;
+    if !snapshot.available {
+        return Err(snapshot
+            .reason
+            .unwrap_or_else(|| "network diagnostics are unavailable".to_string()));
+    }
+
+    let Some((interface, matched_by)) = network_find_interface_detail(&snapshot, query) else {
+        return Err(format!("no network interface matched \"{query}\""));
+    };
+
+    let title = format!("Network interface details for \"{}\"", interface.name);
+    Ok((
+        title,
+        serde_json::to_value(NetworkInterfaceDetailSummary {
+            query: query.clone(),
+            matched_by,
+            host_label: snapshot.host_label,
+            remote_access_enabled: snapshot.remote_access_enabled,
+            access: snapshot.access,
+            interface,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn network_get_default_route(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::NetworkDefaultRoute { query } = &call.input else {
+        return Err("missing default route query".to_string());
+    };
+    let _query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    #[cfg(target_os = "linux")]
+    {
+        let routes = collect_linux_default_routes().await?;
+        let mut routes = if let Some(query) = _query.as_deref() {
+            let filtered = routes
+                .into_iter()
+                .filter(|route| default_route_matches_query(route, query))
+                .collect::<Vec<_>>();
+            if filtered.is_empty() {
+                return Err(format!("no default route matched \"{query}\""));
+            }
+            filtered
+        } else {
+            routes
+        };
+
+        routes.sort_by(|left, right| {
+            left.metric
+                .unwrap_or(u32::MAX)
+                .cmp(&right.metric.unwrap_or(u32::MAX))
+                .then_with(|| left.interface.cmp(&right.interface))
+                .then_with(|| left.gateway.cmp(&right.gateway))
+                .then_with(|| left.route.cmp(&right.route))
+        });
+
+        let matched_by = match _query.as_deref() {
+            Some(query) if routes.len() == 1 && routes[0].route.eq_ignore_ascii_case(query) => {
+                "exact_route".to_string()
+            }
+            Some(_) => "query_contains".to_string(),
+            None => "default_route".to_string(),
+        };
+
+        return Ok((
+            match _query.as_deref() {
+                Some(query) => format!("Default route matching \"{query}\""),
+                None => "Default route".to_string(),
+            },
+            serde_json::to_value(NetworkDefaultRouteEnvelope {
+                query: _query,
+                matched_by,
+                total_count: routes.len(),
+                routes,
+            })
+            .unwrap_or_else(|_| json!({})),
+        ));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Default route details are only available on Linux hosts.".to_string())
+    }
+}
+
+async fn network_get_hostname_aliases(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::NetworkHostnameAliases { query } = &call.input else {
+        return Err("missing hostname alias query".to_string());
+    };
+    let _query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut aliases = collect_linux_hostname_aliases().await?;
+        let host_label = detect_linux_host_label();
+        let canonical_hostname = linux_hostname_short_name().ok().flatten();
+        let fqdn = linux_hostname_fqdn().ok().flatten();
+
+        if let Some(query) = _query.as_deref() {
+            let query_matches_primary = canonical_hostname
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(query))
+                || host_label
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(query))
+                || fqdn
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(query));
+            if !query_matches_primary {
+                aliases.retain(|alias| hostname_alias_matches_query(alias, query));
+            }
+            if aliases.is_empty() && !query_matches_primary {
+                return Err(format!("no hostname aliases matched \"{query}\""));
+            }
+        }
+
+        aliases.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.source.cmp(&right.source))
+        });
+        aliases.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
+
+        let matched_by = match _query.as_deref() {
+            Some(query)
+                if canonical_hostname
+                    .as_deref()
+                    .is_some_and(|canonical| canonical.eq_ignore_ascii_case(query))
+                    || host_label
+                        .as_deref()
+                        .is_some_and(|label| label.eq_ignore_ascii_case(query))
+                    || fqdn
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(query)) =>
+            {
+                "canonical_hostname".to_string()
+            }
+            Some(query)
+                if aliases
+                    .iter()
+                    .any(|alias| alias.name.eq_ignore_ascii_case(query)) =>
+            {
+                "alias_exact".to_string()
+            }
+            Some(_) => "alias_contains".to_string(),
+            None => "all_aliases".to_string(),
+        };
+
+        return Ok((
+            match _query.as_deref() {
+                Some(query) => format!("Hostname aliases matching \"{query}\""),
+                None => "Hostname aliases".to_string(),
+            },
+            serde_json::to_value(NetworkHostnameAliasesEnvelope {
+                query: _query,
+                matched_by,
+                host_label,
+                canonical_hostname,
+                fqdn,
+                total_count: aliases.len(),
+                aliases,
+            })
+            .unwrap_or_else(|_| json!({})),
+        ));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Hostname aliases are only available on Linux hosts.".to_string())
+    }
+}
+
+async fn network_get_dns_servers(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::NetworkDnsServers { query } = &call.input else {
+        return Err("missing DNS server query".to_string());
+    };
+    let _query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut dns_servers = collect_linux_dns_servers().await?;
+        if let Some(query) = _query.as_deref() {
+            let filtered = dns_servers
+                .into_iter()
+                .filter(|server| dns_server_matches_query(server, query))
+                .collect::<Vec<_>>();
+            if filtered.is_empty() {
+                return Err(format!("no DNS servers matched \"{query}\""));
+            }
+            dns_servers = filtered;
+        }
+
+        dns_servers.sort_by(|left, right| {
+            left.scope
+                .cmp(&right.scope)
+                .then_with(|| left.interface.cmp(&right.interface))
+                .then_with(|| left.server.cmp(&right.server))
+                .then_with(|| left.source.cmp(&right.source))
+        });
+        dns_servers.dedup_by(|left, right| {
+            left.scope.eq_ignore_ascii_case(&right.scope)
+                && left
+                    .interface
+                    .as_deref()
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case(right.interface.as_deref().unwrap_or_default())
+                && left.server.eq_ignore_ascii_case(&right.server)
+        });
+
+        let matched_by = match _query.as_deref() {
+            Some(query)
+                if dns_servers
+                    .iter()
+                    .any(|server| server.server.eq_ignore_ascii_case(query)) =>
+            {
+                "server_exact".to_string()
+            }
+            Some(_) => "query_contains".to_string(),
+            None => "dns_resolvers".to_string(),
+        };
+
+        return Ok((
+            match _query.as_deref() {
+                Some(query) => format!("DNS servers matching \"{query}\""),
+                None => "DNS servers".to_string(),
+            },
+            serde_json::to_value(NetworkDnsServersEnvelope {
+                query: _query,
+                matched_by,
+                total_count: dns_servers.len(),
+                dns_servers,
+            })
+            .unwrap_or_else(|_| json!({})),
+        ));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("DNS server details are only available on Linux hosts.".to_string())
+    }
+}
+
 async fn calendar_list_events(
     state: &AppState,
     context: &AssistantContext,
@@ -1627,6 +4224,317 @@ async fn calendar_get_next_event(
     ))
 }
 
+async fn calendar_get_next_event_timing(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, serde_json::Value), String> {
+    let today = assistant_local_today();
+    let next_event = rustfin_db::repo::calendar::find_next_visible_event(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        today,
+    )
+    .await
+    .map_err(|e| format!("failed to load the next visible calendar event: {e}"))?;
+
+    let next_event = next_event.map(|row| NextCalendarEventSummary {
+        id: row.event.id,
+        title: row.event.title,
+        event_date: row.event.event_date,
+        event_type: row.event.event_type,
+        scope: row.event.scope,
+        owner_username: row.event.owner_username,
+        recurrence: row.event.recurrence,
+        next_occurs_on: row.next_occurs_on,
+    });
+    let days_until = next_event
+        .as_ref()
+        .and_then(|event| chrono::NaiveDate::parse_from_str(&event.next_occurs_on, "%F").ok())
+        .map(|date| (date - today).num_days());
+
+    Ok((
+        "Next visible calendar event timing".to_string(),
+        json!({
+            "today": today.format("%F").to_string(),
+            "days_until": days_until,
+            "next_event": next_event,
+        }),
+    ))
+}
+
+async fn calendar_list_date_conflicts(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (from, to, label) = calendar_window_for_call(call, 7);
+    let (from_date, to_date) = validate_calendar_analysis_window(&from, &to)?;
+    let occurrences = rustfin_db::repo::calendar::list_visible_event_occurrences(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &from_date.format("%F").to_string(),
+        &to_date.format("%F").to_string(),
+    )
+    .await
+    .map_err(|e| format!("failed to load visible calendar conflicts: {e}"))?;
+
+    let total_event_count = occurrences.len();
+    let mut grouped: BTreeMap<chrono::NaiveDate, Vec<CalendarEventOccurrenceSummary>> =
+        BTreeMap::new();
+    for occurrence in occurrences {
+        grouped
+            .entry(occurrence.occurs_on)
+            .or_default()
+            .push(calendar_event_occurrence_summary(&occurrence));
+    }
+
+    let conflict_days: Vec<_> = grouped
+        .into_iter()
+        .filter(|(_, events)| events.len() > 1)
+        .take(12)
+        .map(|(date, events)| CalendarConflictDaySummary {
+            date: date.format("%F").to_string(),
+            event_count: events.len(),
+            events,
+        })
+        .collect();
+
+    Ok((
+        format!("Visible calendar conflicts for {label}"),
+        json!({
+            "window": {
+                "from": from_date.format("%F").to_string(),
+                "to": to_date.format("%F").to_string(),
+                "label": label,
+            },
+            "total_event_count": total_event_count,
+            "conflict_day_count": conflict_days.len(),
+            "conflict_days": conflict_days,
+        }),
+    ))
+}
+
+async fn calendar_list_free_days(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (from, to, label) = calendar_window_for_call(call, 7);
+    let (from_date, to_date) = validate_calendar_analysis_window(&from, &to)?;
+    let occurrences = rustfin_db::repo::calendar::list_visible_event_occurrences(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &from_date.format("%F").to_string(),
+        &to_date.format("%F").to_string(),
+    )
+    .await
+    .map_err(|e| format!("failed to load visible calendar free days: {e}"))?;
+
+    let occupied_days: BTreeMap<chrono::NaiveDate, usize> =
+        occurrences
+            .into_iter()
+            .fold(BTreeMap::new(), |mut acc, occurrence| {
+                *acc.entry(occurrence.occurs_on).or_insert(0) += 1;
+                acc
+            });
+
+    let mut free_days = Vec::new();
+    let mut date = from_date;
+    while date <= to_date {
+        if !occupied_days.contains_key(&date) {
+            free_days.push(CalendarFreeDaySummary {
+                date: date.format("%F").to_string(),
+            });
+            if free_days.len() >= 14 {
+                break;
+            }
+        }
+        date += Duration::days(1);
+    }
+
+    Ok((
+        format!("Visible calendar free days for {label}"),
+        json!({
+            "window": {
+                "from": from_date.format("%F").to_string(),
+                "to": to_date.format("%F").to_string(),
+                "label": label,
+            },
+            "occupied_day_count": occupied_days.len(),
+            "free_day_count": free_days.len(),
+            "free_days": free_days,
+        }),
+    ))
+}
+
+async fn calendar_get_next_free_day(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (from, to, label) = calendar_window_for_call(call, 30);
+    let (from_date, to_date) = validate_calendar_analysis_window(&from, &to)?;
+    let occurrences = rustfin_db::repo::calendar::list_visible_event_occurrences(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &from_date.format("%F").to_string(),
+        &to_date.format("%F").to_string(),
+    )
+    .await
+    .map_err(|e| format!("failed to load visible calendar free day search: {e}"))?;
+
+    let occupied_days: BTreeMap<chrono::NaiveDate, usize> =
+        occurrences
+            .into_iter()
+            .fold(BTreeMap::new(), |mut acc, occurrence| {
+                *acc.entry(occurrence.occurs_on).or_insert(0) += 1;
+                acc
+            });
+
+    let mut next_free_day = None;
+    let mut searched_day_count = 0usize;
+    let mut date = from_date;
+    while date <= to_date {
+        searched_day_count += 1;
+        if !occupied_days.contains_key(&date) {
+            next_free_day = Some(CalendarFreeDaySummary {
+                date: date.format("%F").to_string(),
+            });
+            break;
+        }
+        date += Duration::days(1);
+    }
+
+    Ok((
+        format!("Next visible free calendar day for {label}"),
+        json!({
+            "window": {
+                "from": from_date.format("%F").to_string(),
+                "to": to_date.format("%F").to_string(),
+                "label": label,
+            },
+            "occupied_day_count": occupied_days.len(),
+            "searched_day_count": searched_day_count,
+            "next_free_day": next_free_day,
+        }),
+    ))
+}
+
+async fn calendar_count_events(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (from, to, label) = calendar_window_for_call(call, 7);
+    let (from_date, to_date) = validate_calendar_analysis_window(&from, &to)?;
+    let occurrences = rustfin_db::repo::calendar::list_visible_event_occurrences(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &from_date.format("%F").to_string(),
+        &to_date.format("%F").to_string(),
+    )
+    .await
+    .map_err(|e| format!("failed to load visible calendar counts: {e}"))?;
+
+    let mut grouped: BTreeMap<chrono::NaiveDate, usize> = BTreeMap::new();
+    for occurrence in occurrences {
+        *grouped.entry(occurrence.occurs_on).or_insert(0) += 1;
+    }
+
+    let total_event_count: usize = grouped.values().sum();
+    let day_counts: Vec<_> = grouped
+        .iter()
+        .map(|(date, event_count)| CalendarDayCountSummary {
+            date: date.format("%F").to_string(),
+            event_count: *event_count,
+        })
+        .collect();
+
+    let busiest_day_count = grouped.values().copied().max();
+    let busy_day_count = grouped.len();
+
+    Ok((
+        format!("Visible calendar event counts for {label}"),
+        json!({
+            "window": {
+                "from": from_date.format("%F").to_string(),
+                "to": to_date.format("%F").to_string(),
+                "label": label,
+            },
+            "total_event_count": total_event_count,
+            "busy_day_count": busy_day_count,
+            "busiest_day_count": busiest_day_count,
+            "day_counts": day_counts,
+        }),
+    ))
+}
+
+async fn calendar_list_busy_days(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (from, to, label) = calendar_window_for_call(call, 7);
+    let (from_date, to_date) = validate_calendar_analysis_window(&from, &to)?;
+    let occurrences = rustfin_db::repo::calendar::list_visible_event_occurrences(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &from_date.format("%F").to_string(),
+        &to_date.format("%F").to_string(),
+    )
+    .await
+    .map_err(|e| format!("failed to load visible calendar busy days: {e}"))?;
+
+    let total_event_count = occurrences.len();
+    let mut grouped: BTreeMap<chrono::NaiveDate, Vec<CalendarEventOccurrenceSummary>> =
+        BTreeMap::new();
+    for occurrence in occurrences {
+        grouped
+            .entry(occurrence.occurs_on)
+            .or_default()
+            .push(calendar_event_occurrence_summary(&occurrence));
+    }
+
+    let busy_days: Vec<_> = grouped
+        .into_iter()
+        .filter(|(_, events)| !events.is_empty())
+        .take(12)
+        .map(|(date, events)| CalendarBusyDaySummary {
+            date: date.format("%F").to_string(),
+            event_count: events.len(),
+            events,
+        })
+        .collect();
+
+    Ok((
+        format!("Visible calendar busy days for {label}"),
+        json!({
+            "window": {
+                "from": from_date.format("%F").to_string(),
+                "to": to_date.format("%F").to_string(),
+                "label": label,
+            },
+            "total_event_count": total_event_count,
+            "busy_day_count": busy_days.len(),
+            "busy_days": busy_days,
+        }),
+    ))
+}
+
+async fn calendar_list_overlapping_events(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    calendar_list_date_conflicts(state, context, call).await
+}
+
 async fn calendar_get_event_details(
     state: &AppState,
     context: &AssistantContext,
@@ -1683,6 +4591,102 @@ async fn calendar_get_event_details(
         format!("Calendar event details for \"{}\"", summary.title),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
+}
+
+async fn calendar_get_event_by_exact_date_and_title(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    calendar_get_event_details(state, context, call).await
+}
+
+async fn calendar_get_event_series_summary(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (from, to, label) = calendar_window_for_call(call, 30);
+    let query = calendar_query_for_call(call)
+        .map(|query| normalize_calendar_event_query(&query))
+        .filter(|query| !query.is_empty())
+        .ok_or_else(|| "missing calendar event query".to_string())?;
+
+    let visible_events = rustfin_db::repo::calendar::list_visible_events(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &from,
+        &to,
+    )
+    .await
+    .map_err(|e| format!("failed to load visible calendar events: {e}"))?;
+
+    let mut matches = visible_events
+        .into_iter()
+        .filter(|event| calendar_event_matches_query(event, &query))
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Err(format!(
+            "no visible calendar event series matched \"{query}\" in {label}"
+        ));
+    }
+
+    matches.sort_by(|left, right| {
+        left.event_date
+            .cmp(&right.event_date)
+            .then_with(|| left.created_ts.cmp(&right.created_ts))
+    });
+
+    let first = matches.first().cloned().unwrap();
+    let total_count = matches.len();
+    let first_event_date = matches.first().map(|event| event.event_date.clone());
+    let last_event_date = matches.last().map(|event| event.event_date.clone());
+    let occurrences = matches
+        .into_iter()
+        .take(12)
+        .map(|event| CalendarEventSummary {
+            title: event.title,
+            event_date: event.event_date,
+            scope: event.scope,
+            event_type: event.event_type,
+            owner_username: event.owner_username,
+        })
+        .collect::<Vec<_>>();
+
+    Ok((
+        format!("Calendar event series summary for \"{}\"", first.title),
+        serde_json::to_value(CalendarEventSeriesSummary {
+            query,
+            matched_by: "title_contains".to_string(),
+            title: first.title,
+            event_type: first.event_type,
+            recurrence: first.recurrence,
+            scope: first.scope,
+            owner_username: first.owner_username,
+            total_count,
+            first_event_date,
+            last_event_date,
+            occurrences,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn calendar_get_next_free_slot(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    calendar_get_next_free_day(state, context, call).await
+}
+
+async fn calendar_list_busy_slots(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    calendar_list_busy_days(state, context, call).await
 }
 
 async fn calendar_create_event(
@@ -2130,6 +5134,23 @@ fn validate_calendar_date(raw: &str) -> Result<chrono::NaiveDate, String> {
         .map_err(|_| "calendar event_date must use YYYY-MM-DD".to_string())
 }
 
+fn validate_calendar_analysis_window(
+    from: &str,
+    to: &str,
+) -> Result<(chrono::NaiveDate, chrono::NaiveDate), String> {
+    let from_date = validate_calendar_date(from)?;
+    let to_date = validate_calendar_date(to)?;
+    if to_date < from_date {
+        return Err(
+            "calendar analysis window end date must not be before the start date".to_string(),
+        );
+    }
+    if (to_date - from_date).num_days() > 31 {
+        return Err("calendar analysis windows are limited to 31 days".to_string());
+    }
+    Ok((from_date, to_date))
+}
+
 fn validate_calendar_birthday_year(year: i32) -> Result<(), String> {
     let current_year = assistant_local_year();
     if !(1900..=current_year).contains(&year) {
@@ -2138,6 +5159,19 @@ fn validate_calendar_birthday_year(year: i32) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn calendar_event_occurrence_summary(
+    occurrence: &rustfin_db::repo::calendar::VisibleCalendarEventOccurrenceRow,
+) -> CalendarEventOccurrenceSummary {
+    CalendarEventOccurrenceSummary {
+        title: occurrence.event.title.clone(),
+        event_date: occurrence.event.event_date.clone(),
+        occurs_on: occurrence.occurs_on.format("%F").to_string(),
+        scope: occurrence.event.scope.clone(),
+        event_type: occurrence.event.event_type.clone(),
+        owner_username: occurrence.event.owner_username.clone(),
+    }
 }
 
 fn calendar_owner_for_scope(
@@ -2475,6 +5509,170 @@ async fn system_get_ai_runtime_summary(
     ))
 }
 
+async fn ai_list_background_jobs(state: &AppState) -> Result<(String, serde_json::Value), String> {
+    let jobs = rustfin_db::repo::jobs::list_jobs_filtered(&state.db, &[], None, Some(50), None)
+        .await
+        .map_err(|e| format!("failed to list jobs: {e}"))?;
+    let observed_at = chrono::Utc::now().to_rfc3339();
+    let total_count = jobs.len();
+    let queued_count = jobs.iter().filter(|job| job.status == "queued").count();
+    let running_count = jobs.iter().filter(|job| job.status == "running").count();
+    let failed_count = jobs
+        .iter()
+        .filter(|job| matches!(job.status.as_str(), "failed" | "cancelled" | "error"))
+        .count();
+    let jobs = jobs
+        .into_iter()
+        .map(|job| {
+            json!({
+                "id": job.id,
+                "kind": job.kind,
+                "status": job.status,
+                "progress": job.progress,
+                "payload_json": job.payload_json,
+                "error": job.error,
+                "created_ts": job.created_ts,
+                "updated_ts": job.updated_ts,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok((
+        "Rustyfin background jobs".to_string(),
+        json!({
+            "observed_at": observed_at,
+            "total_count": total_count,
+            "queued_count": queued_count,
+            "running_count": running_count,
+            "failed_count": failed_count,
+            "jobs": jobs,
+        }),
+    ))
+}
+
+async fn ai_get_job_status(state: &AppState) -> Result<(String, serde_json::Value), String> {
+    let snapshot = state.runtime_metrics.snapshot();
+    Ok((
+        "Rustyfin AI job status".to_string(),
+        json!({
+            "observed_at": chrono::Utc::now().to_rfc3339(),
+            "uptime_seconds": snapshot.uptime_seconds,
+            "jobs": snapshot.jobs,
+            "assistant": snapshot.assistant,
+            "websockets": snapshot.websockets,
+            "agents": snapshot.agents,
+        }),
+    ))
+}
+
+async fn ai_get_tool_registry() -> Result<(String, serde_json::Value), String> {
+    let registry = default_tool_registry();
+    let tools = AssistantToolName::all()
+        .iter()
+        .copied()
+        .filter_map(|tool| registry.entry(tool).map(|entry| (tool, entry)))
+        .map(|(tool, entry)| {
+            let spec = entry.spec;
+            json!({
+                "tool": tool.as_str(),
+                "summary": spec.summary,
+                "provider_id": entry.provider_id,
+                "domain_family": entry.domain_family.as_str(),
+                "access_mode": tool_access_mode_label(spec.access_mode),
+                "risk_tier": spec.risk_tier,
+                "required_role": spec.required_role,
+                "confirmation": spec.confirmation,
+                "timeout_ms": spec.timeout_ms,
+                "max_result_bytes": spec.max_result_bytes,
+                "recovery_eligible": entry.recovery_eligible,
+                "can_parallelize": entry.can_parallelize,
+                "ambiguity_prone": entry.ambiguity_prone,
+                "freshness_sensitive": entry.freshness_sensitive,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok((
+        "Rustyfin AI tool registry".to_string(),
+        json!({
+            "observed_at": chrono::Utc::now().to_rfc3339(),
+            "tool_count": tools.len(),
+            "tools": tools,
+        }),
+    ))
+}
+
+async fn ai_get_grounding_summary(state: &AppState) -> Result<(String, serde_json::Value), String> {
+    let runtime = crate::ai_runtime::collect_ai_runtime_response(state).await;
+    Ok((
+        "Rustyfin AI grounding summary".to_string(),
+        json!({
+            "observed_at": chrono::Utc::now().to_rfc3339(),
+            "model": runtime.model,
+            "turn": runtime.turn,
+            "scheduler": runtime.scheduler,
+            "resources": runtime.resources,
+            "gpus": runtime.gpus,
+            "role_routing": runtime.role_routing,
+        }),
+    ))
+}
+
+async fn ai_get_last_tool_failure_reason(
+    state: &AppState,
+) -> Result<(String, serde_json::Value), String> {
+    let last_execution = {
+        let engine = state.engine.lock().await;
+        engine.last_execution_trace.clone()
+    };
+
+    let Some(trace) = last_execution else {
+        return Ok((
+            "Rustyfin AI last tool failure".to_string(),
+            json!({
+                "observed_at": chrono::Utc::now().to_rfc3339(),
+                "available": false,
+                "reason": "no prior AI execution trace was recorded",
+            }),
+        ));
+    };
+
+    let failure_attempt = trace
+        .attempts
+        .iter()
+        .rev()
+        .find(|attempt| {
+            attempt.status != "ok"
+                || !matches!(
+                    attempt.outcome_kind,
+                    super::types::AssistantToolOutcomeKind::Answer
+                )
+        })
+        .cloned();
+
+    Ok((
+        "Rustyfin AI last tool failure".to_string(),
+        json!({
+            "observed_at": chrono::Utc::now().to_rfc3339(),
+            "available": true,
+            "stop_reason": trace.stop_reason.as_str(),
+            "final_answer_path": trace.final_answer_path.as_str(),
+            "deterministic_answer_used": trace.deterministic_answer_used,
+            "synthesis_used": trace.synthesis_used,
+            "attempt_count": trace.attempts.len(),
+            "failure_attempt": failure_attempt,
+        }),
+    ))
+}
+
+fn tool_access_mode_label(mode: ToolAccessMode) -> &'static str {
+    match mode {
+        ToolAccessMode::ReadOnly => "read_only",
+        ToolAccessMode::Write => "write",
+        ToolAccessMode::DestructiveWrite => "destructive_write",
+    }
+}
+
 async fn system_get_current_datetime() -> Result<(String, serde_json::Value), String> {
     let now = assistant_local_now();
     let summary = CurrentDateTimeAssistantSummary {
@@ -2571,6 +5769,47 @@ async fn system_get_backup_summary(
 async fn system_get_service_health(
     state: &AppState,
 ) -> Result<(String, serde_json::Value), String> {
+    let components = collect_service_health_components(state).await;
+    let all_healthy = components.iter().all(|component| {
+        !component.configured || matches!(component.status.as_str(), "healthy" | "disabled")
+    });
+    let summary = ServiceHealthAssistantSummary {
+        all_healthy,
+        components,
+    };
+
+    Ok((
+        "Rustyfin service health summary".to_string(),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_service_detail(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing service query".to_string());
+    };
+
+    let components = collect_service_health_components(state).await;
+    let Some((component, matched_by)) = system_find_service_detail(&components, query) else {
+        return Err(format!("no service component matched \"{query}\""));
+    };
+
+    Ok((
+        format!("Service detail for \"{}\"", component.name),
+        serde_json::to_value(ServiceDetailSummary {
+            query: query.clone(),
+            matched_by,
+            component,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn collect_service_health_components(state: &AppState) -> Vec<ServiceHealthComponentSummary> {
     let mut probes = vec![
         probe_service_health_component(&state.http, "core_api", Some(local_core_health_url())),
         probe_service_health_component(
@@ -2629,19 +5868,109 @@ async fn system_get_service_health(
             (false, _) => "AI inference is unavailable on this host.".to_string(),
         },
     });
+    components
+}
 
-    let all_healthy = components.iter().all(|component| {
-        !component.configured || matches!(component.status.as_str(), "healthy" | "disabled")
+fn system_find_service_detail(
+    components: &[ServiceHealthComponentSummary],
+    query: &str,
+) -> Option<(ServiceHealthComponentSummary, String)> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized_query = normalize_service_component_query(trimmed);
+    if normalized_query.is_empty() {
+        return None;
+    }
+
+    let mut ranked = components
+        .iter()
+        .filter_map(|component| {
+            service_component_match(component, &normalized_query).map(|matched_by| {
+                let score =
+                    service_component_match_score(component, &normalized_query, &matched_by);
+                (score, component.clone(), matched_by)
+            })
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.name.cmp(&right.1.name))
     });
-    let summary = ServiceHealthAssistantSummary {
-        all_healthy,
-        components,
-    };
+    ranked
+        .into_iter()
+        .next()
+        .map(|(_, component, matched_by)| (component.clone(), matched_by))
+}
 
-    Ok((
-        "Rustyfin service health summary".to_string(),
-        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
-    ))
+fn normalize_service_component_query(query: &str) -> String {
+    query
+        .trim()
+        .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn service_component_match(
+    component: &ServiceHealthComponentSummary,
+    query: &str,
+) -> Option<String> {
+    let normalized_name = normalize_service_component_query(&component.name);
+    if normalized_name == query {
+        return Some("exact_name".to_string());
+    }
+    if normalized_name.contains(query) || query.contains(&normalized_name) {
+        return Some("name_contains".to_string());
+    }
+
+    for alias in service_component_aliases(&component.name) {
+        let alias = normalize_service_component_query(alias);
+        if alias == query {
+            return Some(format!("alias:{alias}"));
+        }
+        if alias.contains(query) || query.contains(&alias) {
+            return Some(format!("alias:{alias}"));
+        }
+    }
+
+    None
+}
+
+fn service_component_match_score(
+    component: &ServiceHealthComponentSummary,
+    query: &str,
+    matched_by: &str,
+) -> (u8, u8, usize, usize) {
+    let normalized_name = normalize_service_component_query(&component.name);
+    let exact_match = u8::from(matched_by == "exact_name");
+    let alias_match = u8::from(matched_by.starts_with("alias:"));
+    let containment = u8::from(matched_by == "name_contains" || matched_by.starts_with("alias:"));
+    let distance = normalized_name.len().abs_diff(query.len());
+    (
+        1 - exact_match,
+        1 - alias_match,
+        distance,
+        containment as usize,
+    )
+}
+
+fn service_component_aliases(name: &str) -> &'static [&'static str] {
+    match name {
+        "core_api" => &["core api", "core", "api", "backend"],
+        "tmdb_agent" => &["tmdb", "metadata"],
+        "youtube_agent" => &["youtube", "listen together", "video"],
+        "transcription_agent" => &["transcription", "speech to text", "stt"],
+        "servers_agent" => &["servers", "server agent", "minecraft"],
+        "rustyvault" => &["vault", "rustyvault"],
+        "ai_inference" => &["ai", "inference", "model", "llm"],
+        _ => &[],
+    }
 }
 
 async fn system_get_transcode_summary(
@@ -2683,6 +6012,394 @@ async fn system_get_storage_summary(
         "Rustyfin storage summary".to_string(),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
+}
+
+async fn system_get_storage_path_detail(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing storage path query".to_string());
+    };
+
+    let summary = collect_storage_summary(state).await;
+    if !summary.available {
+        return Err(summary
+            .reason
+            .unwrap_or_else(|| "storage details are unavailable on this host.".to_string()));
+    }
+
+    let Some((path, matched_by)) = system_find_storage_path_detail(&summary.paths, query) else {
+        return Err(format!("no storage path matched \"{query}\""));
+    };
+
+    Ok((
+        format!("Storage path detail for \"{}\"", path.name),
+        serde_json::to_value(StoragePathDetailSummary {
+            query: query.clone(),
+            matched_by,
+            path,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_mount_detail(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing storage mount query".to_string());
+    };
+
+    let summary = collect_storage_summary(state).await;
+    if !summary.available {
+        return Err(summary
+            .reason
+            .unwrap_or_else(|| "storage mount details are unavailable on this host.".to_string()));
+    }
+
+    let Some((mount, matched_by, total_count)) =
+        system_find_storage_mount_detail(&summary.mounts, query)
+    else {
+        return Err(format!("no storage mount matched \"{query}\""));
+    };
+
+    Ok((
+        format!("Storage mount detail for \"{}\"", mount.mount_point),
+        serde_json::to_value(StorageMountDetailEnvelope {
+            query: query.clone(),
+            matched_by,
+            total_count,
+            mount,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_port_conflicts(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemPortConflicts { query } = &call.input else {
+        return Err("missing port conflict query".to_string());
+    };
+    let _query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    #[cfg(target_os = "linux")]
+    {
+        let conflicts = collect_linux_port_conflicts().await?;
+        let mut conflicts = if let Some(query) = _query.as_deref() {
+            let filtered = conflicts
+                .into_iter()
+                .filter(|conflict| port_conflict_matches_query(conflict, query))
+                .collect::<Vec<_>>();
+            if filtered.is_empty() {
+                return Err(format!("no listening sockets matched \"{query}\""));
+            }
+            filtered
+        } else {
+            conflicts
+        };
+
+        conflicts.sort_by(|left, right| {
+            left.local_port
+                .unwrap_or(u16::MAX)
+                .cmp(&right.local_port.unwrap_or(u16::MAX))
+                .then_with(|| left.protocol.cmp(&right.protocol))
+                .then_with(|| left.local_address.cmp(&right.local_address))
+        });
+
+        let matched_by = match _query.as_deref() {
+            Some(query) if query.chars().all(|ch| ch.is_ascii_digit()) => "port_exact".to_string(),
+            Some(_) => "query_contains".to_string(),
+            None => "listening_sockets".to_string(),
+        };
+
+        return Ok((
+            match _query.as_deref() {
+                Some(query) => format!("Port conflicts matching \"{query}\""),
+                None => "Port conflicts".to_string(),
+            },
+            serde_json::to_value(SystemPortConflictsEnvelope {
+                query: _query,
+                matched_by,
+                total_count: conflicts.len(),
+                conflicts,
+            })
+            .unwrap_or_else(|_| json!({})),
+        ));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Port conflict details are only available on Linux hosts.".to_string())
+    }
+}
+
+async fn system_get_port_conflict_detail(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemPortConflicts { query } = &call.input else {
+        return Err("missing port conflict query".to_string());
+    };
+    let _query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "missing port conflict query".to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let conflicts = collect_linux_port_conflicts().await?;
+        let Some((conflict, matched_by, total_count)) =
+            system_find_port_conflict_detail(&conflicts, &_query)
+        else {
+            return Err(format!("no port conflict matched \"{_query}\""));
+        };
+
+        return Ok((
+            format!(
+                "Port conflict detail for \"{}\"",
+                conflict
+                    .local_port
+                    .map(|port| format!("{}:{port}", conflict.protocol.to_ascii_uppercase()))
+                    .unwrap_or_else(|| conflict.raw_entry.clone())
+            ),
+            serde_json::to_value(SystemPortConflictDetailEnvelope {
+                query: Some(_query),
+                matched_by,
+                total_count,
+                conflict,
+            })
+            .unwrap_or_else(|_| json!({})),
+        ));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Port conflict details are only available on Linux hosts.".to_string())
+    }
+}
+
+async fn system_get_process_detail(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing process detail query".to_string());
+    };
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Err("missing process detail query".to_string());
+    }
+
+    let (label, data) = diagnostics::system_get_process_detail(&query).await?;
+    Ok((label, data))
+}
+
+async fn system_get_listener_detail(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemPortConflicts { query } = &call.input else {
+        return Err("missing listener detail query".to_string());
+    };
+    let query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "missing listener detail query".to_string())?;
+
+    let (label, data) = diagnostics::system_get_listener_detail(&query).await?;
+    Ok((label, data))
+}
+
+async fn system_get_disk_usage_detail(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemService { query } = &call.input else {
+        return Err("missing disk usage detail query".to_string());
+    };
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Err("missing disk usage detail query".to_string());
+    }
+
+    let (label, data) = diagnostics::system_get_disk_usage_detail(&query).await?;
+    Ok((label, data))
+}
+
+async fn system_get_failed_units(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemFailedUnits { query } = &call.input else {
+        return Err("missing failed unit query".to_string());
+    };
+    let _query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    #[cfg(target_os = "linux")]
+    {
+        let units = collect_linux_failed_units().await?;
+        let mut units = if let Some(query) = _query.as_deref() {
+            let filtered = units
+                .into_iter()
+                .filter(|unit| failed_unit_matches_query(unit, query))
+                .collect::<Vec<_>>();
+            if filtered.is_empty() {
+                return Err(format!("no failed systemd units matched \"{query}\""));
+            }
+            filtered
+        } else {
+            units
+        };
+
+        units.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.description.cmp(&right.description))
+        });
+
+        let matched_by = match _query.as_deref() {
+            Some(query) if query.ends_with(".service") || query.ends_with(".socket") => {
+                "unit_exact".to_string()
+            }
+            Some(_) => "query_contains".to_string(),
+            None => "failed_units".to_string(),
+        };
+
+        return Ok((
+            match _query.as_deref() {
+                Some(query) => format!("Failed systemd units matching \"{query}\""),
+                None => "Failed systemd units".to_string(),
+            },
+            serde_json::to_value(SystemFailedUnitsEnvelope {
+                query: _query,
+                matched_by,
+                total_count: units.len(),
+                units,
+            })
+            .unwrap_or_else(|_| json!({})),
+        ));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Failed systemd unit details are only available on Linux hosts.".to_string())
+    }
+}
+
+async fn system_get_failed_unit_detail(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::SystemFailedUnits { query } = &call.input else {
+        return Err("missing failed unit query".to_string());
+    };
+    let _query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "missing failed unit query".to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let units = collect_linux_failed_unit_candidates().await?;
+        let Some((mut unit, matched_by)) = find_linux_failed_unit_detail(&units, &_query) else {
+            return Err(format!("no failed systemd unit matched \"{_query}\""));
+        };
+
+        let output = run_linux_command(
+            "systemctl",
+            &[
+                "show",
+                &unit.name,
+                "--property=LoadState,ActiveState,SubState,FragmentPath,UnitFileState,MainPID,ExecMainStatus,ExecMainCode,Description",
+            ],
+            4,
+        )
+        .await
+        .map_err(|e| format!("failed to load failed unit detail: {e}"))?;
+        let properties = parse_linux_systemctl_properties(&output);
+
+        if let Some(value) = properties.get("LoadState").cloned() {
+            unit.load = value;
+        }
+        if let Some(value) = properties.get("ActiveState").cloned() {
+            unit.active = value;
+        }
+        if let Some(value) = properties.get("SubState").cloned() {
+            unit.sub = value;
+        }
+        if let Some(value) = properties.get("Description").cloned() {
+            unit.description = value;
+        }
+        unit.recent_log_excerpt = collect_linux_failed_unit_excerpt(&unit.name).await;
+
+        let detail = SystemFailedUnitDetailSummary {
+            unit: unit.clone(),
+            status: SystemFailedUnitDetailStatusSummary {
+                fragment_path: properties
+                    .get("FragmentPath")
+                    .cloned()
+                    .filter(|value| !value.is_empty()),
+                unit_file_state: properties
+                    .get("UnitFileState")
+                    .cloned()
+                    .filter(|value| !value.is_empty()),
+                main_pid: properties
+                    .get("MainPID")
+                    .and_then(|value| value.parse::<u32>().ok()),
+                exec_main_code: properties
+                    .get("ExecMainCode")
+                    .cloned()
+                    .filter(|value| !value.is_empty()),
+                exec_main_status: properties
+                    .get("ExecMainStatus")
+                    .cloned()
+                    .filter(|value| !value.is_empty()),
+                status_excerpt: collect_linux_failed_unit_status_excerpt(&unit.name).await,
+            },
+        };
+
+        return Ok((
+            format!("Failed systemd unit detail for \"{}\"", unit.name),
+            serde_json::to_value(SystemFailedUnitDetailEnvelope {
+                query: Some(_query),
+                matched_by,
+                detail,
+            })
+            .unwrap_or_else(|_| json!({})),
+        ));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Failed systemd unit details are only available on Linux hosts.".to_string())
+    }
 }
 
 async fn system_get_recent_errors(state: &AppState) -> Result<(String, serde_json::Value), String> {
@@ -2761,6 +6478,185 @@ async fn system_get_recent_errors(state: &AppState) -> Result<(String, serde_jso
         "Recent Rustyfin failures and errors".to_string(),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
+}
+
+fn system_find_storage_path_detail(
+    paths: &[StoragePathSummary],
+    query: &str,
+) -> Option<(StoragePathSummary, String)> {
+    let normalized_query = normalize_storage_path_query(query);
+    let raw_query = query.trim().to_ascii_lowercase();
+    if normalized_query.is_empty() && raw_query.is_empty() {
+        return None;
+    }
+
+    let mut ranked = paths
+        .iter()
+        .filter_map(|path| {
+            storage_path_match_score(path, &normalized_query, &raw_query)
+                .map(|(score, matched_by)| (score, path.clone(), matched_by))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.name.cmp(&right.1.name))
+    });
+    ranked
+        .into_iter()
+        .next()
+        .map(|(_, path, matched_by)| (path, matched_by))
+}
+
+fn storage_path_match_score(
+    path: &StoragePathSummary,
+    normalized_query: &str,
+    raw_query: &str,
+) -> Option<(u8, String)> {
+    let mut best: Option<(u8, String)> = None;
+    let mut consider = |field: &str, value: Option<&str>, exact_score: u8, contains_score: u8| {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let value_raw = value.to_ascii_lowercase();
+        let value_normalized = normalize_storage_path_query(value);
+
+        let exact_match = (!raw_query.is_empty() && value_raw == raw_query)
+            || (!normalized_query.is_empty() && value_normalized == normalized_query);
+        let contains_match = (!raw_query.is_empty()
+            && (value_raw.contains(raw_query) || raw_query.contains(&value_raw)))
+            || (!normalized_query.is_empty()
+                && (value_normalized.contains(normalized_query)
+                    || normalized_query.contains(&value_normalized)));
+
+        if exact_match {
+            let score = exact_score;
+            if best
+                .as_ref()
+                .map(|(current, _)| *current < score)
+                .unwrap_or(true)
+            {
+                best = Some((score, format!("{field} exact match")));
+            }
+        } else if contains_match {
+            let score = contains_score;
+            if best
+                .as_ref()
+                .map(|(current, _)| *current < score)
+                .unwrap_or(true)
+            {
+                best = Some((score, format!("{field} contains match")));
+            }
+        }
+    };
+
+    consider("name", Some(path.name.as_str()), 100, 92);
+    consider("path", Some(path.path.as_str()), 98, 90);
+    consider("resolved_path", path.resolved_path.as_deref(), 96, 88);
+    consider("stats_path", path.stats_path.as_deref(), 94, 86);
+    consider("mount_point", path.mount_point.as_deref(), 88, 80);
+    consider("mount_source", path.mount_source.as_deref(), 84, 76);
+
+    best
+}
+
+fn system_find_storage_mount_detail(
+    mounts: &[StorageMountSummary],
+    query: &str,
+) -> Option<(StorageMountSummary, String, usize)> {
+    let normalized_query = normalize_storage_path_query(query);
+    let raw_query = query.trim().to_ascii_lowercase();
+    if normalized_query.is_empty() && raw_query.is_empty() {
+        return None;
+    }
+
+    let mut ranked = mounts
+        .iter()
+        .filter_map(|mount| {
+            storage_mount_match_score(mount, &normalized_query, &raw_query)
+                .map(|(score, matched_by)| (score, mount.clone(), matched_by))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.mount_point.cmp(&right.1.mount_point))
+    });
+    let total_count = ranked.len();
+    ranked
+        .into_iter()
+        .next()
+        .map(|(_, mount, matched_by)| (mount, matched_by, total_count))
+}
+
+fn storage_mount_match_score(
+    mount: &StorageMountSummary,
+    normalized_query: &str,
+    raw_query: &str,
+) -> Option<(u8, String)> {
+    let mut best: Option<(u8, String)> = None;
+    let mut consider = |field: &str, value: Option<&str>, exact_score: u8, contains_score: u8| {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let value_raw = value.to_ascii_lowercase();
+        let value_normalized = normalize_storage_path_query(value);
+
+        let exact_match = (!raw_query.is_empty() && value_raw == raw_query)
+            || (!normalized_query.is_empty() && value_normalized == normalized_query);
+        let contains_match = (!raw_query.is_empty()
+            && (value_raw.contains(raw_query) || raw_query.contains(&value_raw)))
+            || (!normalized_query.is_empty()
+                && (value_normalized.contains(normalized_query)
+                    || normalized_query.contains(&value_normalized)));
+
+        if exact_match {
+            let score = exact_score;
+            if best
+                .as_ref()
+                .map(|(current, _)| *current < score)
+                .unwrap_or(true)
+            {
+                best = Some((score, format!("{field} exact match")));
+            }
+        } else if contains_match {
+            let score = contains_score;
+            if best
+                .as_ref()
+                .map(|(current, _)| *current < score)
+                .unwrap_or(true)
+            {
+                best = Some((score, format!("{field} contains match")));
+            }
+        }
+    };
+
+    consider("mount_point", Some(mount.mount_point.as_str()), 100, 92);
+    consider("mount_source", mount.mount_source.as_deref(), 96, 88);
+    consider(
+        "mount_file_system",
+        mount.mount_file_system.as_deref(),
+        94,
+        86,
+    );
+    for tracked_path in &mount.tracked_paths {
+        consider("tracked_path", Some(tracked_path.as_str()), 98, 90);
+    }
+
+    best
+}
+
+fn normalize_storage_path_query(query: &str) -> String {
+    query
+        .trim()
+        .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!', ':', ';'].contains(&ch))
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 async fn calendar_upcoming_birthdays(
@@ -2882,6 +6778,142 @@ async fn libraries_get_recently_added(
     ))
 }
 
+async fn libraries_find_duplicate_titles(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, serde_json::Value), String> {
+    let libraries = accessible_libraries_for_context(state, context).await?;
+    let library_names: HashMap<_, _> = libraries
+        .iter()
+        .map(|library| (library.id.clone(), library.name.clone()))
+        .collect();
+
+    let mut groups = BTreeMap::<String, Vec<rustfin_db::repo::items::ItemRow>>::new();
+    for library in &libraries {
+        for item in rustfin_db::repo::items::get_library_items(&state.db, &library.id)
+            .await
+            .map_err(|e| format!("failed to load library items: {e}"))?
+        {
+            groups
+                .entry(normalize_library_duplicate_key(&item))
+                .or_default()
+                .push(item);
+        }
+    }
+
+    let mut duplicates: Vec<_> = groups
+        .into_iter()
+        .filter_map(|(_, items)| {
+            if items.len() <= 1 {
+                return None;
+            }
+            let mut library_ids = HashSet::<String>::new();
+            for item in &items {
+                library_ids.insert(item.library_id.clone());
+            }
+            let title = items
+                .first()
+                .map(|item| item.title.trim().to_string())
+                .filter(|value| !value.is_empty())?;
+            let mut libraries = library_ids
+                .into_iter()
+                .map(|library_id| {
+                    library_names
+                        .get(&library_id)
+                        .cloned()
+                        .unwrap_or(library_id)
+                })
+                .collect::<Vec<_>>();
+            libraries.sort();
+            libraries.dedup();
+            Some(LibraryDuplicateTitleSummary {
+                title,
+                item_count: items.len(),
+                library_count: libraries.len(),
+                libraries,
+            })
+        })
+        .collect();
+
+    duplicates.sort_by(|left, right| {
+        right
+            .item_count
+            .cmp(&left.item_count)
+            .then_with(|| right.library_count.cmp(&left.library_count))
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    let duplicate_group_count = duplicates.len();
+    let total_count = duplicates
+        .iter()
+        .map(|group| group.item_count)
+        .sum::<usize>();
+    duplicates.truncate(12);
+
+    Ok((
+        "Duplicate library titles across accessible libraries".to_string(),
+        json!({
+            "total_count": total_count,
+            "duplicate_group_count": duplicate_group_count,
+            "duplicates": duplicates,
+        }),
+    ))
+}
+
+async fn libraries_list_missing_metadata(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, serde_json::Value), String> {
+    let libraries = accessible_libraries_for_context(state, context).await?;
+    let library_names: HashMap<_, _> = libraries
+        .iter()
+        .map(|library| (library.id.clone(), library.name.clone()))
+        .collect();
+
+    let mut items = Vec::new();
+    for library in &libraries {
+        let library_items = rustfin_db::repo::items::get_library_items(&state.db, &library.id)
+            .await
+            .map_err(|e| format!("failed to load library items: {e}"))?;
+        for item in library_items {
+            let missing_fields = library_item_missing_metadata_fields(&item);
+            if missing_fields.is_empty() {
+                continue;
+            }
+            items.push(LibraryMissingMetadataItemSummary {
+                library_id: item.library_id.clone(),
+                library_name: library_names.get(&item.library_id).cloned(),
+                id: item.id,
+                title: item.title,
+                kind: item.kind,
+                year: item.year,
+                missing_fields,
+                created_ts: item.created_ts,
+                updated_ts: item.updated_ts,
+            });
+        }
+    }
+
+    items.sort_by(|left, right| {
+        right
+            .missing_fields
+            .len()
+            .cmp(&left.missing_fields.len())
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.library_id.cmp(&right.library_id))
+    });
+    let missing_item_count = items.len();
+    items.truncate(12);
+
+    Ok((
+        "Library items with missing metadata across accessible libraries".to_string(),
+        json!({
+            "total_count": missing_item_count,
+            "missing_item_count": missing_item_count,
+            "items": items,
+        }),
+    ))
+}
+
 async fn rooms_list_joinable(
     state: &AppState,
     context: &AssistantContext,
@@ -2988,6 +7020,10 @@ fn calendar_window_for_call(
         AssistantToolInput::None
         | AssistantToolInput::ChannelsFilter { .. }
         | AssistantToolInput::DownloadsFilter { .. }
+        | AssistantToolInput::NetworkInterface { .. }
+        | AssistantToolInput::NetworkDefaultRoute { .. }
+        | AssistantToolInput::NetworkHostnameAliases { .. }
+        | AssistantToolInput::NetworkDnsServers { .. }
         | AssistantToolInput::LibrarySearch { .. }
         | AssistantToolInput::LibraryRecent { .. }
         | AssistantToolInput::Weather { .. }
@@ -3000,6 +7036,9 @@ fn calendar_window_for_call(
         | AssistantToolInput::ConversationMoveToGroup { .. }
         | AssistantToolInput::CurrentDateTime { .. }
         | AssistantToolInput::RoomsFilter { .. }
+        | AssistantToolInput::SystemService { .. }
+        | AssistantToolInput::SystemPortConflicts { .. }
+        | AssistantToolInput::SystemFailedUnits { .. }
         | AssistantToolInput::ServerFilter { .. } => {
             let from = assistant_local_today();
             let to = from + Duration::days(fallback_days);
@@ -3974,6 +8013,895 @@ fn select_linux_mount_entry<'a>(
         })
 }
 
+#[cfg(target_os = "linux")]
+async fn run_linux_command(
+    program: &str,
+    args: &[&str],
+    timeout_secs: u64,
+) -> Result<String, String> {
+    use tokio::process::Command;
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        Command::new(program).args(args).output(),
+    )
+    .await
+    .map_err(|_| format!("timed out while running `{program}`"))?
+    .map_err(|error| format!("failed to run `{program}`: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("`{program}` exited with {}", output.status)
+        } else {
+            format!("`{program}` failed: {stderr}")
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn detect_linux_host_label() -> Option<String> {
+    if let Ok(value) = std::env::var("HOSTNAME") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "linux")]
+async fn linux_hostname_short_name() -> Result<Option<String>, String> {
+    match run_linux_command("hostname", &["-s"], 2).await {
+        Ok(output) => Ok(output
+            .split_whitespace()
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)),
+        Err(_) => Ok(None),
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn linux_hostname_fqdn() -> Result<Option<String>, String> {
+    match run_linux_command("hostname", &["-f"], 2).await {
+        Ok(output) => Ok(output
+            .split_whitespace()
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)),
+        Err(_) => Ok(None),
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_default_routes() -> Result<Vec<NetworkDefaultRouteSummary>, String> {
+    let output = run_linux_command("ip", &["route", "show", "default"], 3).await?;
+    let mut routes = output
+        .lines()
+        .filter_map(parse_linux_default_route_line)
+        .collect::<Vec<_>>();
+    routes.sort_by(|left, right| {
+        left.metric
+            .unwrap_or(u32::MAX)
+            .cmp(&right.metric.unwrap_or(u32::MAX))
+            .then_with(|| left.interface.cmp(&right.interface))
+            .then_with(|| left.gateway.cmp(&right.gateway))
+            .then_with(|| left.route.cmp(&right.route))
+    });
+    Ok(routes)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_default_route_line(line: &str) -> Option<NetworkDefaultRouteSummary> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let tokens = trimmed.split_whitespace().collect::<Vec<_>>();
+    if tokens.first().copied() != Some("default") {
+        return None;
+    }
+
+    let mut gateway = None;
+    let mut interface = None;
+    let mut source = None;
+    let mut metric = None;
+    let mut protocol = None;
+    let mut scope = None;
+
+    let mut index = 1usize;
+    while index < tokens.len() {
+        match tokens[index] {
+            "via" => {
+                index += 1;
+                gateway = tokens.get(index).map(|value| (*value).to_string());
+            }
+            "dev" => {
+                index += 1;
+                interface = tokens.get(index).map(|value| (*value).to_string());
+            }
+            "src" => {
+                index += 1;
+                source = tokens.get(index).map(|value| (*value).to_string());
+            }
+            "metric" => {
+                index += 1;
+                metric = tokens
+                    .get(index)
+                    .and_then(|value| value.parse::<u32>().ok());
+            }
+            "proto" => {
+                index += 1;
+                protocol = tokens.get(index).map(|value| (*value).to_string());
+            }
+            "scope" => {
+                index += 1;
+                scope = tokens.get(index).map(|value| (*value).to_string());
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    let mut route_parts = vec!["default".to_string()];
+    if let Some(value) = gateway.as_deref() {
+        route_parts.push("via".to_string());
+        route_parts.push(value.to_string());
+    }
+    if let Some(value) = interface.as_deref() {
+        route_parts.push("dev".to_string());
+        route_parts.push(value.to_string());
+    }
+    if let Some(value) = source.as_deref() {
+        route_parts.push("src".to_string());
+        route_parts.push(value.to_string());
+    }
+    if let Some(value) = metric {
+        route_parts.push("metric".to_string());
+        route_parts.push(value.to_string());
+    }
+    if let Some(value) = protocol.as_deref() {
+        route_parts.push("proto".to_string());
+        route_parts.push(value.to_string());
+    }
+    if let Some(value) = scope.as_deref() {
+        route_parts.push("scope".to_string());
+        route_parts.push(value.to_string());
+    }
+
+    Some(NetworkDefaultRouteSummary {
+        route: route_parts.join(" "),
+        gateway,
+        interface,
+        source,
+        metric,
+        protocol,
+        scope,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn default_route_matches_query(route: &NetworkDefaultRouteSummary, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+
+    let digits_only = query
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if let Ok(metric) = digits_only.parse::<u32>()
+        && route.metric.is_some_and(|candidate| candidate == metric)
+    {
+        return true;
+    }
+
+    [
+        route.route.as_str(),
+        route.gateway.as_deref().unwrap_or_default(),
+        route.interface.as_deref().unwrap_or_default(),
+        route.source.as_deref().unwrap_or_default(),
+        route.protocol.as_deref().unwrap_or_default(),
+        route.scope.as_deref().unwrap_or_default(),
+    ]
+    .into_iter()
+    .map(|value| value.to_ascii_lowercase())
+    .any(|value| value.contains(&query))
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_hostname_aliases() -> Result<Vec<NetworkHostnameAliasSummary>, String> {
+    let canonical_hostname = linux_hostname_short_name().await.ok().flatten();
+    let host_label = detect_linux_host_label();
+    let fqdn = linux_hostname_fqdn().await.ok().flatten();
+
+    let mut aliases = BTreeMap::<String, NetworkHostnameAliasSummary>::new();
+    let mut insert_alias = |name: &str, source: &str| {
+        let trimmed = name.trim();
+        if trimmed.is_empty()
+            || hostname_name_is_primary(
+                trimmed,
+                canonical_hostname.as_deref(),
+                host_label.as_deref(),
+                fqdn.as_deref(),
+            )
+        {
+            return;
+        }
+        aliases
+            .entry(trimmed.to_ascii_lowercase())
+            .or_insert_with(|| NetworkHostnameAliasSummary {
+                name: trimmed.to_string(),
+                source: source.to_string(),
+            });
+    };
+
+    if let Ok(output) = run_linux_command("hostname", &["-a"], 2).await {
+        for alias in output.split_whitespace() {
+            insert_alias(alias, "hostname -a");
+        }
+    }
+
+    if let Ok(output) = run_linux_command("hostname", &["-A"], 2).await {
+        for alias in output.split_whitespace() {
+            insert_alias(alias, "hostname -A");
+        }
+    }
+
+    if let Ok(contents) = std::fs::read_to_string("/etc/hosts") {
+        for line in contents.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 2 {
+                continue;
+            }
+            let names = &fields[1..];
+            if !names.iter().any(|name| {
+                hostname_name_is_primary(
+                    name,
+                    canonical_hostname.as_deref(),
+                    host_label.as_deref(),
+                    fqdn.as_deref(),
+                )
+            }) {
+                continue;
+            }
+            for name in names {
+                insert_alias(name, "/etc/hosts");
+            }
+        }
+    }
+
+    Ok(aliases.into_values().collect())
+}
+
+#[cfg(target_os = "linux")]
+fn hostname_name_is_primary(
+    name: &str,
+    canonical_hostname: Option<&str>,
+    host_label: Option<&str>,
+    fqdn: Option<&str>,
+) -> bool {
+    [canonical_hostname, host_label, fqdn]
+        .into_iter()
+        .flatten()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
+#[cfg(target_os = "linux")]
+fn hostname_alias_matches_query(alias: &NetworkHostnameAliasSummary, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+
+    alias.name.to_ascii_lowercase().contains(&query)
+        || query.contains(&alias.name.to_ascii_lowercase())
+        || alias.source.to_ascii_lowercase().contains(&query)
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_dns_servers() -> Result<Vec<NetworkDnsServerSummary>, String> {
+    let mut servers = Vec::new();
+
+    if let Ok(output) = run_linux_command("resolvectl", &["status"], 3).await {
+        servers.extend(parse_linux_resolvectl_dns_servers(&output));
+    }
+
+    if servers.is_empty()
+        && let Ok(contents) = std::fs::read_to_string("/etc/resolv.conf")
+    {
+        servers.extend(parse_linux_resolv_conf_dns_servers(&contents));
+    }
+
+    servers.sort_by(|left, right| {
+        left.scope
+            .cmp(&right.scope)
+            .then_with(|| left.interface.cmp(&right.interface))
+            .then_with(|| left.server.cmp(&right.server))
+            .then_with(|| left.source.cmp(&right.source))
+            .then_with(|| left.raw_line.cmp(&right.raw_line))
+    });
+    servers.dedup_by(|left, right| {
+        left.scope.eq_ignore_ascii_case(&right.scope)
+            && left
+                .interface
+                .as_deref()
+                .unwrap_or_default()
+                .eq_ignore_ascii_case(right.interface.as_deref().unwrap_or_default())
+            && left.server.eq_ignore_ascii_case(&right.server)
+            && left.source.eq_ignore_ascii_case(&right.source)
+    });
+
+    Ok(servers)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_resolvectl_dns_servers(stdout: &str) -> Vec<NetworkDnsServerSummary> {
+    let mut current_scope = "global".to_string();
+    let mut current_interface = None::<String>;
+    let mut servers = Vec::new();
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("global") {
+            current_scope = "global".to_string();
+            current_interface = None;
+            continue;
+        }
+        if let Some((scope, interface)) = parse_linux_resolvectl_link_scope(trimmed) {
+            current_scope = scope;
+            current_interface = interface;
+            continue;
+        }
+
+        let Some(rest) = trimmed
+            .strip_prefix("DNS Servers:")
+            .or_else(|| trimmed.strip_prefix("Current DNS Server:"))
+        else {
+            continue;
+        };
+
+        for server in rest.split_whitespace() {
+            let server = server.trim_matches(|ch: char| [';', ','].contains(&ch));
+            if server.is_empty() {
+                continue;
+            }
+            servers.push(NetworkDnsServerSummary {
+                scope: current_scope.clone(),
+                interface: current_interface.clone(),
+                server: server.to_string(),
+                source: "resolvectl".to_string(),
+                raw_line: trimmed.to_string(),
+            });
+        }
+    }
+
+    servers
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_resolvectl_link_scope(line: &str) -> Option<(String, Option<String>)> {
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("link ") {
+        return None;
+    }
+
+    let interface = trimmed
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(value, _)| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    Some((trimmed.to_string(), interface))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_resolv_conf_dns_servers(contents: &str) -> Vec<NetworkDnsServerSummary> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.split('#').next().unwrap_or("").trim();
+            if !trimmed.starts_with("nameserver") {
+                return None;
+            }
+            let server = trimmed.split_whitespace().nth(1)?.trim();
+            if server.is_empty() {
+                return None;
+            }
+            Some(NetworkDnsServerSummary {
+                scope: "resolv.conf".to_string(),
+                interface: None,
+                server: server.to_string(),
+                source: "/etc/resolv.conf".to_string(),
+                raw_line: trimmed.to_string(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn dns_server_matches_query(server: &NetworkDnsServerSummary, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+
+    server.scope.to_ascii_lowercase().contains(&query)
+        || server
+            .interface
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase().contains(&query))
+            .unwrap_or(false)
+        || server.server.to_ascii_lowercase().contains(&query)
+        || server.source.to_ascii_lowercase().contains(&query)
+        || server.raw_line.to_ascii_lowercase().contains(&query)
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_port_conflicts() -> Result<Vec<SystemPortConflictSummary>, String> {
+    let tcp = run_linux_command("ss", &["-H", "-ltnp"], 3).await?;
+    let udp = run_linux_command("ss", &["-H", "-lunp"], 3).await?;
+
+    let mut conflicts = parse_linux_port_conflicts("tcp", &tcp);
+    conflicts.extend(parse_linux_port_conflicts("udp", &udp));
+    Ok(conflicts)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_port_conflicts(protocol: &str, stdout: &str) -> Vec<SystemPortConflictSummary> {
+    stdout
+        .lines()
+        .filter_map(|line| parse_linux_port_conflict_line(protocol, line))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_port_conflict_line(protocol: &str, line: &str) -> Option<SystemPortConflictSummary> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 5 {
+        return None;
+    }
+
+    let state = fields[0].to_string();
+    let local_field = fields[3];
+    let peer_field = fields[4];
+    let users_field = if fields.len() > 5 {
+        fields[5..].join(" ")
+    } else {
+        String::new()
+    };
+    let (local_address, local_port) = split_linux_socket_endpoint(local_field);
+    let peer_address = normalize_linux_peer_field(peer_field);
+    let processes = parse_linux_socket_processes(&users_field);
+
+    Some(SystemPortConflictSummary {
+        protocol: protocol.to_string(),
+        state,
+        local_address,
+        local_port,
+        peer_address,
+        raw_entry: trimmed.to_string(),
+        processes,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn split_linux_socket_endpoint(value: &str) -> (String, Option<u16>) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return (String::new(), None);
+    }
+
+    if let Some((host, port)) = trimmed.rsplit_once(':') {
+        let port = port.parse::<u16>().ok();
+        (host.trim_matches(['[', ']']).to_string(), port)
+    } else {
+        (trimmed.to_string(), None)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn normalize_linux_peer_field(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == "*:*" {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_socket_processes(users_field: &str) -> Vec<SystemPortConflictProcessSummary> {
+    let Some(inner) = users_field.strip_prefix("users:(") else {
+        return Vec::new();
+    };
+    let inner = inner.trim_end_matches(')');
+    let inner = inner.trim().trim_start_matches('(').trim_end_matches(')');
+
+    inner
+        .split("),(")
+        .filter_map(|entry| {
+            let entry = entry.trim_matches(|ch| ch == '(' || ch == ')').trim();
+            if entry.is_empty() {
+                return None;
+            }
+            let name = entry.split('"').nth(1)?.to_string();
+            let pid = entry
+                .split("pid=")
+                .nth(1)
+                .and_then(|value| value.split(',').next())
+                .and_then(|value| value.parse::<u32>().ok());
+            let fd = entry
+                .split("fd=")
+                .nth(1)
+                .and_then(|value| value.split(',').next())
+                .and_then(|value| value.parse::<u32>().ok());
+            Some(SystemPortConflictProcessSummary { name, pid, fd })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn port_conflict_matches_query(conflict: &SystemPortConflictSummary, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+
+    let digits_only = query
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if let Ok(port) = digits_only.parse::<u16>()
+        && conflict
+            .local_port
+            .is_some_and(|candidate| candidate == port)
+    {
+        return true;
+    }
+
+    conflict.raw_entry.to_ascii_lowercase().contains(&query)
+        || conflict.local_address.to_ascii_lowercase().contains(&query)
+        || conflict
+            .peer_address
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase().contains(&query))
+            .unwrap_or(false)
+        || conflict.protocol.to_ascii_lowercase().contains(&query)
+        || conflict.processes.iter().any(|process| {
+            process.name.to_ascii_lowercase().contains(&query)
+                || process
+                    .pid
+                    .map(|pid| pid.to_string().contains(&query))
+                    .unwrap_or(false)
+        })
+}
+
+fn system_find_port_conflict_detail(
+    conflicts: &[SystemPortConflictSummary],
+    query: &str,
+) -> Option<(SystemPortConflictSummary, String, usize)> {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return None;
+    }
+
+    let mut ranked = conflicts
+        .iter()
+        .filter_map(|conflict| {
+            port_conflict_detail_match_score(conflict, &query)
+                .map(|(score, matched_by)| (score, conflict.clone(), matched_by))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.local_port.cmp(&right.1.local_port))
+            .then_with(|| left.1.protocol.cmp(&right.1.protocol))
+            .then_with(|| left.1.local_address.cmp(&right.1.local_address))
+            .then_with(|| left.1.raw_entry.cmp(&right.1.raw_entry))
+    });
+    let total_count = ranked.len();
+    ranked
+        .into_iter()
+        .next()
+        .map(|(_, conflict, matched_by)| (conflict, matched_by, total_count))
+}
+
+fn port_conflict_detail_match_score(
+    conflict: &SystemPortConflictSummary,
+    query: &str,
+) -> Option<(u8, String)> {
+    let mut best: Option<(u8, String)> = None;
+    let mut consider = |field: &str, value: Option<&str>, exact_score: u8, contains_score: u8| {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let value_raw = value.to_ascii_lowercase();
+
+        let exact_match = value_raw == query;
+        let contains_match = value_raw.contains(query) || query.contains(&value_raw);
+
+        if exact_match {
+            let score = exact_score;
+            if best
+                .as_ref()
+                .map(|(current, _)| *current < score)
+                .unwrap_or(true)
+            {
+                best = Some((score, format!("{field} exact match")));
+            }
+        } else if contains_match {
+            let score = contains_score;
+            if best
+                .as_ref()
+                .map(|(current, _)| *current < score)
+                .unwrap_or(true)
+            {
+                best = Some((score, format!("{field} contains match")));
+            }
+        }
+    };
+
+    let digits_only = query
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    if let Ok(port) = digits_only.parse::<u16>()
+        && conflict
+            .local_port
+            .is_some_and(|candidate| candidate == port)
+    {
+        return Some((100, "port exact".to_string()));
+    }
+
+    consider(
+        "process",
+        conflict
+            .processes
+            .iter()
+            .find(|process| process.name.to_ascii_lowercase().contains(query))
+            .map(|process| process.name.as_str()),
+        98,
+        90,
+    );
+    consider(
+        "local_address",
+        Some(conflict.local_address.as_str()),
+        96,
+        88,
+    );
+    consider("protocol", Some(conflict.protocol.as_str()), 94, 84);
+    consider("raw_entry", Some(conflict.raw_entry.as_str()), 92, 82);
+    consider("peer_address", conflict.peer_address.as_deref(), 90, 80);
+    if let Some(port) = conflict.local_port {
+        let port_string = port.to_string();
+        consider("local_port", Some(port_string.as_str()), 100, 92);
+    }
+    for process in &conflict.processes {
+        consider("process", Some(process.name.as_str()), 98, 90);
+        if let Some(pid) = process.pid {
+            let pid_string = pid.to_string();
+            consider("pid", Some(pid_string.as_str()), 96, 88);
+        }
+    }
+
+    best
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_failed_units() -> Result<Vec<SystemFailedUnitSummary>, String> {
+    let output = run_linux_command(
+        "systemctl",
+        &["--failed", "--no-legend", "--plain", "--all"],
+        3,
+    )
+    .await?;
+    let mut units = parse_linux_failed_units(&output);
+    units.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.description.cmp(&right.description))
+    });
+    units.truncate(8);
+
+    for unit in units.iter_mut().take(4) {
+        unit.recent_log_excerpt = collect_linux_failed_unit_excerpt(&unit.name).await;
+    }
+
+    Ok(units)
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_failed_unit_candidates() -> Result<Vec<SystemFailedUnitSummary>, String> {
+    let output = run_linux_command(
+        "systemctl",
+        &["--failed", "--no-legend", "--plain", "--all"],
+        3,
+    )
+    .await?;
+    Ok(parse_linux_failed_units(&output))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_failed_units(stdout: &str) -> Vec<SystemFailedUnitSummary> {
+    stdout
+        .lines()
+        .filter_map(parse_linux_failed_unit_line)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_failed_unit_line(line: &str) -> Option<SystemFailedUnitSummary> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 5 {
+        return None;
+    }
+
+    let start_index = if fields.first().copied() == Some("●") {
+        1
+    } else {
+        0
+    };
+    if fields.len() < start_index + 5 {
+        return None;
+    }
+
+    Some(SystemFailedUnitSummary {
+        name: fields[start_index].to_string(),
+        load: fields[start_index + 1].to_string(),
+        active: fields[start_index + 2].to_string(),
+        sub: fields[start_index + 3].to_string(),
+        description: fields[start_index + 4..].join(" "),
+        recent_log_excerpt: None,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_systemctl_properties(output: &str) -> HashMap<String, String> {
+    output
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_failed_unit_status_excerpt(unit: &str) -> Option<String> {
+    let output = run_linux_command(
+        "systemctl",
+        &["status", unit, "--no-pager", "--full", "--lines", "6"],
+        4,
+    )
+    .await
+    .ok()?;
+
+    let excerpt = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(6)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if excerpt.is_empty() {
+        None
+    } else {
+        Some(excerpt)
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_failed_unit_excerpt(unit: &str) -> Option<String> {
+    let output = run_linux_command(
+        "journalctl",
+        &["-u", unit, "-n", "3", "--no-pager", "-o", "cat"],
+        3,
+    )
+    .await
+    .ok()?;
+
+    let excerpt = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if excerpt.is_empty() {
+        None
+    } else {
+        Some(excerpt)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn find_linux_failed_unit_detail(
+    units: &[SystemFailedUnitSummary],
+    query: &str,
+) -> Option<(SystemFailedUnitSummary, String)> {
+    let query = query.trim();
+    if query.is_empty() {
+        return None;
+    }
+
+    let exact_matches: Vec<_> = units
+        .iter()
+        .filter_map(|unit| {
+            if unit.name.eq_ignore_ascii_case(query) {
+                Some((unit.clone(), "exact_name".to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if exact_matches.len() == 1 {
+        return Some(exact_matches[0].clone());
+    }
+    if exact_matches.len() > 1 {
+        return None;
+    }
+
+    let partial_matches: Vec<_> = units
+        .iter()
+        .filter_map(|unit| {
+            if failed_unit_matches_query(unit, query) {
+                Some((unit.clone(), "query_contains".to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if partial_matches.len() == 1 {
+        Some(partial_matches[0].clone())
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn failed_unit_matches_query(unit: &SystemFailedUnitSummary, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+
+    unit.name.to_ascii_lowercase().contains(&query)
+        || unit.description.to_ascii_lowercase().contains(&query)
+        || unit.load.to_ascii_lowercase().contains(&query)
+        || unit.active.to_ascii_lowercase().contains(&query)
+        || unit.sub.to_ascii_lowercase().contains(&query)
+}
+
 #[cfg(any(target_os = "linux", test))]
 fn storage_used_bytes(total_bytes: Option<u64>, available_bytes: Option<u64>) -> Option<u64> {
     total_bytes
@@ -4053,6 +8981,13 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             library_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
         },
+        AssistantToolInput::NetworkInterface { .. }
+        | AssistantToolInput::NetworkDefaultRoute { .. }
+        | AssistantToolInput::NetworkHostnameAliases { .. }
+        | AssistantToolInput::NetworkDnsServers { .. }
+        | AssistantToolInput::SystemService { .. }
+        | AssistantToolInput::SystemPortConflicts { .. }
+        | AssistantToolInput::SystemFailedUnits { .. } => AssistantFollowUpInputHint::default(),
         AssistantToolInput::Weather {
             location,
             forecast_days,
@@ -4237,6 +9172,159 @@ fn follow_up_entities(
                 }]
             })
             .unwrap_or_default(),
+        AssistantToolName::CalendarGetNextEventTiming => block
+            .data
+            .get("next_event")
+            .map(|event| {
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: format!(
+                        "{} ({})",
+                        event
+                            .get("title")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(&block.label),
+                        event
+                            .get("next_occurs_on")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    identifier: event
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    kind: Some("calendar_event".to_string()),
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarListDateConflicts => block
+            .data
+            .get("conflict_days")
+            .and_then(serde_json::Value::as_array)
+            .map(|days| {
+                days.iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, day)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!(
+                                "{} ({} events)",
+                                day.get("date")?.as_str()?,
+                                day.get("event_count")?.as_u64()?
+                            ),
+                            identifier: None,
+                            kind: Some("calendar_date".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarListOverlappingEvents => block
+            .data
+            .get("conflict_days")
+            .and_then(serde_json::Value::as_array)
+            .map(|days| {
+                days.iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, day)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!(
+                                "{} ({} events)",
+                                day.get("date")?.as_str()?,
+                                day.get("event_count")?.as_u64()?
+                            ),
+                            identifier: None,
+                            kind: Some("calendar_date".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarListFreeDays => block
+            .data
+            .get("free_days")
+            .and_then(serde_json::Value::as_array)
+            .map(|days| {
+                days.iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, day)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: day.get("date")?.as_str()?.to_string(),
+                            identifier: None,
+                            kind: Some("calendar_date".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarGetNextFreeDay => block
+            .data
+            .get("next_free_day")
+            .and_then(|value| value.get("date"))
+            .and_then(serde_json::Value::as_str)
+            .map(|date| {
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: date.to_string(),
+                    identifier: Some(date.to_string()),
+                    kind: Some("calendar_date".to_string()),
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarCountEvents => block
+            .data
+            .get("day_counts")
+            .and_then(serde_json::Value::as_array)
+            .map(|days| {
+                days.iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, day)| {
+                        let date = day.get("date")?.as_str()?.to_string();
+                        let event_count = day.get("event_count")?.as_u64()?;
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!("{date} ({event_count} events)"),
+                            identifier: Some(date),
+                            kind: Some("calendar_date".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarListBusyDays => block
+            .data
+            .get("busy_days")
+            .and_then(serde_json::Value::as_array)
+            .map(|days| {
+                days.iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, day)| {
+                        let date = day.get("date")?.as_str()?.to_string();
+                        let event_count = day.get("event_count")?.as_u64()?;
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!("{date} ({event_count} events)"),
+                            identifier: Some(date),
+                            kind: Some("calendar_date".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         AssistantToolName::CalendarUpcomingBirthdays => block
             .data
             .get("birthdays")
@@ -4308,6 +9396,347 @@ fn follow_up_entities(
                 }]
             })
             .unwrap_or_default(),
+        AssistantToolName::MemoryListRecentFacts | AssistantToolName::MemorySearchFacts => block
+            .data
+            .get("facts")
+            .and_then(serde_json::Value::as_array)
+            .map(|facts| {
+                facts
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, fact)| {
+                        let title = fact.get("title").and_then(serde_json::Value::as_str)?;
+                        let memory_key = fact
+                            .get("memory_key")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: title.to_string(),
+                            identifier: memory_key,
+                            kind: Some("memory_fact".to_string()),
+                            topic_key: fact
+                                .get("topic_key")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string)
+                                .or_else(|| {
+                                    fact.get("memory_type")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(|kind| format!("memory:{kind}"))
+                                }),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::MemoryListRecentChanges => {
+            let mut entities = block
+                .data
+                .get("facts")
+                .and_then(serde_json::Value::as_array)
+                .map(|facts| {
+                    facts
+                        .iter()
+                        .take(4)
+                        .enumerate()
+                        .filter_map(|(index, fact)| {
+                            let title = fact.get("title").and_then(serde_json::Value::as_str)?;
+                            Some(AssistantFollowUpEntity {
+                                ordinal: index + 1,
+                                label: title.to_string(),
+                                identifier: fact
+                                    .get("memory_key")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string),
+                                kind: Some("memory_fact".to_string()),
+                                topic_key: fact
+                                    .get("topic_key")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string)
+                                    .or_else(|| {
+                                        fact.get("memory_type")
+                                            .and_then(serde_json::Value::as_str)
+                                            .map(|kind| format!("memory:{kind}"))
+                                    }),
+                                ..Default::default()
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            if let Some(memory_entities) = block
+                .data
+                .get("entities")
+                .and_then(serde_json::Value::as_array)
+            {
+                let offset = entities.len();
+                entities.extend(memory_entities.iter().take(4).enumerate().filter_map(
+                    move |(index, entity)| {
+                        let label = entity.get("label").and_then(serde_json::Value::as_str)?;
+                        let entity_kind = entity
+                            .get("entity_kind")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("entity");
+                        Some(AssistantFollowUpEntity {
+                            ordinal: offset + index + 1,
+                            label: format!("{label} ({entity_kind})"),
+                            identifier: entity
+                                .get("node_key")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            kind: Some(entity_kind.to_string()),
+                            topic_key: entity
+                                .get("topic_key")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            ..Default::default()
+                        })
+                    },
+                ));
+            }
+
+            entities
+        }
+        AssistantToolName::MemoryListConflictingFacts => block
+            .data
+            .get("conflicts")
+            .and_then(serde_json::Value::as_array)
+            .map(|conflicts| {
+                conflicts
+                    .iter()
+                    .take(4)
+                    .enumerate()
+                    .flat_map(|(group_index, conflict)| {
+                        conflict
+                            .get("facts")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .take(2)
+                            .enumerate()
+                            .filter_map(move |(index, fact)| {
+                                let title =
+                                    fact.get("title").and_then(serde_json::Value::as_str)?;
+                                Some(AssistantFollowUpEntity {
+                                    ordinal: group_index * 2 + index + 1,
+                                    label: title.to_string(),
+                                    identifier: fact
+                                        .get("memory_key")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(str::to_string),
+                                    kind: Some("memory_fact".to_string()),
+                                    topic_key: fact
+                                        .get("topic_key")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(str::to_string)
+                                        .or_else(|| {
+                                            fact.get("memory_type")
+                                                .and_then(serde_json::Value::as_str)
+                                                .map(|kind| format!("memory:{kind}"))
+                                        }),
+                                    ..Default::default()
+                                })
+                            })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::MemoryGetEntityProvenance => {
+            let mut entities = block
+                .data
+                .get("entity")
+                .and_then(|value| {
+                    serde_json::from_value::<MemoryEntityProvenanceSummary>(value.clone()).ok()
+                })
+                .map(|entity| {
+                    vec![AssistantFollowUpEntity {
+                        ordinal: 1,
+                        label: format!("{} ({})", entity.label, entity.entity_kind),
+                        identifier: Some(entity.node_key),
+                        kind: Some(entity.entity_kind),
+                        topic_key: entity.topic_key,
+                        ..Default::default()
+                    }]
+                })
+                .unwrap_or_default();
+
+            if let Some(source_chunk) = block.data.get("source_chunk").and_then(|value| {
+                serde_json::from_value::<MemoryProvenanceChunkSummary>(value.clone()).ok()
+            }) {
+                entities.push(AssistantFollowUpEntity {
+                    ordinal: entities.len() + 1,
+                    label: source_chunk.title,
+                    identifier: Some(source_chunk.chunk_key),
+                    kind: Some("memory_source".to_string()),
+                    topic_key: source_chunk.topic_key,
+                    ..Default::default()
+                });
+            }
+
+            entities
+        }
+        AssistantToolName::MemoryListRecentEntities | AssistantToolName::MemorySearchEntities => {
+            block
+                .data
+                .get("entities")
+                .and_then(serde_json::Value::as_array)
+                .map(|entities| {
+                    entities
+                        .iter()
+                        .take(8)
+                        .enumerate()
+                        .filter_map(|(index, entity)| {
+                            let label = entity.get("label").and_then(serde_json::Value::as_str)?;
+                            let entity_kind = entity
+                                .get("entity_kind")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("entity");
+                            Some(AssistantFollowUpEntity {
+                                ordinal: index + 1,
+                                label: format!("{label} ({entity_kind})"),
+                                identifier: entity
+                                    .get("node_key")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string),
+                                kind: Some(entity_kind.to_string()),
+                                topic_key: entity
+                                    .get("topic_key")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string),
+                                ..Default::default()
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        AssistantToolName::MemoryFindExactEntity => block
+            .data
+            .get("entities")
+            .and_then(serde_json::Value::as_array)
+            .map(|entities| {
+                entities
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, entity)| {
+                        let label = entity.get("label").and_then(serde_json::Value::as_str)?;
+                        let entity_kind = entity
+                            .get("entity_kind")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("entity");
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!("{label} ({entity_kind})"),
+                            identifier: entity
+                                .get("node_key")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            kind: Some(entity_kind.to_string()),
+                            topic_key: entity
+                                .get("topic_key")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::MemoryGetEntityRelations => {
+            let mut entities = block
+                .data
+                .get("root")
+                .and_then(|value| serde_json::from_value::<MemoryEntitySummary>(value.clone()).ok())
+                .map(|entity| {
+                    vec![AssistantFollowUpEntity {
+                        ordinal: 1,
+                        label: format!("{} ({})", entity.label, entity.entity_kind),
+                        identifier: Some(entity.node_key),
+                        kind: Some(entity.entity_kind),
+                        topic_key: entity.topic_key,
+                        ..Default::default()
+                    }]
+                })
+                .unwrap_or_default();
+
+            if let Some(relations) = block
+                .data
+                .get("relations")
+                .and_then(serde_json::Value::as_array)
+            {
+                entities.extend(relations.iter().take(8).enumerate().filter_map(
+                    |(index, relation)| {
+                        let entity = relation.get("entity")?;
+                        let entity =
+                            serde_json::from_value::<MemoryEntitySummary>(entity.clone()).ok()?;
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 2,
+                            label: format!("{} ({})", entity.label, entity.entity_kind),
+                            identifier: Some(entity.node_key),
+                            kind: Some(entity.entity_kind),
+                            topic_key: entity.topic_key,
+                            ..Default::default()
+                        })
+                    },
+                ));
+            }
+
+            entities
+        }
+        AssistantToolName::MemoryGetEntityRelationPath => {
+            let mut entities = block
+                .data
+                .get("root")
+                .and_then(|value| serde_json::from_value::<MemoryEntitySummary>(value.clone()).ok())
+                .map(|entity| {
+                    vec![AssistantFollowUpEntity {
+                        ordinal: 1,
+                        label: format!("{} ({})", entity.label, entity.entity_kind),
+                        identifier: Some(entity.node_key),
+                        kind: Some(entity.entity_kind),
+                        topic_key: entity.topic_key,
+                        ..Default::default()
+                    }]
+                })
+                .unwrap_or_default();
+
+            if let Some(target) = block
+                .data
+                .get("target")
+                .and_then(|value| serde_json::from_value::<MemoryEntitySummary>(value.clone()).ok())
+            {
+                entities.push(AssistantFollowUpEntity {
+                    ordinal: entities.len() + 1,
+                    label: format!("{} ({})", target.label, target.entity_kind),
+                    identifier: Some(target.node_key),
+                    kind: Some(target.entity_kind),
+                    topic_key: target.topic_key,
+                    ..Default::default()
+                });
+            }
+
+            if let Some(path) = block.data.get("path").and_then(serde_json::Value::as_array) {
+                entities.extend(path.iter().take(8).enumerate().filter_map(|(index, hop)| {
+                    let entity = hop.get("entity")?;
+                    let entity =
+                        serde_json::from_value::<MemoryEntitySummary>(entity.clone()).ok()?;
+                    Some(AssistantFollowUpEntity {
+                        ordinal: index + 3,
+                        label: format!("{} ({})", entity.label, entity.entity_kind),
+                        identifier: Some(entity.node_key),
+                        kind: Some(entity.entity_kind),
+                        topic_key: entity.topic_key,
+                        ..Default::default()
+                    })
+                }));
+            }
+
+            entities
+        }
         AssistantToolName::ChannelsListUnreadActivity => Vec::new(),
         AssistantToolName::ChannelsGetTranscriptSummary => vec![AssistantFollowUpEntity {
             ordinal: 1,
@@ -4347,6 +9776,144 @@ fn follow_up_entities(
                     .collect()
             })
             .unwrap_or_default(),
+        AssistantToolName::DownloadsGetArtifactDetails
+        | AssistantToolName::DownloadsGetArtifactSource
+        | AssistantToolName::DownloadsGetReleaseNotes
+        | AssistantToolName::DownloadsGetArtifactChecksum
+        | AssistantToolName::DownloadsGetArtifactInstallSteps
+        | AssistantToolName::DownloadsGetArtifactCompatibility => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
+                .data
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&block.label)
+                .to_string(),
+            identifier: block
+                .data
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            kind: Some("download_artifact".to_string()),
+            topic_key: block
+                .data
+                .get("artifact_id")
+                .and_then(serde_json::Value::as_str)
+                .map(|artifact_id| format!("downloads:{artifact_id}")),
+            ..Default::default()
+        }],
+        AssistantToolName::NetworkGetTopologySummary => block
+            .data
+            .get("nodes")
+            .and_then(serde_json::Value::as_array)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, node)| {
+                        let name = node.get("name").and_then(serde_json::Value::as_str)?;
+                        let status = node
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown");
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!("{name} ({status})"),
+                            identifier: Some(name.to_string()),
+                            kind: Some("network_interface".to_string()),
+                            topic_key: Some(format!("network:{name}")),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::NetworkGetInterfaceDetails => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
+                .data
+                .get("interface")
+                .and_then(|interface| interface.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&block.label)
+                .to_string(),
+            identifier: block
+                .data
+                .get("interface")
+                .and_then(|interface| interface.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            kind: Some("network_interface".to_string()),
+            topic_key: block
+                .data
+                .get("interface")
+                .and_then(|interface| interface.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .map(|name| format!("network:{name}")),
+            ..Default::default()
+        }],
+        AssistantToolName::NetworkGetDefaultRoute => block
+            .data
+            .get("routes")
+            .and_then(serde_json::Value::as_array)
+            .map(|routes| {
+                routes
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, route)| {
+                        let label = route.get("route").and_then(serde_json::Value::as_str)?;
+                        let gateway = route.get("gateway").and_then(serde_json::Value::as_str);
+                        let interface = route.get("interface").and_then(serde_json::Value::as_str);
+                        let topic_key = Some("network:default_route".to_string());
+                        let identifier = interface
+                            .map(str::to_string)
+                            .or_else(|| gateway.map(str::to_string))
+                            .or_else(|| Some(label.to_string()));
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: match (gateway, interface) {
+                                (Some(gateway), Some(interface)) => {
+                                    format!("{label} via {gateway} on {interface}")
+                                }
+                                (Some(gateway), None) => format!("{label} via {gateway}"),
+                                (None, Some(interface)) => format!("{label} on {interface}"),
+                                (None, None) => label.to_string(),
+                            },
+                            identifier,
+                            kind: Some("network_route".to_string()),
+                            topic_key,
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::NetworkGetHostnameAliases => block
+            .data
+            .get("aliases")
+            .and_then(serde_json::Value::as_array)
+            .map(|aliases| {
+                aliases
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, alias)| {
+                        let name = alias.get("name").and_then(serde_json::Value::as_str)?;
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: name.to_string(),
+                            identifier: Some(name.to_string()),
+                            kind: Some("network_hostname_alias".to_string()),
+                            topic_key: Some("network:hostname_aliases".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::NetworkGetDnsServers => Vec::new(),
         AssistantToolName::LibrarySearchTitles => block
             .data
             .get("matches")
@@ -4370,6 +9937,54 @@ fn follow_up_entities(
                     .collect()
             })
             .unwrap_or_default(),
+        AssistantToolName::LibrariesListAccessible => block
+            .data
+            .get("libraries")
+            .and_then(serde_json::Value::as_array)
+            .map(|libraries| {
+                libraries
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, library)| {
+                        let id = library.get("id").and_then(serde_json::Value::as_str)?;
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: library
+                                .get("name")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or(id)
+                                .to_string(),
+                            identifier: Some(id.to_string()),
+                            kind: Some("library".to_string()),
+                            topic_key: Some(format!("library:{id}")),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::LibrariesGetLibrarySummary => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
+                .data
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&block.label)
+                .to_string(),
+            identifier: block
+                .data
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            kind: Some("library".to_string()),
+            topic_key: block
+                .data
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(|library_id| format!("library:{library_id}")),
+            ..Default::default()
+        }],
         AssistantToolName::LibrariesGetRecentlyAdded => block
             .data
             .get("items")
@@ -4393,21 +10008,360 @@ fn follow_up_entities(
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::LibraryGetItemSummary => vec![AssistantFollowUpEntity {
+        AssistantToolName::LibrariesFindDuplicateTitles => block
+            .data
+            .get("duplicates")
+            .and_then(serde_json::Value::as_array)
+            .map(|duplicates| {
+                duplicates
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, duplicate)| {
+                        let title = duplicate.get("title").and_then(serde_json::Value::as_str)?;
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: title.to_string(),
+                            identifier: Some(title.to_string()),
+                            kind: Some("library_title_group".to_string()),
+                            topic_key: Some(format!("library_title:{title}")),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::LibrariesListMissingMetadata => block
+            .data
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, item)| {
+                        let title = item.get("title").and_then(serde_json::Value::as_str)?;
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: title.to_string(),
+                            identifier: item
+                                .get("id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            kind: Some("library_item".to_string()),
+                            topic_key: item
+                                .get("library_id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|library_id| format!("library:{library_id}")),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::SystemGetServiceHealth => block
+            .data
+            .get("components")
+            .and_then(serde_json::Value::as_array)
+            .map(|components| {
+                components
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, component)| {
+                        let name = component.get("name").and_then(serde_json::Value::as_str)?;
+                        let status = component
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown");
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!("{name} ({status})"),
+                            identifier: Some(name.to_string()),
+                            kind: Some("system_service".to_string()),
+                            topic_key: Some(format!("service:{name}")),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::SystemGetServiceDetail => vec![AssistantFollowUpEntity {
             ordinal: 1,
             label: block
                 .data
-                .get("title")
+                .get("component")
+                .and_then(|component| component.get("name"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
             identifier: block
                 .data
-                .get("id")
+                .get("component")
+                .and_then(|component| component.get("name"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            kind: Some("system_service".to_string()),
+            topic_key: block
+                .data
+                .get("component")
+                .and_then(|component| component.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .map(|name| format!("service:{name}")),
             ..Default::default()
         }],
+        AssistantToolName::SystemGetPortConflicts => block
+            .data
+            .get("conflicts")
+            .and_then(serde_json::Value::as_array)
+            .map(|conflicts| {
+                conflicts
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, conflict)| {
+                        let protocol = conflict
+                            .get("protocol")
+                            .and_then(serde_json::Value::as_str)?;
+                        let local_address = conflict
+                            .get("local_address")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("*");
+                        let local_port = conflict
+                            .get("local_port")
+                            .and_then(serde_json::Value::as_u64);
+                        let label = match local_port {
+                            Some(port) => format!("{protocol} {local_address}:{port}"),
+                            None => format!("{protocol} {local_address}"),
+                        };
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: label.clone(),
+                            identifier: Some(label),
+                            kind: Some("system_port_conflict".to_string()),
+                            topic_key: Some("system:port_conflicts".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::SystemGetPortConflictDetail => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
+                .data
+                .get("local_port")
+                .and_then(serde_json::Value::as_u64)
+                .map(|port| {
+                    format!(
+                        "{}:{}",
+                        block
+                            .data
+                            .get("protocol")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tcp")
+                            .to_ascii_uppercase(),
+                        port
+                    )
+                })
+                .or_else(|| {
+                    block
+                        .data
+                        .get("local_address")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| block.label.clone()),
+            identifier: block
+                .data
+                .get("local_port")
+                .and_then(serde_json::Value::as_u64)
+                .map(|port| {
+                    format!(
+                        "{}:{}",
+                        block
+                            .data
+                            .get("protocol")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tcp")
+                            .to_ascii_uppercase(),
+                        port
+                    )
+                })
+                .or_else(|| {
+                    block
+                        .data
+                        .get("local_address")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                }),
+            kind: Some("system_port_conflict".to_string()),
+            topic_key: Some("system:port_conflicts".to_string()),
+            ..Default::default()
+        }],
+        AssistantToolName::SystemGetFailedUnits => block
+            .data
+            .get("units")
+            .and_then(serde_json::Value::as_array)
+            .map(|units| {
+                units
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, unit)| {
+                        let name = unit.get("name").and_then(serde_json::Value::as_str)?;
+                        let active = unit
+                            .get("active")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown");
+                        let sub = unit
+                            .get("sub")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown");
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!("{name} ({active}/{sub})"),
+                            identifier: Some(name.to_string()),
+                            kind: Some("system_failed_unit".to_string()),
+                            topic_key: Some("system:failed_units".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::SystemGetFailedUnitDetail => block
+            .data
+            .get("detail")
+            .and_then(|value| {
+                serde_json::from_value::<SystemFailedUnitDetailSummary>(value.clone()).ok()
+            })
+            .map(|detail| {
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: format!(
+                        "{} ({}/{})",
+                        detail.unit.name, detail.unit.load, detail.unit.active
+                    ),
+                    identifier: Some(detail.unit.name),
+                    kind: Some("system_failed_unit".to_string()),
+                    topic_key: Some("system:failed_units".to_string()),
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default(),
+        AssistantToolName::SystemGetStorageSummary => block
+            .data
+            .get("paths")
+            .and_then(serde_json::Value::as_array)
+            .map(|paths| {
+                paths
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, path)| {
+                        let name = path.get("name").and_then(serde_json::Value::as_str)?;
+                        let path_value = path
+                            .get("path")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(name);
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!("{name} ({path_value})"),
+                            identifier: Some(path_value.to_string()),
+                            kind: Some("storage_path".to_string()),
+                            topic_key: Some(format!("storage_path:{name}")),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::SystemGetStoragePathDetail => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
+                .data
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| block.data.get("path").and_then(serde_json::Value::as_str))
+                .unwrap_or(&block.label)
+                .to_string(),
+            identifier: block
+                .data
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| block.data.get("name").and_then(serde_json::Value::as_str))
+                .map(str::to_string),
+            kind: Some("storage_path".to_string()),
+            topic_key: block
+                .data
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| block.data.get("path").and_then(serde_json::Value::as_str))
+                .map(|name| format!("storage_path:{name}")),
+            ..Default::default()
+        }],
+        AssistantToolName::SystemGetMountDetail => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
+                .data
+                .get("mount_point")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| block.data.get("path").and_then(serde_json::Value::as_str))
+                .unwrap_or(&block.label)
+                .to_string(),
+            identifier: block
+                .data
+                .get("mount_point")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    block
+                        .data
+                        .get("mount_source")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .map(str::to_string),
+            kind: Some("storage_mount".to_string()),
+            topic_key: block
+                .data
+                .get("mount_point")
+                .and_then(serde_json::Value::as_str)
+                .map(|mount_point| format!("storage_mount:{mount_point}")),
+            ..Default::default()
+        }],
+        AssistantToolName::LibraryGetItemSummary
+        | AssistantToolName::LibraryGetItemMediaDetails
+        | AssistantToolName::LibraryGetItemSourcePaths => {
+            vec![AssistantFollowUpEntity {
+                ordinal: 1,
+                label: block
+                    .data
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&block.label)
+                    .to_string(),
+                identifier: block
+                    .data
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                kind: Some("library_item".to_string()),
+                topic_key: block
+                    .data
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|item_id| format!("library_item:{item_id}"))
+                    .or_else(|| {
+                        block
+                            .data
+                            .get("library_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|library_id| format!("library:{library_id}"))
+                    }),
+                ..Default::default()
+            }]
+        }
         AssistantToolName::RoomsListActive => block
             .data
             .get("rooms")
@@ -4548,17 +10502,20 @@ fn follow_up_entities(
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
         | AssistantToolName::WeatherGetHistory
+        | AssistantToolName::WeatherResolveLocationAlias
+        | AssistantToolName::WeatherGetForecastForDate
+        | AssistantToolName::WeatherGetRecentHistoryForDate
         | AssistantToolName::AccountGetProfileSummary
-        | AssistantToolName::LibrariesListAccessible
-        | AssistantToolName::NetworkGetTopologySummary
         | AssistantToolName::SystemGetCurrentDateTime
         | AssistantToolName::SystemGetAiRuntimeSummary
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
-        | AssistantToolName::SystemGetServiceHealth
         | AssistantToolName::SystemGetTranscodeSummary
-        | AssistantToolName::SystemGetStorageSummary
-        | AssistantToolName::SystemGetRecentErrors => Vec::new(),
+        | AssistantToolName::SystemGetRecentErrors
+        | AssistantToolName::SystemGetProcessDetail
+        | AssistantToolName::SystemGetListenerDetail
+        | AssistantToolName::SystemGetDiskUsageDetail => Vec::new(),
+        _ => Vec::new(),
     }
 }
 
@@ -4583,6 +10540,13 @@ fn downloads_matches_query(
     item.title.to_ascii_lowercase().contains(&query)
         || item.summary.to_ascii_lowercase().contains(&query)
         || item.id.to_ascii_lowercase().contains(&query)
+        || item.artifact_id.to_ascii_lowercase().contains(&query)
+        || item
+            .package_filename
+            .as_deref()
+            .map(|value| value.to_ascii_lowercase().contains(&query))
+            .unwrap_or(false)
+        || item.detail.to_ascii_lowercase().contains(&query)
 }
 
 fn downloads_matches_availability(
@@ -4615,6 +10579,269 @@ fn downloads_status_label(count: usize, query: Option<&str>, availability: Optio
         (None, Some(availability)) => format!("{count} {availability} downloads"),
         (None, None) => format!("{count} host-published downloads"),
     }
+}
+
+fn downloads_find_artifact_detail<'a>(
+    items: &'a [crate::downloads::DownloadArtifactResponse],
+    query: &str,
+    availability_filter: Option<&str>,
+) -> Option<(&'a crate::downloads::DownloadArtifactResponse, String)> {
+    let query = query.trim();
+    if query.is_empty() {
+        return None;
+    }
+    let query_lower = query.to_ascii_lowercase();
+
+    let filtered: Vec<_> = items
+        .iter()
+        .filter(|item| downloads_matches_availability(item, availability_filter))
+        .collect();
+
+    let exact_matches: Vec<_> = filtered
+        .iter()
+        .filter_map(|item| {
+            if item.id.eq_ignore_ascii_case(query) {
+                Some((*item, "id".to_string()))
+            } else if item.artifact_id.eq_ignore_ascii_case(query) {
+                Some((*item, "artifact_id".to_string()))
+            } else if item.title.eq_ignore_ascii_case(query) {
+                Some((*item, "title".to_string()))
+            } else if item
+                .package_filename
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(query))
+            {
+                Some((*item, "package_filename".to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if exact_matches.len() == 1 {
+        return Some((exact_matches[0].0, exact_matches[0].1.clone()));
+    }
+    if exact_matches.len() > 1 {
+        return None;
+    }
+
+    let partial_matches: Vec<_> = filtered
+        .iter()
+        .filter_map(|item| {
+            if item.id.to_ascii_lowercase().contains(&query_lower) {
+                Some((*item, "id".to_string()))
+            } else if item.artifact_id.to_ascii_lowercase().contains(&query_lower) {
+                Some((*item, "artifact_id".to_string()))
+            } else if item.title.to_ascii_lowercase().contains(&query_lower) {
+                Some((*item, "title".to_string()))
+            } else if item
+                .package_filename
+                .as_deref()
+                .map(|value| value.to_ascii_lowercase().contains(&query_lower))
+                .unwrap_or(false)
+            {
+                Some((*item, "package_filename".to_string()))
+            } else if item.summary.to_ascii_lowercase().contains(&query_lower) {
+                Some((*item, "summary".to_string()))
+            } else if item.detail.to_ascii_lowercase().contains(&query_lower) {
+                Some((*item, "detail".to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if partial_matches.len() == 1 {
+        Some((partial_matches[0].0, partial_matches[0].1.clone()))
+    } else {
+        None
+    }
+}
+
+fn default_library_settings_row(
+    library_id: &str,
+) -> rustfin_db::repo::libraries::LibrarySettingsRow {
+    rustfin_db::repo::libraries::LibrarySettingsRow {
+        library_id: library_id.to_string(),
+        show_images: true,
+        prefer_local_artwork: true,
+        fetch_online_artwork: true,
+        tmdb_store_in_media_dir: false,
+        tmdb_sync_on_new_media: true,
+        tmdb_sync_schedule: "manual".to_string(),
+        tmdb_last_sync_ts: None,
+        tmdb_fetch_posters: true,
+        tmdb_fetch_backdrops: true,
+        tmdb_fetch_metadata: true,
+        tmdb_fetch_reviews: false,
+        updated_ts: chrono::Utc::now().timestamp(),
+    }
+}
+
+fn library_settings_summary(
+    settings: &rustfin_db::repo::libraries::LibrarySettingsRow,
+) -> LibrarySettingsSummary {
+    LibrarySettingsSummary {
+        show_images: settings.show_images,
+        prefer_local_artwork: settings.prefer_local_artwork,
+        fetch_online_artwork: settings.fetch_online_artwork,
+        tmdb_store_in_media_dir: settings.tmdb_store_in_media_dir,
+        tmdb_sync_on_new_media: settings.tmdb_sync_on_new_media,
+        tmdb_sync_schedule: settings.tmdb_sync_schedule.clone(),
+        tmdb_last_sync_ts: settings.tmdb_last_sync_ts,
+        tmdb_fetch_posters: settings.tmdb_fetch_posters,
+        tmdb_fetch_backdrops: settings.tmdb_fetch_backdrops,
+        tmdb_fetch_metadata: settings.tmdb_fetch_metadata,
+        tmdb_fetch_reviews: settings.tmdb_fetch_reviews,
+    }
+}
+
+fn library_matches_query(
+    library: &rustfin_db::repo::libraries::LibraryRow,
+    query: &str,
+) -> Option<String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return None;
+    }
+    let query_lower = query.to_ascii_lowercase();
+    if library.id.eq_ignore_ascii_case(query) {
+        Some("id".to_string())
+    } else if library.name.eq_ignore_ascii_case(query) {
+        Some("name".to_string())
+    } else if library.kind.eq_ignore_ascii_case(query) {
+        Some("kind".to_string())
+    } else if library.id.to_ascii_lowercase().contains(&query_lower) {
+        Some("id".to_string())
+    } else if library.name.to_ascii_lowercase().contains(&query_lower) {
+        Some("name".to_string())
+    } else if library.kind.to_ascii_lowercase().contains(&query_lower) {
+        Some("kind".to_string())
+    } else {
+        None
+    }
+}
+
+fn libraries_find_library_detail<'a>(
+    libraries: &'a [rustfin_db::repo::libraries::LibraryRow],
+    query: &str,
+) -> Option<(&'a rustfin_db::repo::libraries::LibraryRow, String)> {
+    let query = query.trim();
+    if query.is_empty() {
+        return None;
+    }
+
+    let exact_matches: Vec<_> = libraries
+        .iter()
+        .filter_map(|library| {
+            if library.id.eq_ignore_ascii_case(query) {
+                Some((library, "id".to_string()))
+            } else if library.name.eq_ignore_ascii_case(query) {
+                Some((library, "name".to_string()))
+            } else if library.kind.eq_ignore_ascii_case(query) {
+                Some((library, "kind".to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if exact_matches.len() == 1 {
+        return Some((exact_matches[0].0, exact_matches[0].1.clone()));
+    }
+    if exact_matches.len() > 1 {
+        return None;
+    }
+
+    let partial_matches: Vec<_> = libraries
+        .iter()
+        .filter_map(|library| {
+            library_matches_query(library, query).map(|matched_by| (library, matched_by))
+        })
+        .collect();
+
+    if partial_matches.len() == 1 {
+        Some((partial_matches[0].0, partial_matches[0].1.clone()))
+    } else {
+        None
+    }
+}
+
+async fn accessible_libraries_for_context(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<Vec<rustfin_db::repo::libraries::LibraryRow>, String> {
+    let allowed_library_ids = if context.is_admin {
+        None
+    } else {
+        Some(
+            rustfin_db::repo::users::get_library_access(&state.db, &context.user_id)
+                .await
+                .map_err(|e| format!("failed to load library permissions: {e}"))?
+                .into_iter()
+                .collect::<HashSet<_>>(),
+        )
+    };
+
+    let libraries = rustfin_db::repo::libraries::list_libraries(&state.db)
+        .await
+        .map_err(|e| format!("failed to load libraries: {e}"))?;
+
+    Ok(libraries
+        .into_iter()
+        .filter(|library| {
+            allowed_library_ids
+                .as_ref()
+                .map(|allowed| allowed.contains(&library.id))
+                .unwrap_or(true)
+        })
+        .collect())
+}
+
+fn normalize_library_duplicate_key(item: &rustfin_db::repo::items::ItemRow) -> String {
+    let raw = item
+        .sort_title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&item.title);
+    raw.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn library_item_missing_metadata_fields(item: &rustfin_db::repo::items::ItemRow) -> Vec<String> {
+    let mut missing = Vec::new();
+    if item.year.is_none() {
+        missing.push("year".to_string());
+    }
+    if item
+        .overview
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        missing.push("overview".to_string());
+    }
+    if !item_has_any_artwork(item) {
+        missing.push("artwork".to_string());
+    }
+    missing
+}
+
+fn item_has_any_artwork(item: &rustfin_db::repo::items::ItemRow) -> bool {
+    [
+        item.poster_url.as_deref(),
+        item.backdrop_url.as_deref(),
+        item.logo_url.as_deref(),
+        item.thumb_url.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .any(|value| !value.is_empty())
 }
 
 #[cfg(test)]
