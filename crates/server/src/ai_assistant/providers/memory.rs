@@ -21,6 +21,7 @@ impl ToolProvider for MemoryToolProvider {
         registry.register_tool(self, AssistantToolName::MemoryFindExactEntity);
         registry.register_tool(self, AssistantToolName::MemoryGetEntityRelations);
         registry.register_tool(self, AssistantToolName::MemoryGetEntityRelationPath);
+        registry.register_tool(self, AssistantToolName::MemoryGetPersonSummary);
         registry.register_tool(self, AssistantToolName::MemoryListRecentChanges);
         registry.register_tool(self, AssistantToolName::MemoryListConflictingFacts);
         registry.register_tool(self, AssistantToolName::MemoryGetEntityProvenance);

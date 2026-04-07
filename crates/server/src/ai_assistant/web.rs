@@ -30,6 +30,8 @@ pub struct PublicWebSearchResult {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicWebPageSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     pub requested_url: String,
     pub final_url: String,
     pub source_host: String,
@@ -84,6 +86,7 @@ pub async fn fetch_public_page_summary(raw_url: &str) -> Result<PublicWebPageSum
         return Err("public page did not contain extractable text".to_string());
     }
     Ok(PublicWebPageSummary {
+        category: None,
         requested_url: fetched.requested_url,
         final_url: fetched.final_url,
         source_host: fetched.source_host,

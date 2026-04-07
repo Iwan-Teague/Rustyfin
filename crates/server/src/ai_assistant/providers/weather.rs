@@ -19,6 +19,7 @@ impl ToolProvider for WeatherToolProvider {
         registry.register_tool(self, AssistantToolName::WeatherGetHistory);
         registry.register_tool(self, AssistantToolName::WeatherResolveLocationAlias);
         registry.register_tool(self, AssistantToolName::WeatherGetForecastForDate);
+        registry.register_tool(self, AssistantToolName::WeatherGetHourlyWindow);
         registry.register_tool(self, AssistantToolName::WeatherGetRecentHistoryForDate);
     }
 

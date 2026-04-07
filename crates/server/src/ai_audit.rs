@@ -501,8 +501,14 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
         } => format!(
             "weather_history:location={location}:label={label}:range={start_date}->{end_date}"
         ),
-        AssistantToolInput::WebSearch { query } => format!("web_search:{query}"),
-        AssistantToolInput::WebFetch { url } => format!("web_fetch:{url}"),
+        AssistantToolInput::WebSearch { query, category } => match category.as_deref() {
+            Some(category) => format!("web_search:{category}:{query}"),
+            None => format!("web_search:{query}"),
+        },
+        AssistantToolInput::WebFetch { url, category } => match category.as_deref() {
+            Some(category) => format!("web_fetch:{category}:{url}"),
+            None => format!("web_fetch:{url}"),
+        },
         AssistantToolInput::RoomsFilter { room_mode, query } => format!(
             "rooms:mode={}:query={}",
             room_mode.as_deref().unwrap_or("*"),

@@ -28,6 +28,7 @@ use super::types::{
     PreparedAssistantTurn,
 };
 use super::web::{normalize_public_url, public_web_tools_enabled};
+use super::web_sources::{curated_web_category_for_url, curated_web_category_label};
 use crate::auth::AuthUser;
 use crate::state::AppState;
 
@@ -91,6 +92,7 @@ impl PlannerAstToolCall {
         PlannerAstArgs {
             query: args.query.clone().or_else(|| legacy.query.clone()),
             url: args.url.clone().or_else(|| legacy.url.clone()),
+            category: args.category.clone().or_else(|| legacy.category.clone()),
             availability: args
                 .availability
                 .clone()
@@ -106,6 +108,8 @@ struct PlannerAstArgs {
     query: Option<String>,
     #[serde(default)]
     url: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
     #[serde(default)]
     availability: Option<String>,
     #[serde(default)]
@@ -413,10 +417,15 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
                 AssistantToolName::WeatherGetCurrent
                     | AssistantToolName::WeatherGetForecast
                     | AssistantToolName::WeatherGetHistory
+                    | AssistantToolName::WeatherGetHourlyWindow
+                    | AssistantToolName::WeatherResolveLocationAlias
+                    | AssistantToolName::WeatherGetForecastForDate
+                    | AssistantToolName::WeatherGetRecentHistoryForDate
                     | AssistantToolName::SystemGetCurrentDateTime
                     | AssistantToolName::SystemGetAiRuntimeSummary
                     | AssistantToolName::NetworkGetTopologySummary
                     | AssistantToolName::NetworkGetInterfaceDetails
+                    | AssistantToolName::NetworkGetInterfaceByIp
                     | AssistantToolName::NetworkGetDefaultRoute
                     | AssistantToolName::NetworkGetHostnameAliases
                     | AssistantToolName::NetworkGetDnsServers
@@ -429,12 +438,17 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
                     | AssistantToolName::SystemGetServiceDetail
                     | AssistantToolName::SystemGetMountDetail
                     | AssistantToolName::SystemGetStoragePathDetail
+                    | AssistantToolName::SystemGetProcessDetail
+                    | AssistantToolName::SystemGetListenerDetail
+                    | AssistantToolName::SystemGetDiskUsageDetail
                     | AssistantToolName::SystemGetPortConflicts
                     | AssistantToolName::SystemGetPortConflictDetail
                     | AssistantToolName::SystemGetFailedUnits
                     | AssistantToolName::SystemGetFailedUnitDetail
                     | AssistantToolName::DownloadsListAvailableArtifacts
                     | AssistantToolName::DownloadsGetArtifactDetails
+                    | AssistantToolName::DownloadsGetArtifactSource
+                    | AssistantToolName::DownloadsGetReleaseNotes
                     | AssistantToolName::DownloadsGetArtifactChecksum
                     | AssistantToolName::DownloadsGetArtifactInstallSteps
                     | AssistantToolName::DownloadsGetArtifactCompatibility
@@ -443,6 +457,7 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
                     | AssistantToolName::LibrarySearchTitles
                     | AssistantToolName::LibraryGetItemSummary
                     | AssistantToolName::LibraryGetItemMediaDetails
+                    | AssistantToolName::LibraryGetItemSourcePaths
                     | AssistantToolName::LibrariesGetRecentlyAdded
                     | AssistantToolName::LibrariesFindDuplicateTitles
                     | AssistantToolName::LibrariesListMissingMetadata
@@ -460,6 +475,7 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
                     | AssistantToolName::MemorySearchFacts
                     | AssistantToolName::MemorySearchEntities
                     | AssistantToolName::MemoryGetEntityRelations
+                    | AssistantToolName::MemoryGetPersonSummary
                     | AssistantToolName::MemoryGetEntityProvenance
                     | AssistantToolName::SystemGetKernelInfo
                     | AssistantToolName::SystemGetCpuTopology
@@ -740,7 +756,7 @@ fn build_model_planner_messages(
                 "You are the Rustyfin assistant tool planner. Choose zero to {MAX_TOOL_CALLS_PER_TURN} grounded read-only tools. \
 Return JSON only with no markdown, no prose, and no code fences.\n\
 Schema:\n\
-{{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"args\":{{\"query\":\"optional\",\"url\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\"}}}}]}}\n\
+{{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"args\":{{\"query\":\"optional\",\"url\":\"optional\",\"category\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\"}}}}]}}\n\
 or\n\
 {{\"mode\":\"none\",\"tools\":[]}}\n\
 Rules:\n\
@@ -751,14 +767,21 @@ Rules:\n\
 - Use library_search_titles for searching by title.\n\
 - Use libraries_get_library_summary when the user wants exact metadata, item counts, paths, or settings for one accessible library.\n\
 - Use library_get_item_media_details when the user wants file path, artwork, poster/backdrop/logo, or storage details for one specific library item.\n\
+- Use library_get_item_source_paths when the user wants the source file paths for one specific library item.\n\
 - Use libraries_get_recently_added for recently added or newest library items.\n\
 - Use libraries_find_duplicate_titles when the user wants duplicate titles or collisions across accessible libraries.\n\
 - Use libraries_list_missing_metadata when the user wants library items with missing metadata.\n\
 - Use downloads_list_available_artifacts for generic host-published download questions.\n\
 - Use downloads_get_artifact_details when the user wants exact metadata for one specific download artifact or package.\n\
+- Use downloads_get_artifact_source when the user wants the source URL or package path for one specific download artifact.\n\
+- Use downloads_get_release_notes when the user wants the release-note text for one specific download artifact.\n\
 - Use downloads_get_artifact_checksum when the user wants only the checksum or verification hash for one specific download artifact.\n\
 - Use downloads_get_artifact_install_steps when the user wants install steps or setup instructions for one specific download artifact.\n\
 - Use downloads_get_artifact_compatibility when the user wants platform or architecture compatibility for one specific download artifact.\n\
+- Use web_search_public_web with category=technology for technology, developer, engineering, or AI sources.\n\
+- Use web_search_public_web with category=business for business, company, market, earnings, or startup sources.\n\
+- Use web_search_public_web with category=economics for macroeconomics, inflation, labor, or official-data sources.\n\
+- Use web_fetch_public_page_summary with category when the URL belongs to one of the curated source sets.\n\
 - Use memory_list_recent_facts for recent stored facts.\n\
 - Use memory_list_recent_entities for recent stored entities or people.\n\
 - Use memory_list_recent_changes when the user asks what changed recently in memory, optionally narrowed to a subject.\n\
@@ -767,6 +790,7 @@ Rules:\n\
 - Use memory_search_entities for searching stored entities or people by subject.\n\
 - Use memory_find_exact_entity for exact stored entity lookups.\n\
 - Use memory_get_entity_relations when the user asks who or what is related to a stored entity.\n\
+- Use memory_get_person_summary when the user wants a grounded summary of one specific person or profile entity.\n\
 - Use memory_get_entity_relation_path when the user asks how two stored entities are connected.\n\
 - Use memory_get_entity_provenance when the user asks where a stored entity or fact came from or what source grounded it.\n\
 - Use calendar_upcoming_birthdays only for birthday requests, including named questions like \"When is Rachel's birthday?\".\n\
@@ -781,6 +805,7 @@ Rules:\n\
 - Use channels_get_transcript_summary when the user asks what a transcribed voice call was about or wants a transcript-based call summary.\n\
 - Use network_get_topology_summary for Rustyfin network, interface, IP address, hostname, remote-access, proxy, or topology questions.\n\
 - Use network_get_interface_details when the user wants one specific interface or IP address.\n\
+- Use network_get_interface_by_ip when the user asks which interface owns a specific IP address.\n\
 - Use network_get_default_route when the user asks for the host default route, gateway, or outbound path.\n\
 - Use network_get_hostname_aliases when the user asks about hostname aliases, host naming, or /etc/hosts style mappings.\n\
 - Use network_get_dns_servers when the user asks about DNS servers, resolvers, nameservers, or resolver configuration.\n\
@@ -792,6 +817,10 @@ Rules:\n\
 - Use weather_get_current for current weather, temperature, wind, or conditions right now.\n\
 - Use weather_get_forecast for forecast, tomorrow, weekend, this week, next few days, rain chance, or weather planning questions.\n\
 - Use weather_get_history for recent past-weather questions such as yesterday, last night, or a specific earlier date.\n\
+- Use weather_resolve_location_alias when the user wants a canonical location or timezone.\n\
+- Use weather_get_forecast_for_date when the user asks about weather on one exact calendar day.\n\
+- Use weather_get_hourly_window when the user asks for hour-by-hour weather on one exact day.\n\
+- Use weather_get_recent_history_for_date when the user asks about weather on one exact recent past day.\n\
 - Use rooms_list_joinable for invites or rooms the user can join now.\n\
 - Use system_get_current_datetime for current date/time questions or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
 - Use system_get_ai_runtime_summary for current AI model, backend, role-routing, queue, or warm-pool questions.\n\
@@ -802,6 +831,9 @@ Rules:\n\
 - Use system_get_transcode_summary for transcoding, ffmpeg, hardware acceleration, or transcode-failure questions.\n\
 - Use system_get_storage_path_detail for one specific storage path, mount point, cache directory, model directory, or disk-usage location.\n\
 - Use system_get_mount_detail for one specific mount point, mounted filesystem, volume, or backing mount query.\n\
+- Use system_get_process_detail for one specific host process, pid, or command-line query.\n\
+- Use system_get_listener_detail for one specific listener or socket query.\n\
+- Use system_get_disk_usage_detail for one specific path or mount when the user wants exact disk usage.\n\
 - Use system_get_storage_summary for general storage, disk, cache, or free-space questions.\n\
 - Use system_get_recent_errors for recent failures, problem summaries, or error overviews.\n\
 - Use system_get_kernel_info for kernel, OS release, or base platform questions.\n\
@@ -818,8 +850,10 @@ Rules:\n\
 - Use system_get_port_conflict_detail for one specific port, socket, or process/listener question.\n\
 - Use system_get_failed_units for failed systemd units or service failures.\n\
 - Use system_get_failed_unit_detail for one specific failed systemd unit or service failure.\n\
-- Use web_fetch_public_page_summary only for explicit public URLs.\n\
-- Use web_search_public_web only for current public web information not already covered by a Rustyfin tool or curated public-weather tools.\n\
+- Use web_list_curated_sources when the user asks what trusted public-web source categories are available.\n\
+- Use web_search_public_web with an optional curated category when the user wants technology, business, or economics sources.\n\
+- Use web_fetch_public_page_summary with an optional curated category for explicit public URLs from those source sets.\n\
+- Use web_search_public_web only for current public web information not already covered by a Rustyfin tool, the curated source catalog, or curated public-weather tools.\n\
 - If the request is unsupported, casual chat, a joke, simple math, roleplay, a tone/style instruction, a reset request, or a write action, return mode none.\n\
 - Allowed availability values for downloads: available, planned, unavailable.\n\
 - Allowed availability values for servers: online, offline, healthy, problem.\n\
@@ -939,9 +973,6 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::CalendarGetEventDetails => {
             " Args: required query; the backend derives the visible calendar window from the message or follow-up context."
         }
-        AssistantToolName::MemoryGetPersonSummary => {
-            " Args: required query; the backend resolves one stored person or profile entity."
-        }
         AssistantToolName::ChannelsListUnreadActivity => {
             " Args: optional query; exact unread counts are unavailable."
         }
@@ -972,6 +1003,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::NetworkGetTopologySummary => " Args: none.",
         AssistantToolName::NetworkGetInterfaceDetails => {
             " Args: required query; the backend resolves one network interface or IP address."
+        }
+        AssistantToolName::NetworkGetInterfaceByIp => {
+            " Args: required query; the backend resolves one network interface from an exact IP address."
         }
         AssistantToolName::NetworkGetDefaultRoute => {
             " Args: optional query; the backend resolves the host default route, gateway, or outbound path."
@@ -1013,6 +1047,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::WeatherGetHistory => {
             " Args: required location; the backend derives the recent history date window from the message."
         }
+        AssistantToolName::WeatherGetHourlyWindow => {
+            " Args: required location; the backend derives the exact hourly date window from the message."
+        }
         AssistantToolName::WeatherResolveLocationAlias => {
             " Args: required location; the backend resolves a canonical location and timezone."
         }
@@ -1022,8 +1059,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::WeatherGetRecentHistoryForDate => {
             " Args: required location; the backend derives the target history date from the message."
         }
-        AssistantToolName::WebSearchPublicWeb => " Args: required query.",
-        AssistantToolName::WebFetchPublicPageSummary => " Args: required url.",
+        AssistantToolName::WebListCuratedSources => " Args: none.",
+        AssistantToolName::WebSearchPublicWeb => " Args: required query; optional category.",
+        AssistantToolName::WebFetchPublicPageSummary => " Args: required url; optional category.",
         AssistantToolName::RoomsListActive => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsListJoinable => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsGetRoomSummary => " Args: required query, optional room_mode.",
@@ -1105,6 +1143,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         | AssistantToolName::SystemGetRecentErrors => " Args: none.",
         AssistantToolName::MemoryListRecentEntities => {
             " Args: none; the backend lists the signed-in user's recent stored entities."
+        }
+        AssistantToolName::MemoryGetPersonSummary => {
+            " Args: required query; the backend resolves one stored person or profile entity and returns a grounded summary."
         }
         AssistantToolName::MemoryGetEntityRelations => {
             " Args: required query; the backend resolves one stored entity and loads its immediate relations."
@@ -1409,7 +1450,9 @@ fn message_allows_weather_tool(message: &str, history: &[AssistantHistoryMessage
 fn tool_visible_to_user(tool: AssistantToolName, user: &AuthUser) -> bool {
     if matches!(
         tool,
-        AssistantToolName::WebSearchPublicWeb | AssistantToolName::WebFetchPublicPageSummary
+        AssistantToolName::WebListCuratedSources
+            | AssistantToolName::WebSearchPublicWeb
+            | AssistantToolName::WebFetchPublicPageSummary
     ) && !public_web_tools_enabled()
     {
         return false;
@@ -1779,6 +1822,18 @@ fn normalize_planner_tool_input(
                     .or_else(|| extract_downloads_availability(message)),
             })
         }
+        AssistantToolName::NetworkGetInterfaceByIp => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_network_interface_ip_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "network interface by IP queries require an exact IP address",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::NetworkInterface { query })
+        }
         AssistantToolName::NetworkGetInterfaceDetails => {
             let query = normalize_optional_query(args.query.clone())
                 .or_else(|| extract_network_interface_query(message))
@@ -1868,6 +1923,28 @@ fn normalize_planner_tool_input(
         }),
         AssistantToolName::LibrariesFindDuplicateTitles
         | AssistantToolName::LibrariesListMissingMetadata => Ok(AssistantToolInput::None),
+        AssistantToolName::WeatherGetHourlyWindow => {
+            let location = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_weather_location(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "weather hourly window queries require a location",
+                        Some("args.query"),
+                    )
+                })?;
+            let today = assistant_local_today();
+            let (date, label) = extract_single_calendar_date(message, today).unwrap_or((
+                today,
+                "today".to_string(),
+            ));
+            Ok(AssistantToolInput::WeatherHistory {
+                location,
+                start_date: date.format("%F").to_string(),
+                end_date: date.format("%F").to_string(),
+                label,
+            })
+        }
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
         | AssistantToolName::WeatherGetHistory
@@ -1885,6 +1962,7 @@ fn normalize_planner_tool_input(
                     )
                 })
         }
+        AssistantToolName::WebListCuratedSources => Ok(AssistantToolInput::None),
         AssistantToolName::WebSearchPublicWeb => Ok(AssistantToolInput::WebSearch {
             query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_public_web_search_query(message))
@@ -1895,9 +1973,12 @@ fn normalize_planner_tool_input(
                         Some("args.query"),
                     )
                 })?,
+            category: normalize_optional_query(args.category.clone())
+                .and_then(|category| validate_curated_web_category_slug(&category))
+                .or_else(|| infer_curated_web_category_slug(message)),
         }),
-        AssistantToolName::WebFetchPublicPageSummary => Ok(AssistantToolInput::WebFetch {
-            url: validated_public_web_url(
+        AssistantToolName::WebFetchPublicPageSummary => {
+            let url = validated_public_web_url(
                 normalize_optional_query(args.url.clone())
                     .or_else(|| normalize_optional_query(args.query.clone()))
                     .or_else(|| extract_public_web_url(message))
@@ -1908,8 +1989,12 @@ fn normalize_planner_tool_input(
                             Some("args.url"),
                         )
                     })?,
-            )?,
-        }),
+            )?;
+            let category = normalize_optional_query(args.category.clone())
+                .and_then(|category| validate_curated_web_category_slug(&category))
+                .or_else(|| infer_curated_web_category_for_url(&url));
+            Ok(AssistantToolInput::WebFetch { url, category })
+        }
         AssistantToolName::RoomsListActive => Ok(AssistantToolInput::RoomsFilter {
             room_mode: validated_room_mode(args.room_mode.as_deref())?
                 .or_else(|| detect_room_mode(message)),
@@ -2040,6 +2125,7 @@ fn unsupported_combo_domain(tool: AssistantToolName) -> Option<&'static str> {
         | AssistantToolName::DownloadsGetArtifactDetails => Some("downloads"),
         AssistantToolName::NetworkGetTopologySummary
         | AssistantToolName::NetworkGetInterfaceDetails
+        | AssistantToolName::NetworkGetInterfaceByIp
         | AssistantToolName::NetworkGetDnsServers
         | AssistantToolName::NetworkGetDefaultRoute
         | AssistantToolName::NetworkGetHostnameAliases
@@ -2069,7 +2155,8 @@ fn unsupported_combo_domain(tool: AssistantToolName) -> Option<&'static str> {
         | AssistantToolName::ServersGetMinecraftServerSummary => Some("servers"),
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
-        | AssistantToolName::WeatherGetHistory => Some("weather"),
+        | AssistantToolName::WeatherGetHistory
+        | AssistantToolName::WeatherGetHourlyWindow => Some("weather"),
         AssistantToolName::SystemGetCurrentDateTime
         | AssistantToolName::SystemGetAiRuntimeSummary
         | AssistantToolName::SystemGetHostRuntimeSummary
@@ -2418,6 +2505,10 @@ fn is_system_cpu_topology_query(message_lower: &str) -> bool {
 }
 
 fn is_system_temperature_sensors_query(message_lower: &str) -> bool {
+    if is_weather_query(message_lower) {
+        return false;
+    }
+
     has_any(
         message_lower,
         &[
@@ -2450,6 +2541,12 @@ fn is_system_block_device_inventory_query(message_lower: &str) -> bool {
 }
 
 fn is_system_filesystem_table_query(message_lower: &str) -> bool {
+    if extract_mount_detail_query(message_lower).is_some()
+        || extract_storage_path_detail_query(message_lower).is_some()
+    {
+        return false;
+    }
+
     has_any(
         message_lower,
         &[
@@ -2528,6 +2625,12 @@ fn is_system_journal_summary_query(message_lower: &str) -> bool {
 }
 
 fn is_system_process_detail_query(message_lower: &str) -> bool {
+    if extract_port_conflict_detail_query(message_lower).is_some()
+        || extract_listener_detail_query(message_lower).is_some()
+    {
+        return false;
+    }
+
     has_any(
         message_lower,
         &[
@@ -2567,6 +2670,12 @@ fn is_system_listener_detail_query(message_lower: &str) -> bool {
 }
 
 fn is_system_disk_usage_detail_query(message_lower: &str) -> bool {
+    if extract_storage_path_detail_query(message_lower).is_some()
+        || extract_mount_detail_query(message_lower).is_some()
+    {
+        return false;
+    }
+
     has_any(
         message_lower,
         &[
@@ -2585,6 +2694,13 @@ fn is_system_disk_usage_detail_query(message_lower: &str) -> bool {
 }
 
 fn is_network_route_table_query(message_lower: &str) -> bool {
+    if has_any(
+        message_lower,
+        &["default route", "default gateway", "gateway", "gateways"],
+    ) {
+        return false;
+    }
+
     has_any(
         message_lower,
         &[
@@ -2592,10 +2708,6 @@ fn is_network_route_table_query(message_lower: &str) -> bool {
             "routing table",
             "routes",
             "routing",
-            "default route",
-            "default gateway",
-            "gateway",
-            "gateways",
             "ip route",
         ],
     )
@@ -2785,6 +2897,14 @@ fn push_network_diagnostics_tools(
     seen: &mut HashSet<&'static str>,
 ) {
     let lower = message.to_ascii_lowercase();
+    if let Some(query) = extract_network_interface_ip_query(message) {
+        push_tool(
+            planned,
+            seen,
+            AssistantToolName::NetworkGetInterfaceByIp,
+            AssistantToolInput::NetworkInterface { query },
+        );
+    }
     if is_network_route_table_query(&lower) {
         push_tool(
             planned,
@@ -3076,19 +3196,30 @@ pub fn plan_tool_calls_with_history(
     }
 
     if public_web_tools_enabled() {
-        if let Some(url) = extract_public_web_url(message) {
+        if is_curated_web_catalog_query(&lower) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::WebListCuratedSources,
+                AssistantToolInput::None,
+            );
+        } else if let Some(url) = extract_public_web_url(message) {
+            let category =
+                infer_curated_web_category_for_url(&url).or_else(|| recent_web_category(history));
             push_tool(
                 &mut planned,
                 &mut seen,
                 AssistantToolName::WebFetchPublicPageSummary,
-                AssistantToolInput::WebFetch { url },
+                AssistantToolInput::WebFetch { url, category },
             );
         } else if let Some(query) = extract_public_web_search_query(message) {
+            let category =
+                infer_curated_web_category_slug(message).or_else(|| recent_web_category(history));
             push_tool(
                 &mut planned,
                 &mut seen,
                 AssistantToolName::WebSearchPublicWeb,
-                AssistantToolInput::WebSearch { query },
+                AssistantToolInput::WebSearch { query, category },
             );
         }
     }
@@ -3167,6 +3298,13 @@ pub fn plan_tool_calls_with_history(
                 AssistantToolInput::NetworkDnsServers {
                     query: extract_network_dns_servers_query(message),
                 },
+            );
+        } else if let Some(query) = extract_network_interface_ip_query(message) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::NetworkGetInterfaceByIp,
+                AssistantToolInput::NetworkInterface { query },
             );
         } else if let Some(query) = extract_network_interface_query(message) {
             push_tool(
@@ -3372,6 +3510,15 @@ pub fn plan_tool_calls_with_history(
                 &mut planned,
                 &mut seen,
                 AssistantToolName::MemoryGetEntityRelations,
+                AssistantToolInput::SystemService { query },
+            );
+        }
+    } else if !message_has_other_domain_context(&lower) && is_memory_person_summary_query(&lower) {
+        if let Some(query) = extract_memory_person_summary_query(message) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::MemoryGetPersonSummary,
                 AssistantToolInput::SystemService { query },
             );
         }
@@ -3855,8 +4002,21 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         ) => {
             format!("Loading network interface details for \"{query}\"")
         }
+        (
+            AssistantToolName::NetworkGetInterfaceByIp,
+            AssistantToolInput::NetworkInterface { query },
+        ) => {
+            if query.parse::<std::net::IpAddr>().is_ok() {
+                format!("Resolving network interface for IP \"{query}\"")
+            } else {
+                format!("Loading network interface details for \"{query}\"")
+            }
+        }
         (AssistantToolName::NetworkGetInterfaceDetails, _) => {
             "Loading network interface details".to_string()
+        }
+        (AssistantToolName::NetworkGetInterfaceByIp, _) => {
+            "Resolving network interface for an IP address".to_string()
         }
         (
             AssistantToolName::NetworkGetDefaultRoute,
@@ -3899,6 +4059,12 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::WeatherGetForecast, AssistantToolInput::Weather { location, .. }) => {
             format!("Checking weather forecast for \"{location}\"")
         }
+        (
+            AssistantToolName::WeatherGetHourlyWindow,
+            AssistantToolInput::WeatherHistory {
+                location, label, ..
+            },
+        ) => format!("Checking hourly weather window for {label} in \"{location}\""),
         (
             AssistantToolName::WeatherGetHistory,
             AssistantToolInput::WeatherHistory {
@@ -3948,6 +4114,10 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
             AssistantToolName::MemoryGetEntityRelations,
             AssistantToolInput::SystemService { query },
         ) => format!("Loading stored entity relations for \"{query}\""),
+        (
+            AssistantToolName::MemoryGetPersonSummary,
+            AssistantToolInput::SystemService { query },
+        ) => format!("Checking stored person summary for \"{query}\""),
         (
             AssistantToolName::MemoryGetEntityRelationPath,
             AssistantToolInput::SystemService { query },
@@ -4054,12 +4224,28 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::LibrariesGetRecentlyAdded, _) => {
             "Checking recently added library items".to_string()
         }
-        (AssistantToolName::WebSearchPublicWeb, AssistantToolInput::WebSearch { query }) => {
-            format!("Searching the public web for \"{query}\"")
+        (AssistantToolName::WebListCuratedSources, AssistantToolInput::None) => {
+            "Listing curated public web sources".to_string()
         }
-        (AssistantToolName::WebFetchPublicPageSummary, AssistantToolInput::WebFetch { url }) => {
-            format!("Fetching public page {}", truncate_for_planner(url, 80))
-        }
+        (
+            AssistantToolName::WebSearchPublicWeb,
+            AssistantToolInput::WebSearch { query, category },
+        ) => match category.as_deref().and_then(curated_web_category_label) {
+            Some(category_label) => {
+                format!("Searching {category_label} sources for \"{query}\"")
+            }
+            None => format!("Searching the public web for \"{query}\""),
+        },
+        (
+            AssistantToolName::WebFetchPublicPageSummary,
+            AssistantToolInput::WebFetch { url, category },
+        ) => match category.as_deref().and_then(curated_web_category_label) {
+            Some(category_label) => format!(
+                "Fetching {category_label} page {}",
+                truncate_for_planner(url, 80)
+            ),
+            None => format!("Fetching public page {}", truncate_for_planner(url, 80)),
+        },
         (
             AssistantToolName::RoomsListActive,
             AssistantToolInput::RoomsFilter {
@@ -4184,6 +4370,17 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
 
 fn has_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn has_any_token(haystack: &str, needles: &[&str]) -> bool {
+    haystack
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            needles
+                .iter()
+                .any(|needle| token.eq_ignore_ascii_case(needle))
+        })
 }
 
 fn room_mode_status_label(room_mode: &str) -> &'static str {
@@ -4577,7 +4774,8 @@ fn apply_follow_up_tool_hints(
                     }
                 }
             }
-            AssistantToolName::NetworkGetInterfaceDetails => {
+            AssistantToolName::NetworkGetInterfaceDetails
+            | AssistantToolName::NetworkGetInterfaceByIp => {
                 let before = planned.len();
                 push_network_diagnostics_tools(message, planned, seen);
                 if planned.len() == before {
@@ -4940,6 +5138,7 @@ fn apply_follow_up_tool_hints(
             | AssistantToolName::WeatherGetForecast
             | AssistantToolName::WeatherGetHistory
             | AssistantToolName::WeatherResolveLocationAlias
+            | AssistantToolName::WeatherGetHourlyWindow
             | AssistantToolName::WeatherGetForecastForDate
             | AssistantToolName::WeatherGetRecentHistoryForDate => {
                 if let Some((tool, input)) = extract_weather_follow_up_call(message, history) {
@@ -4949,18 +5148,22 @@ fn apply_follow_up_tool_hints(
             AssistantToolName::WebSearchPublicWeb
             | AssistantToolName::WebFetchPublicPageSummary => {
                 if let Some(url) = extract_public_web_url(message) {
+                    let category = infer_curated_web_category_for_url(&url)
+                        .or_else(|| recent_web_category(history));
                     push_tool(
                         planned,
                         seen,
                         AssistantToolName::WebFetchPublicPageSummary,
-                        AssistantToolInput::WebFetch { url },
+                        AssistantToolInput::WebFetch { url, category },
                     );
                 } else if let Some(query) = extract_public_web_search_query(message) {
+                    let category = infer_curated_web_category_slug(message)
+                        .or_else(|| recent_web_category(history));
                     push_tool(
                         planned,
                         seen,
                         AssistantToolName::WebSearchPublicWeb,
-                        AssistantToolInput::WebSearch { query },
+                        AssistantToolInput::WebSearch { query, category },
                     );
                 }
             }
@@ -5056,6 +5259,7 @@ fn apply_follow_up_tool_hints(
             | AssistantToolName::MemorySearchEntities
             | AssistantToolName::MemoryFindExactEntity
             | AssistantToolName::MemoryGetEntityRelations
+            | AssistantToolName::MemoryGetPersonSummary
             | AssistantToolName::MemoryGetEntityRelationPath
             | AssistantToolName::MemoryListRecentChanges
             | AssistantToolName::MemoryListConflictingFacts
@@ -5121,6 +5325,17 @@ fn apply_follow_up_tool_hints(
                         );
                     }
                 } else if !message_has_other_domain_context(&lower)
+                    && is_memory_person_summary_query(&lower)
+                {
+                    if let Some(query) = extract_memory_person_summary_query(message) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::MemoryGetPersonSummary,
+                            AssistantToolInput::SystemService { query },
+                        );
+                    }
+                } else if !message_has_other_domain_context(&lower)
                     && is_memory_recent_entity_query(&lower)
                 {
                     push_tool(
@@ -5165,6 +5380,15 @@ fn apply_follow_up_tool_hints(
                             AssistantToolInput::SystemService { query },
                         );
                     }
+                } else if let Some(query) = recent_memory_person_label(history)
+                    .filter(|_| message_has_memory_person_follow_up_hint(message))
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::MemoryGetPersonSummary,
+                        AssistantToolInput::SystemService { query },
+                    );
                 }
             }
             AssistantToolName::SystemGetRecentErrors => {
@@ -5267,6 +5491,23 @@ fn apply_follow_up_entity_reference(
             );
             true
         }
+        "memory_list_recent_entities"
+        | "memory_search_entities"
+        | "memory_find_exact_entity"
+        | "memory_get_entity_relations"
+        | "memory_get_entity_relation_path"
+        | "memory_get_entity_provenance"
+        | "memory_get_person_summary" => {
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::MemoryGetPersonSummary,
+                AssistantToolInput::SystemService {
+                    query: follow_up_entity_query_text(entity),
+                },
+            );
+            true
+        }
         "channels_get_transcript_summary" => {
             push_tool(
                 planned,
@@ -5329,9 +5570,16 @@ fn apply_follow_up_entity_reference(
         "library_search_titles"
         | "library_get_item_summary"
         | "library_get_item_media_details"
+        | "library_get_item_source_paths"
         | "libraries_get_recently_added" => {
-            let tool = if message_has_library_media_follow_up_hint(message)
+            let tool = if extract_library_source_paths_query(message).is_some()
+                || is_single_library_source_paths_follow_up(message, history)
+                || context.tool == "library_get_item_source_paths"
+            {
+                AssistantToolName::LibraryGetItemSourcePaths
+            } else if message_has_library_media_follow_up_hint(message)
                 || extract_library_media_detail_query(message).is_some()
+                || is_single_library_media_detail_follow_up(message, history)
             {
                 AssistantToolName::LibraryGetItemMediaDetails
             } else {
@@ -5360,11 +5608,44 @@ fn apply_follow_up_entity_reference(
             );
             true
         }
-        "downloads_get_artifact_details" => {
+        "downloads_get_artifact_details"
+        | "downloads_get_artifact_source"
+        | "downloads_get_release_notes"
+        | "downloads_get_artifact_checksum"
+        | "downloads_get_artifact_install_steps"
+        | "downloads_get_artifact_compatibility" => {
+            let tool = if extract_download_artifact_source_query(message).is_some()
+                || message_has_download_source_hint(message)
+                || context.tool == "downloads_get_artifact_source"
+            {
+                AssistantToolName::DownloadsGetArtifactSource
+            } else if extract_download_artifact_release_notes_query(message).is_some()
+                || message_has_download_release_notes_hint(message)
+                || context.tool == "downloads_get_release_notes"
+            {
+                AssistantToolName::DownloadsGetReleaseNotes
+            } else if extract_download_artifact_checksum_query(message).is_some()
+                || message_has_download_checksum_hint(message)
+                || context.tool == "downloads_get_artifact_checksum"
+            {
+                AssistantToolName::DownloadsGetArtifactChecksum
+            } else if extract_download_artifact_install_steps_query(message).is_some()
+                || message_has_download_install_steps_hint(message)
+                || context.tool == "downloads_get_artifact_install_steps"
+            {
+                AssistantToolName::DownloadsGetArtifactInstallSteps
+            } else if extract_download_artifact_compatibility_query(message).is_some()
+                || message_has_download_compatibility_hint(message)
+                || context.tool == "downloads_get_artifact_compatibility"
+            {
+                AssistantToolName::DownloadsGetArtifactCompatibility
+            } else {
+                AssistantToolName::DownloadsGetArtifactDetails
+            };
             push_tool(
                 planned,
                 seen,
-                AssistantToolName::DownloadsGetArtifactDetails,
+                tool,
                 AssistantToolInput::DownloadsFilter {
                     query: Some(entity.label.clone()),
                     availability: extract_downloads_availability(message)
@@ -5471,6 +5752,48 @@ fn apply_follow_up_entity_reference(
             );
             true
         }
+        "system_get_process_detail" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetProcessDetail,
+                AssistantToolInput::SystemService { query },
+            );
+            true
+        }
+        "system_get_listener_detail" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetListenerDetail,
+                AssistantToolInput::SystemPortConflicts { query: Some(query) },
+            );
+            true
+        }
+        "system_get_disk_usage_detail" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetDiskUsageDetail,
+                AssistantToolInput::SystemService { query },
+            );
+            true
+        }
         "system_get_port_conflicts" => {
             let query = entity
                 .identifier
@@ -5496,6 +5819,34 @@ fn apply_follow_up_entity_reference(
                 seen,
                 AssistantToolName::SystemGetPortConflictDetail,
                 AssistantToolInput::SystemPortConflicts { query: Some(query) },
+            );
+            true
+        }
+        "system_get_storage_summary" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetStoragePathDetail,
+                AssistantToolInput::SystemService { query },
+            );
+            true
+        }
+        "system_get_storage_path_detail" => {
+            let query = entity
+                .identifier
+                .clone()
+                .or_else(|| Some(entity.label.clone()))
+                .unwrap_or_else(|| entity.label.clone());
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::SystemGetStoragePathDetail,
+                AssistantToolInput::SystemService { query },
             );
             true
         }
@@ -5535,11 +5886,13 @@ fn apply_follow_up_entity_reference(
             let Some(url) = url else {
                 return false;
             };
+            let category = web_category_from_topic_key(entity.topic_key.as_deref())
+                .or_else(|| infer_curated_web_category_for_url(&url));
             push_tool(
                 planned,
                 seen,
                 AssistantToolName::WebFetchPublicPageSummary,
-                AssistantToolInput::WebFetch { url },
+                AssistantToolInput::WebFetch { url, category },
             );
             true
         }
@@ -5602,6 +5955,8 @@ fn recent_single_download_entity_label(history: &[AssistantHistoryMessage]) -> O
             context.tool.as_str(),
             "downloads_list_available_artifacts"
                 | "downloads_get_artifact_details"
+                | "downloads_get_artifact_source"
+                | "downloads_get_release_notes"
                 | "downloads_get_artifact_checksum"
                 | "downloads_get_artifact_install_steps"
                 | "downloads_get_artifact_compatibility"
@@ -5615,7 +5970,9 @@ fn recent_single_network_entity_label(history: &[AssistantHistoryMessage]) -> Op
     let context = contexts.iter().find(|context| {
         matches!(
             context.tool.as_str(),
-            "network_get_topology_summary" | "network_get_interface_details"
+            "network_get_topology_summary"
+                | "network_get_interface_details"
+                | "network_get_interface_by_ip"
         ) && context.entities.len() == 1
     })?;
     Some(context.entities.first()?.label.clone())
@@ -5648,7 +6005,9 @@ fn recent_single_storage_path_entity_label(history: &[AssistantHistoryMessage]) 
     let context = contexts.iter().find(|context| {
         matches!(
             context.tool.as_str(),
-            "system_get_storage_summary" | "system_get_storage_path_detail"
+            "system_get_storage_summary"
+                | "system_get_storage_path_detail"
+                | "system_get_disk_usage_detail"
         ) && context.entities.len() == 1
     })?;
     Some(context.entities.first()?.label.clone())
@@ -5678,11 +6037,64 @@ fn recent_single_library_item_entity_label(history: &[AssistantHistoryMessage]) 
             "library_search_titles"
                 | "library_get_item_summary"
                 | "library_get_item_media_details"
+                | "library_get_item_source_paths"
                 | "libraries_get_recently_added"
                 | "libraries_list_missing_metadata"
         ) && context.entities.len() == 1
     })?;
     Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_process_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(context.tool.as_str(), "system_get_process_detail") && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn recent_single_listener_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "system_get_listener_detail"
+                | "system_get_port_conflicts"
+                | "system_get_port_conflict_detail"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
+fn follow_up_entity_query_text(entity: &AssistantFollowUpEntity) -> String {
+    let label = entity.label.trim();
+    if let Some((base, suffix)) = label.rsplit_once(" (") {
+        if suffix.ends_with(')') {
+            let candidate = base.trim();
+            if !candidate.is_empty() {
+                return candidate.to_string();
+            }
+        }
+    }
+    label.to_string()
+}
+
+fn recent_memory_person_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "memory_list_recent_entities"
+                | "memory_search_entities"
+                | "memory_find_exact_entity"
+                | "memory_get_entity_relations"
+                | "memory_get_entity_relation_path"
+                | "memory_get_entity_provenance"
+                | "memory_get_person_summary"
+        )
+    })?;
+    let entity = context.entities.first()?;
+    Some(follow_up_entity_query_text(entity))
 }
 
 fn message_has_library_media_follow_up_hint(message: &str) -> bool {
@@ -5733,12 +6145,58 @@ fn message_has_storage_follow_up_hint(message: &str) -> bool {
                 "where's it stored",
                 "where is this stored",
                 "where's this stored",
+                "disk usage",
+                "disk space",
+                "storage usage",
                 "how much space is on it",
                 "how much free space is on it",
+                "how full is it",
                 "that path",
                 "that directory",
                 "that folder",
                 "storage details",
+            ],
+        )
+}
+
+fn message_has_process_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    extract_process_detail_query(message).is_some()
+        || has_any(
+            &lower,
+            &[
+                "process",
+                "processes",
+                "pid",
+                "command line",
+                "command-line",
+                "cmdline",
+                "who is using it",
+                "what process is using it",
+                "tell me more about it",
+                "more about it",
+                "describe it",
+            ],
+        )
+}
+
+fn message_has_listener_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    extract_listener_detail_query(message).is_some()
+        || has_any(
+            &lower,
+            &[
+                "listener",
+                "listeners",
+                "socket",
+                "sockets",
+                "listening on",
+                "what is listening on it",
+                "what is listening on that port",
+                "what port is it listening on",
+                "tell me more about it",
+                "more about it",
+                "describe it",
             ],
         )
 }
@@ -5823,6 +6281,7 @@ fn recent_single_mount_entity_label(history: &[AssistantHistoryMessage]) -> Opti
             "system_get_storage_summary"
                 | "system_get_storage_path_detail"
                 | "system_get_mount_detail"
+                | "system_get_disk_usage_detail"
         ) && context.entities.len() == 1
     })?;
     Some(context.entities.first()?.label.clone())
@@ -5833,10 +6292,29 @@ fn recent_single_port_conflict_entity_label(history: &[AssistantHistoryMessage])
     let context = contexts.iter().find(|context| {
         matches!(
             context.tool.as_str(),
-            "system_get_port_conflicts" | "system_get_port_conflict_detail"
+            "system_get_port_conflicts"
+                | "system_get_port_conflict_detail"
+                | "system_get_listener_detail"
         ) && context.entities.len() == 1
     })?;
     Some(context.entities.first()?.label.clone())
+}
+
+fn is_single_process_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_process_entity_label(history).is_none() {
+        return false;
+    }
+
+    message_has_process_follow_up_hint(message)
+}
+
+fn is_single_listener_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_listener_entity_label(history).is_none() {
+        return false;
+    }
+
+    message_has_listener_follow_up_hint(message)
+        || message_has_port_conflicts_follow_up_hint(message)
 }
 
 fn is_single_mount_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
@@ -5937,6 +6415,7 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
         | "library_search_titles"
         | "library_get_item_summary"
         | "library_get_item_media_details"
+        | "library_get_item_source_paths"
         | "libraries_get_recently_added"
         | "libraries_find_duplicate_titles"
         | "libraries_list_missing_metadata" => {
@@ -5957,11 +6436,14 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
             ) || extract_library_detail_query(message).is_some()
                 || message_has_library_media_follow_up_hint(message)
                 || extract_library_media_detail_query(message).is_some()
+                || extract_library_source_paths_query(message).is_some()
                 || is_library_duplicate_titles_query(&lower)
                 || is_library_missing_metadata_query(&lower)
         }
         "downloads_list_available_artifacts"
         | "downloads_get_artifact_details"
+        | "downloads_get_artifact_source"
+        | "downloads_get_release_notes"
         | "downloads_get_artifact_checksum"
         | "downloads_get_artifact_install_steps"
         | "downloads_get_artifact_compatibility" => {
@@ -5990,11 +6472,34 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
                     "architecture",
                 ],
             ) || extract_download_artifact_detail_query(message).is_some()
+                || extract_download_artifact_source_query(message).is_some()
+                || extract_download_artifact_release_notes_query(message).is_some()
                 || extract_download_artifact_checksum_query(message).is_some()
                 || extract_download_artifact_install_steps_query(message).is_some()
                 || extract_download_artifact_compatibility_query(message).is_some()
         }
-        "weather_get_current" | "weather_get_forecast" | "weather_get_history" => {
+        "memory_list_recent_facts"
+        | "memory_list_recent_entities"
+        | "memory_search_facts"
+        | "memory_search_entities"
+        | "memory_find_exact_entity"
+        | "memory_get_entity_relations"
+        | "memory_get_person_summary"
+        | "memory_get_entity_relation_path"
+        | "memory_list_recent_changes"
+        | "memory_list_conflicting_facts"
+        | "memory_get_entity_provenance" => {
+            extract_follow_up_entity_reference(message).is_some()
+                || is_memory_query(&lower)
+                || message_has_memory_person_follow_up_hint(message)
+        }
+        "weather_get_current"
+        | "weather_get_forecast"
+        | "weather_get_history"
+        | "weather_resolve_location_alias"
+        | "weather_get_hourly_window"
+        | "weather_get_forecast_for_date"
+        | "weather_get_recent_history_for_date" => {
             !is_current_datetime_query(&lower)
                 && !message_has_current_datetime_follow_up_hint(message)
                 && (is_weather_query(&lower)
@@ -6006,8 +6511,11 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
             extract_public_web_url(message).is_some()
                 || extract_public_web_search_query(message).is_some()
         }
-        "network_get_topology_summary" | "network_get_interface_details" => {
+        "network_get_topology_summary"
+        | "network_get_interface_details"
+        | "network_get_interface_by_ip" => {
             extract_network_interface_query(message).is_some()
+                || extract_network_interface_ip_query(message).is_some()
                 || message_has_network_follow_up_hint(message)
         }
         "network_get_default_route" => {
@@ -6026,6 +6534,15 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
             extract_service_detail_query(message).is_some()
                 || message_has_service_health_follow_up_hint(message)
         }
+        "system_get_process_detail" => {
+            extract_process_detail_query(message).is_some()
+                || message_has_process_follow_up_hint(message)
+        }
+        "system_get_listener_detail" => {
+            extract_listener_detail_query(message).is_some()
+                || message_has_listener_follow_up_hint(message)
+                || message_has_port_conflicts_follow_up_hint(message)
+        }
         "system_get_port_conflicts" | "system_get_port_conflict_detail" => {
             extract_port_conflicts_query(message).is_some()
                 || extract_port_conflict_detail_query(message).is_some()
@@ -6038,10 +6555,12 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
         }
         "system_get_storage_summary"
         | "system_get_storage_path_detail"
-        | "system_get_mount_detail" => {
+        | "system_get_mount_detail"
+        | "system_get_disk_usage_detail" => {
             is_storage_query(&lower)
                 || extract_mount_detail_query(message).is_some()
                 || extract_storage_path_detail_query(message).is_some()
+                || extract_disk_usage_detail_query(message).is_some()
                 || message_has_storage_follow_up_hint(message)
         }
         "system_get_current_datetime" => {
@@ -6077,6 +6596,14 @@ fn extract_follow_up_entity_reference(message: &str) -> Option<FollowUpEntityRef
             "that movie",
             "that show",
             "that event",
+            "that process",
+            "that listener",
+            "that socket",
+            "that download",
+            "that artifact",
+            "that path",
+            "that mount",
+            "that library item",
         ],
     ) {
         return Some(FollowUpEntityReference::Demonstrative);
@@ -6188,6 +6715,10 @@ fn is_single_download_detail_follow_up(message: &str, history: &[AssistantHistor
             "what's its install steps",
             "what is its compatibility",
             "what's its compatibility",
+            "what is its source",
+            "what's its source",
+            "what is its release notes",
+            "what's its release notes",
             "what platform is it for",
             "what architecture is it for",
             "tell me more about it",
@@ -6228,8 +6759,9 @@ fn message_has_download_install_steps_hint(message: &str) -> bool {
 }
 
 fn message_has_download_compatibility_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
     has_any(
-        &message.to_ascii_lowercase(),
+        &lower,
         &[
             "compatible",
             "compatibility",
@@ -6237,13 +6769,11 @@ fn message_has_download_compatibility_hint(message: &str) -> bool {
             "architecture",
             "supported on",
             "works on",
-            "linux",
-            "windows",
-            "mac",
-            "arm64",
-            "aarch64",
-            "amd64",
-            "x86_64",
+        ],
+    ) || has_any_token(
+        &lower,
+        &[
+            "linux", "windows", "mac", "macos", "arm64", "aarch64", "amd64", "x86_64",
         ],
     )
 }
@@ -6274,6 +6804,31 @@ fn message_has_download_release_notes_hint(message: &str) -> bool {
             "changes",
             "what changed",
             "update notes",
+        ],
+    )
+}
+
+fn message_has_memory_person_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "tell me more about it",
+            "more about it",
+            "describe it",
+            "what about it",
+            "what about them",
+            "what about him",
+            "what about her",
+            "who is that",
+            "who is this",
+            "who are they",
+            "their profile",
+            "its profile",
+            "their summary",
+            "its summary",
+            "profile details",
+            "person details",
         ],
     )
 }
@@ -6318,6 +6873,8 @@ fn is_single_library_source_paths_follow_up(
     has_any(
         &lower,
         &[
+            "source path",
+            "source paths",
             "its paths",
             "it paths",
             "the paths",
@@ -6621,6 +7178,7 @@ fn message_has_network_follow_up_hint(message: &str) -> bool {
             "describe it",
         ],
     ) || extract_network_interface_query(message).is_some()
+        || extract_network_interface_ip_query(message).is_some()
         || extract_network_default_route_query(message).is_some()
         || extract_network_hostname_aliases_query(message).is_some()
         || extract_network_dns_servers_query(message).is_some()
@@ -6652,8 +7210,16 @@ fn message_has_port_conflicts_follow_up_hint(message: &str) -> bool {
             "ports in use",
             "listening socket",
             "listening sockets",
+            "listener",
+            "listeners",
+            "socket",
+            "sockets",
             "bound port",
             "bound ports",
+            "who is using it",
+            "what process is using it",
+            "what is listening on it",
+            "what is using it",
             "what about it",
             "tell me more about it",
             "more about it",
@@ -7306,6 +7872,43 @@ fn extract_network_interface_query(message: &str) -> Option<String> {
     None
 }
 
+fn extract_network_interface_ip_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let network_context = has_any(
+        &lower,
+        &[
+            "network",
+            "interface",
+            "interfaces",
+            "ip",
+            "ip address",
+            "address",
+            "hostname",
+            "host name",
+            "lan",
+            "local network",
+            "rustyfin",
+        ],
+    );
+    if !network_context {
+        return None;
+    }
+
+    for token in message.split_whitespace() {
+        let candidate = token.trim_matches(|ch: char| {
+            ['"', '\'', '(', ')', '[', ']', ',', '.', '?', '!', ';', ':'].contains(&ch)
+        });
+        if candidate.is_empty() {
+            continue;
+        }
+        if candidate.parse::<std::net::IpAddr>().is_ok() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
 fn normalize_network_interface_query_candidate(candidate: &str) -> Option<String> {
     let mut normalized = candidate
         .trim()
@@ -7939,13 +8542,11 @@ fn extract_download_artifact_compatibility_query(message: &str) -> Option<String
             "architecture",
             "supported on",
             "works on",
-            "linux",
-            "windows",
-            "mac",
-            "arm64",
-            "aarch64",
-            "amd64",
-            "x86_64",
+        ],
+    ) && !has_any_token(
+        &lower,
+        &[
+            "linux", "windows", "mac", "macos", "arm64", "aarch64", "amd64", "x86_64",
         ],
     ) {
         return None;
@@ -8325,6 +8926,58 @@ fn weather_tool_call_for_location(
         ));
     }
 
+    if weather_prefers_hourly(&lower) {
+        return weather_hourly_tool_call_for_location(message, location, false);
+    }
+
+    if let Some((date, label)) = extract_single_calendar_date(message, today) {
+        let matched_text = label.to_ascii_lowercase();
+        let is_relative_day = matches!(
+            matched_text.as_str(),
+            "today" | "tomorrow" | "yesterday" | "day after tomorrow"
+        );
+        if date < today {
+            if !is_relative_day {
+                return Some((
+                    AssistantToolName::WeatherGetRecentHistoryForDate,
+                    AssistantToolInput::WeatherHistory {
+                        location,
+                        start_date: date.format("%F").to_string(),
+                        end_date: date.format("%F").to_string(),
+                        label,
+                    },
+                ));
+            }
+            return Some((
+                AssistantToolName::WeatherGetHistory,
+                AssistantToolInput::WeatherHistory {
+                    location,
+                    start_date: date.format("%F").to_string(),
+                    end_date: date.format("%F").to_string(),
+                    label,
+                },
+            ));
+        }
+        if date == today {
+            return Some((
+                AssistantToolName::WeatherGetCurrent,
+                AssistantToolInput::Weather {
+                    location,
+                    forecast_days: None,
+                },
+            ));
+        }
+        if !is_relative_day {
+            return Some((
+                AssistantToolName::WeatherGetForecastForDate,
+                AssistantToolInput::Weather {
+                    location,
+                    forecast_days: Some(((date - today).num_days() + 1).clamp(1, 7) as u8),
+                },
+            ));
+        }
+    }
+
     if weather_prefers_current(&lower) {
         return Some((
             AssistantToolName::WeatherGetCurrent,
@@ -8345,41 +8998,47 @@ fn weather_tool_call_for_location(
         ));
     }
 
-    if let Some((date, label)) = extract_single_calendar_date(message, today) {
-        if date < today {
-            return Some((
-                AssistantToolName::WeatherGetHistory,
-                AssistantToolInput::WeatherHistory {
-                    location,
-                    start_date: date.format("%F").to_string(),
-                    end_date: date.format("%F").to_string(),
-                    label,
-                },
-            ));
-        }
-        if date == today {
-            return Some((
-                AssistantToolName::WeatherGetCurrent,
-                AssistantToolInput::Weather {
-                    location,
-                    forecast_days: None,
-                },
-            ));
-        }
-        return Some((
-            AssistantToolName::WeatherGetForecast,
-            AssistantToolInput::Weather {
-                location,
-                forecast_days: Some(((date - today).num_days() + 1).clamp(1, 7) as u8),
-            },
-        ));
-    }
-
     Some((
         AssistantToolName::WeatherGetCurrent,
         AssistantToolInput::Weather {
             location,
             forecast_days: None,
+        },
+    ))
+}
+
+fn weather_hourly_tool_call_for_location(
+    message: &str,
+    location: String,
+    force_hourly: bool,
+) -> Option<(AssistantToolName, AssistantToolInput)> {
+    let today = assistant_local_today();
+    let (date, label) =
+        extract_single_calendar_date(message, today).unwrap_or((today, "today".to_string()));
+
+    if date < today {
+        return Some((
+            AssistantToolName::WeatherGetRecentHistoryForDate,
+            AssistantToolInput::WeatherHistory {
+                location,
+                start_date: date.format("%F").to_string(),
+                end_date: date.format("%F").to_string(),
+                label,
+            },
+        ));
+    }
+
+    if !force_hourly && !weather_prefers_hourly(&message.to_ascii_lowercase()) {
+        return None;
+    }
+
+    Some((
+        AssistantToolName::WeatherGetHourlyWindow,
+        AssistantToolInput::WeatherHistory {
+            location,
+            start_date: date.format("%F").to_string(),
+            end_date: date.format("%F").to_string(),
+            label,
         },
     ))
 }
@@ -8422,7 +9081,14 @@ fn extract_weather_follow_up_call(
         || lower.contains("yesterday")
         || lower.contains("week")
         || lower.contains("weekend")
+        || extract_single_calendar_date(message, assistant_local_today()).is_some()
     {
+        if hint.tool == AssistantToolName::WeatherGetHourlyWindow
+            && let Some(call) =
+                weather_hourly_tool_call_for_location(message, location.clone(), true)
+        {
+            return Some(call);
+        }
         return weather_tool_call_for_location(message, location);
     }
 
@@ -8441,8 +9107,41 @@ fn extract_weather_follow_up_call(
                 forecast_days: hint.forecast_days.or(Some(3)),
             },
         )),
+        AssistantToolName::WeatherGetForecastForDate => Some((
+            AssistantToolName::WeatherGetForecastForDate,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: hint.forecast_days.or(Some(3)),
+            },
+        )),
+        AssistantToolName::WeatherGetHourlyWindow => Some((
+            AssistantToolName::WeatherGetHourlyWindow,
+            AssistantToolInput::WeatherHistory {
+                location,
+                start_date: hint
+                    .start_date
+                    .clone()
+                    .unwrap_or_else(|| assistant_local_today().format("%F").to_string()),
+                end_date: hint
+                    .end_date
+                    .clone()
+                    .unwrap_or_else(|| assistant_local_today().format("%F").to_string()),
+                label: hint.label.clone().unwrap_or_else(|| "today".to_string()),
+            },
+        )),
         AssistantToolName::WeatherGetHistory => Some((
             AssistantToolName::WeatherGetHistory,
+            AssistantToolInput::WeatherHistory {
+                location,
+                start_date: hint.start_date?,
+                end_date: hint.end_date?,
+                label: hint
+                    .label
+                    .unwrap_or_else(|| "the same recent weather window".to_string()),
+            },
+        )),
+        AssistantToolName::WeatherGetRecentHistoryForDate => Some((
+            AssistantToolName::WeatherGetRecentHistoryForDate,
             AssistantToolInput::WeatherHistory {
                 location,
                 start_date: hint.start_date?,
@@ -8457,24 +9156,6 @@ fn extract_weather_follow_up_call(
             AssistantToolInput::Weather {
                 location,
                 forecast_days: None,
-            },
-        )),
-        AssistantToolName::WeatherGetForecastForDate => Some((
-            AssistantToolName::WeatherGetForecastForDate,
-            AssistantToolInput::Weather {
-                location,
-                forecast_days: hint.forecast_days.or(Some(3)),
-            },
-        )),
-        AssistantToolName::WeatherGetRecentHistoryForDate => Some((
-            AssistantToolName::WeatherGetRecentHistoryForDate,
-            AssistantToolInput::WeatherHistory {
-                location,
-                start_date: hint.start_date?,
-                end_date: hint.end_date?,
-                label: hint
-                    .label
-                    .unwrap_or_else(|| "the same recent weather window".to_string()),
             },
         )),
         _ => None,
@@ -8529,6 +9210,9 @@ fn message_has_weather_follow_up_hint(message_lower: &str) -> bool {
             "weather",
             "forecast",
             "temperature",
+            "hourly",
+            "hour by hour",
+            "hour-by-hour",
             "rain",
             "wind",
             "humidity",
@@ -8551,6 +9235,7 @@ fn recent_weather_hint(history: &[AssistantHistoryMessage]) -> Option<RecentWeat
             "weather_get_current" => AssistantToolName::WeatherGetCurrent,
             "weather_get_forecast" => AssistantToolName::WeatherGetForecast,
             "weather_get_history" => AssistantToolName::WeatherGetHistory,
+            "weather_get_hourly_window" => AssistantToolName::WeatherGetHourlyWindow,
             "weather_resolve_location_alias" => AssistantToolName::WeatherResolveLocationAlias,
             "weather_get_forecast_for_date" => AssistantToolName::WeatherGetForecastForDate,
             "weather_get_recent_history_for_date" => {
@@ -8600,6 +9285,9 @@ fn is_weather_query(message_lower: &str) -> bool {
             "windy",
             "humidity",
             "humid",
+            "hourly",
+            "hour by hour",
+            "hour-by-hour",
             "sunny",
             "cloudy",
             "storm",
@@ -8668,6 +9356,21 @@ fn weather_prefers_forecast(message_lower: &str) -> bool {
             "expected",
         ],
     ) || extract_next_numbered_window(message_lower, "day", "days").is_some()
+}
+
+fn weather_prefers_hourly(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "hourly",
+            "hour by hour",
+            "hour-by-hour",
+            "by hour",
+            "by the hour",
+            "every hour",
+            "hourly forecast",
+        ],
+    )
 }
 
 fn extract_weather_forecast_days(message: &str) -> u8 {
@@ -8919,11 +9622,6 @@ fn extract_weather_history_window(
         let end = today - Duration::days(1);
         return Some((start, end, "last week".to_string()));
     }
-    if let Some((date, label)) = extract_single_calendar_date(message, today)
-        && date < today
-    {
-        return Some((date, date, label));
-    }
     None
 }
 
@@ -8981,6 +9679,81 @@ fn extract_public_web_search_query(message: &str) -> Option<String> {
     }
 
     None
+}
+
+fn is_curated_web_catalog_query(message_lower: &str) -> bool {
+    if !public_web_tools_enabled() {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "what sites",
+            "what websites",
+            "what sources",
+            "which sites",
+            "which websites",
+            "which sources",
+            "curated sources",
+            "source catalog",
+            "source list",
+            "trusted sources",
+            "recommended sites",
+            "sites do you use",
+            "websites do you use",
+        ],
+    ) || (has_any(message_lower, &["technology", "business", "economics"])
+        && has_any(
+            message_lower,
+            &["sites", "websites", "sources", "source", "catalog", "list"],
+        ))
+}
+
+fn validate_curated_web_category_slug(raw: &str) -> Option<String> {
+    super::web_sources::CuratedWebCategory::from_slug(raw)
+        .map(|category| category.slug().to_string())
+}
+
+fn infer_curated_web_category_slug(message: &str) -> Option<String> {
+    if !public_web_tools_enabled() {
+        return None;
+    }
+
+    super::web_sources::CuratedWebCategory::from_message(&message.to_ascii_lowercase())
+        .map(|category| category.slug().to_string())
+}
+
+fn infer_curated_web_category_for_url(raw_url: &str) -> Option<String> {
+    if !public_web_tools_enabled() {
+        return None;
+    }
+
+    curated_web_category_for_url(raw_url).map(str::to_string)
+}
+
+fn recent_web_category(history: &[AssistantHistoryMessage]) -> Option<String> {
+    history
+        .iter()
+        .rev()
+        .find(|message| {
+            message.role.eq_ignore_ascii_case("assistant") && !message.follow_up_contexts.is_empty()
+        })
+        .and_then(|message| {
+            message.follow_up_contexts.iter().rev().find_map(|context| {
+                context
+                    .input_hint
+                    .web_category
+                    .clone()
+                    .and_then(|raw| validate_curated_web_category_slug(&raw))
+            })
+        })
+}
+
+fn web_category_from_topic_key(topic_key: Option<&str>) -> Option<String> {
+    topic_key
+        .and_then(|value| value.trim().strip_prefix("web:"))
+        .and_then(validate_curated_web_category_slug)
 }
 
 fn extract_library_detail_query(message: &str) -> Option<String> {
@@ -10178,6 +10951,78 @@ fn extract_memory_provenance_query(message: &str) -> Option<String> {
     None
 }
 
+fn is_memory_person_summary_query(message_lower: &str) -> bool {
+    if message_has_other_domain_context(message_lower) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "person summary",
+            "profile summary",
+            "person profile",
+            "profile details",
+            "profile info",
+            "profile information",
+            "person details",
+            "person info",
+            "person information",
+        ],
+    )
+}
+
+fn extract_memory_person_summary_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if message_has_other_domain_context(&lower) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "person summary for ",
+        "person summary of ",
+        "person summary ",
+        "profile summary for ",
+        "profile summary of ",
+        "profile summary ",
+        "person profile for ",
+        "person profile of ",
+        "person profile ",
+        "profile details for ",
+        "profile details of ",
+        "profile details ",
+        "profile info for ",
+        "profile info of ",
+        "profile info ",
+        "profile information for ",
+        "profile information of ",
+        "profile information ",
+        "person details for ",
+        "person details of ",
+        "person details ",
+        "person info for ",
+        "person info of ",
+        "person info ",
+        "person information for ",
+        "person information of ",
+        "person information ",
+    ] {
+        let Some(candidate) = extract_tail_after_marker(message, &lower, marker) else {
+            continue;
+        };
+        let candidate = normalize_memory_query_candidate(&candidate);
+        if !candidate.is_empty() {
+            return Some(candidate);
+        }
+    }
+
+    extract_memory_exact_entity_query(message).or_else(|| extract_memory_query(message))
+}
+
 fn is_memory_fact_query(message_lower: &str) -> bool {
     if message_has_other_domain_context(message_lower) {
         return false;
@@ -10344,6 +11189,7 @@ fn is_memory_query(message_lower: &str) -> bool {
         || is_memory_entity_query(message_lower)
         || is_memory_relation_query(message_lower)
         || is_memory_exact_entity_query(message_lower)
+        || is_memory_person_summary_query(message_lower)
         || is_memory_relation_path_query(message_lower)
         || is_memory_recent_changes_query(message_lower)
         || is_memory_conflict_query(message_lower)
@@ -10526,7 +11372,11 @@ fn is_direct_model_chat_request(message: &str, history: &[AssistantHistoryMessag
         || extract_weather_location(message).is_some()
         || extract_public_web_url(message).is_some()
         || extract_public_web_search_query(message).is_some()
+        || is_curated_web_catalog_query(trimmed)
+        || infer_curated_web_category_slug(trimmed).is_some()
         || extract_download_artifact_detail_query(message).is_some()
+        || extract_download_artifact_source_query(message).is_some()
+        || extract_download_artifact_release_notes_query(message).is_some()
         || extract_download_artifact_checksum_query(message).is_some()
         || extract_download_artifact_install_steps_query(message).is_some()
         || extract_download_artifact_compatibility_query(message).is_some()
@@ -10538,8 +11388,12 @@ fn is_direct_model_chat_request(message: &str, history: &[AssistantHistoryMessag
         || extract_network_dns_servers_query(message).is_some()
         || extract_service_detail_query(message).is_some()
         || extract_failed_unit_detail_query(message).is_some()
+        || extract_process_detail_query(message).is_some()
+        || extract_listener_detail_query(message).is_some()
+        || extract_disk_usage_detail_query(message).is_some()
         || extract_library_detail_query(message).is_some()
         || extract_library_media_detail_query(message).is_some()
+        || extract_library_source_paths_query(message).is_some()
         || message_has_library_media_follow_up_hint(message)
         || is_single_library_media_detail_follow_up(message, history)
         || extract_library_search_query(message).is_some()
@@ -11745,7 +12599,7 @@ mod tests {
     };
     use serde_json::json;
     use std::collections::VecDeque;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, OnceLock};
 
     fn auth_user(role: &str) -> AuthUser {
         AuthUser {
@@ -11802,6 +12656,43 @@ mod tests {
                 tools.iter().map(|tool| tool.tool).collect::<Vec<_>>()
             );
         }
+    }
+
+    struct PublicWebToolsEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl PublicWebToolsEnvGuard {
+        fn enable() -> Self {
+            let previous = std::env::var_os(crate::ai_assistant::web::AI_PUBLIC_WEB_ENABLE_ENV);
+            unsafe {
+                std::env::set_var(crate::ai_assistant::web::AI_PUBLIC_WEB_ENABLE_ENV, "1");
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for PublicWebToolsEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(previous) => unsafe {
+                    std::env::set_var(crate::ai_assistant::web::AI_PUBLIC_WEB_ENABLE_ENV, previous);
+                },
+                None => unsafe {
+                    std::env::remove_var(crate::ai_assistant::web::AI_PUBLIC_WEB_ENABLE_ENV);
+                },
+            }
+        }
+    }
+
+    fn with_public_web_tools_enabled<T>(f: impl FnOnce() -> T) -> T {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("public web tools test lock");
+        let _env_guard = PublicWebToolsEnvGuard::enable();
+        f()
     }
 
     fn grounded_datetime_block(local_date: &str, weekday: &str) -> AssistantToolContextBlock {
@@ -12061,6 +12952,17 @@ mod tests {
     }
 
     #[test]
+    fn planner_detects_network_interface_by_ip_query() {
+        let tools = plan_tool_calls("Which interface owns 192.168.0.36?");
+        assert!(!tools.is_empty());
+        assert_eq!(tools[0].tool, AssistantToolName::NetworkGetInterfaceByIp);
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::NetworkInterface { .. }
+        ));
+    }
+
+    #[test]
     fn planner_detects_default_route_query() {
         let tools = plan_tool_calls("What is the default route on this machine?");
         assert_eq!(tools[0].tool, AssistantToolName::NetworkGetDefaultRoute);
@@ -12195,7 +13097,7 @@ mod tests {
         let message = "What's the weather next Tuesday in Campile, Ireland?";
         let tools = plan_tool_calls(message);
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecast);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecastForDate);
         match &tools[0].input {
             AssistantToolInput::Weather {
                 location,
@@ -12212,6 +13114,37 @@ mod tests {
                 );
             }
             _ => panic!("expected weather input"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_exact_weather_history_date_query() {
+        let today = assistant_local_today();
+        let target_date = today - chrono::Duration::days(1);
+        let message = format!(
+            "What was the weather on {} in Galway?",
+            target_date.format("%F")
+        );
+        let tools = plan_tool_calls(&message);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::WeatherGetRecentHistoryForDate
+        );
+        match &tools[0].input {
+            AssistantToolInput::WeatherHistory {
+                location,
+                start_date,
+                end_date,
+                label,
+            } => {
+                let expected = target_date.format("%F").to_string();
+                assert_eq!(location, "Galway");
+                assert_eq!(start_date, &expected);
+                assert_eq!(end_date, &expected);
+                assert_eq!(label, &expected);
+            }
+            _ => panic!("expected weather history input"),
         }
     }
 
@@ -12380,6 +13313,64 @@ mod tests {
     fn clarification_triggers_for_weather_without_location() {
         let clarification = clarification_for_message("What's the weather like?");
         assert!(clarification.is_some());
+    }
+
+    #[test]
+    fn planner_detects_curated_web_catalog_query() {
+        with_public_web_tools_enabled(|| {
+            let tools = plan_tool_calls("What sites do you use for technology?");
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].tool, AssistantToolName::WebListCuratedSources);
+            assert!(matches!(tools[0].input, AssistantToolInput::None));
+        });
+    }
+
+    #[test]
+    fn planner_detects_technology_web_search_query() {
+        with_public_web_tools_enabled(|| {
+            let tools = plan_tool_calls("search the web for Rust compiler release notes");
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].tool, AssistantToolName::WebSearchPublicWeb);
+            match &tools[0].input {
+                AssistantToolInput::WebSearch { query, category } => {
+                    assert_eq!(query, "Rust compiler release notes");
+                    assert_eq!(category.as_deref(), Some("technology"));
+                }
+                _ => panic!("expected web search input"),
+            }
+        });
+    }
+
+    #[test]
+    fn planner_detects_economics_web_search_query() {
+        with_public_web_tools_enabled(|| {
+            let tools = plan_tool_calls("search the web for CPI inflation update");
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].tool, AssistantToolName::WebSearchPublicWeb);
+            match &tools[0].input {
+                AssistantToolInput::WebSearch { query, category } => {
+                    assert_eq!(query, "CPI inflation update");
+                    assert_eq!(category.as_deref(), Some("economics"));
+                }
+                _ => panic!("expected web search input"),
+            }
+        });
+    }
+
+    #[test]
+    fn planner_detects_business_web_fetch_query() {
+        with_public_web_tools_enabled(|| {
+            let tools = plan_tool_calls("Fetch https://www.reuters.com/markets/");
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].tool, AssistantToolName::WebFetchPublicPageSummary);
+            match &tools[0].input {
+                AssistantToolInput::WebFetch { url, category } => {
+                    assert_eq!(url, "https://www.reuters.com/markets/");
+                    assert_eq!(category.as_deref(), Some("business"));
+                }
+                _ => panic!("expected web fetch input"),
+            }
+        });
     }
 
     #[test]
@@ -13425,6 +14416,17 @@ mod tests {
                 assert_eq!(query, "Rachel in my family")
             }
             _ => panic!("expected memory exact entity query"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_memory_person_summary_query() {
+        let tools = plan_tool_calls("Give me a person summary for Rachel.");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::MemoryGetPersonSummary);
+        match &tools[0].input {
+            AssistantToolInput::SystemService { query } => assert_eq!(query, "Rachel"),
+            _ => panic!("expected memory person summary query"),
         }
     }
 

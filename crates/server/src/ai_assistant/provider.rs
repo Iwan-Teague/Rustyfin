@@ -220,6 +220,14 @@ mod tests {
             Some("downloads")
         );
         assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::DownloadsGetArtifactSource),
+            Some("downloads")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::DownloadsGetReleaseNotes),
+            Some("downloads")
+        );
+        assert_eq!(
             registry.provider_id_for_tool(AssistantToolName::DownloadsGetArtifactInstallSteps),
             Some("downloads")
         );
@@ -256,6 +264,10 @@ mod tests {
             Some("memory")
         );
         assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::LibraryGetItemSourcePaths),
+            Some("libraries")
+        );
+        assert_eq!(
             registry.provider_id_for_tool(AssistantToolName::CalendarGetNextFreeDay),
             Some("calendar")
         );
@@ -274,6 +286,50 @@ mod tests {
         assert_eq!(
             registry.provider_id_for_tool(AssistantToolName::NetworkGetDnsServers),
             Some("network")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::NetworkGetInterfaceByIp),
+            Some("network")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::WeatherResolveLocationAlias),
+            Some("weather")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::WeatherGetForecastForDate),
+            Some("weather")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::WeatherGetHourlyWindow),
+            Some("weather")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::WeatherGetRecentHistoryForDate),
+            Some("weather")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::WebListCuratedSources),
+            Some("web")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::WebSearchPublicWeb),
+            Some("web")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::WebFetchPublicPageSummary),
+            Some("web")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::SystemGetProcessDetail),
+            Some("system")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::SystemGetListenerDetail),
+            Some("system")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::SystemGetDiskUsageDetail),
+            Some("system")
         );
         assert_eq!(
             registry.provider_id_for_tool(AssistantToolName::SystemGetPortConflicts),

@@ -53,6 +53,7 @@ pub enum AssistantToolName {
     DownloadsGetReleaseNotes,
     NetworkGetTopologySummary,
     NetworkGetInterfaceDetails,
+    NetworkGetInterfaceByIp,
     NetworkGetDefaultRoute,
     NetworkGetHostnameAliases,
     NetworkGetDnsServers,
@@ -75,7 +76,9 @@ pub enum AssistantToolName {
     WeatherGetHistory,
     WeatherResolveLocationAlias,
     WeatherGetForecastForDate,
+    WeatherGetHourlyWindow,
     WeatherGetRecentHistoryForDate,
+    WebListCuratedSources,
     WebSearchPublicWeb,
     WebFetchPublicPageSummary,
     RoomsListActive,
@@ -166,6 +169,7 @@ impl AssistantToolName {
             Self::DownloadsGetReleaseNotes,
             Self::NetworkGetTopologySummary,
             Self::NetworkGetInterfaceDetails,
+            Self::NetworkGetInterfaceByIp,
             Self::NetworkGetDefaultRoute,
             Self::NetworkGetHostnameAliases,
             Self::NetworkGetDnsServers,
@@ -188,7 +192,9 @@ impl AssistantToolName {
             Self::WeatherGetHistory,
             Self::WeatherResolveLocationAlias,
             Self::WeatherGetForecastForDate,
+            Self::WeatherGetHourlyWindow,
             Self::WeatherGetRecentHistoryForDate,
+            Self::WebListCuratedSources,
             Self::WebSearchPublicWeb,
             Self::WebFetchPublicPageSummary,
             Self::RoomsListActive,
@@ -283,6 +289,7 @@ impl AssistantToolName {
             "downloads_get_release_notes" => Some(Self::DownloadsGetReleaseNotes),
             "network_get_topology_summary" => Some(Self::NetworkGetTopologySummary),
             "network_get_interface_details" => Some(Self::NetworkGetInterfaceDetails),
+            "network_get_interface_by_ip" => Some(Self::NetworkGetInterfaceByIp),
             "network_get_default_route" => Some(Self::NetworkGetDefaultRoute),
             "network_get_hostname_aliases" => Some(Self::NetworkGetHostnameAliases),
             "network_get_dns_servers" => Some(Self::NetworkGetDnsServers),
@@ -305,7 +312,9 @@ impl AssistantToolName {
             "weather_get_history" => Some(Self::WeatherGetHistory),
             "weather_resolve_location_alias" => Some(Self::WeatherResolveLocationAlias),
             "weather_get_forecast_for_date" => Some(Self::WeatherGetForecastForDate),
+            "weather_get_hourly_window" => Some(Self::WeatherGetHourlyWindow),
             "weather_get_recent_history_for_date" => Some(Self::WeatherGetRecentHistoryForDate),
+            "web_list_curated_sources" => Some(Self::WebListCuratedSources),
             "web_search_public_web" => Some(Self::WebSearchPublicWeb),
             "web_fetch_public_page_summary" => Some(Self::WebFetchPublicPageSummary),
             "rooms_list_active" => Some(Self::RoomsListActive),
@@ -399,6 +408,7 @@ impl AssistantToolName {
             Self::DownloadsGetReleaseNotes => "downloads_get_release_notes",
             Self::NetworkGetTopologySummary => "network_get_topology_summary",
             Self::NetworkGetInterfaceDetails => "network_get_interface_details",
+            Self::NetworkGetInterfaceByIp => "network_get_interface_by_ip",
             Self::NetworkGetDefaultRoute => "network_get_default_route",
             Self::NetworkGetHostnameAliases => "network_get_hostname_aliases",
             Self::NetworkGetDnsServers => "network_get_dns_servers",
@@ -421,7 +431,9 @@ impl AssistantToolName {
             Self::WeatherGetHistory => "weather_get_history",
             Self::WeatherResolveLocationAlias => "weather_resolve_location_alias",
             Self::WeatherGetForecastForDate => "weather_get_forecast_for_date",
+            Self::WeatherGetHourlyWindow => "weather_get_hourly_window",
             Self::WeatherGetRecentHistoryForDate => "weather_get_recent_history_for_date",
+            Self::WebListCuratedSources => "web_list_curated_sources",
             Self::WebSearchPublicWeb => "web_search_public_web",
             Self::WebFetchPublicPageSummary => "web_fetch_public_page_summary",
             Self::RoomsListActive => "rooms_list_active",
@@ -967,6 +979,16 @@ impl AssistantToolName {
                 timeout_ms: 4_000,
                 max_result_bytes: 8 * 1024,
             },
+            Self::NetworkGetInterfaceByIp => AssistantToolSpec {
+                name: "network_get_interface_by_ip",
+                summary: "Resolve one host network interface from an exact IP address.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 8 * 1024,
+            },
             Self::NetworkGetDefaultRoute => AssistantToolSpec {
                 name: "network_get_default_route",
                 summary: "Summarize the host default route, gateway, interface, and source address.",
@@ -1187,6 +1209,16 @@ impl AssistantToolName {
                 timeout_ms: 6_000,
                 max_result_bytes: 8 * 1024,
             },
+            Self::WeatherGetHourlyWindow => AssistantToolSpec {
+                name: "weather_get_hourly_window",
+                summary: "Fetch a date-specific public hourly weather window for one location.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 6_000,
+                max_result_bytes: 12 * 1024,
+            },
             Self::WeatherGetRecentHistoryForDate => AssistantToolSpec {
                 name: "weather_get_recent_history_for_date",
                 summary: "Fetch a date-specific public weather history window for one location.",
@@ -1197,9 +1229,19 @@ impl AssistantToolName {
                 timeout_ms: 6_000,
                 max_result_bytes: 8 * 1024,
             },
+            Self::WebListCuratedSources => AssistantToolSpec {
+                name: "web_list_curated_sources",
+                summary: "List the curated public web source categories and their allowed domains.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AdminOnly,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 2_000,
+                max_result_bytes: 8 * 1024,
+            },
             Self::WebSearchPublicWeb => AssistantToolSpec {
                 name: "web_search_public_web",
-                summary: "Search a constrained public web source for current public information.",
+                summary: "Search a constrained public web source for current public information, optionally within a curated category.",
                 access_mode: ToolAccessMode::ReadOnly,
                 risk_tier: ToolRiskTier::Moderate,
                 required_role: ToolRoleRequirement::AdminOnly,
@@ -1209,7 +1251,7 @@ impl AssistantToolName {
             },
             Self::WebFetchPublicPageSummary => AssistantToolSpec {
                 name: "web_fetch_public_page_summary",
-                summary: "Fetch and summarize one constrained public web page.",
+                summary: "Fetch and summarize one constrained public web page, optionally within a curated category.",
                 access_mode: ToolAccessMode::ReadOnly,
                 risk_tier: ToolRiskTier::Moderate,
                 required_role: ToolRoleRequirement::AdminOnly,
@@ -1597,6 +1639,7 @@ impl AssistantToolName {
             | Self::DownloadsGetArtifactCompatibility => AssistantDomainFamily::Downloads,
             Self::NetworkGetTopologySummary
             | Self::NetworkGetInterfaceDetails
+            | Self::NetworkGetInterfaceByIp
             | Self::NetworkGetDefaultRoute
             | Self::NetworkGetHostnameAliases
             | Self::NetworkGetDnsServers
@@ -1619,10 +1662,11 @@ impl AssistantToolName {
             | Self::WeatherGetHistory
             | Self::WeatherResolveLocationAlias
             | Self::WeatherGetForecastForDate
+            | Self::WeatherGetHourlyWindow
             | Self::WeatherGetRecentHistoryForDate => AssistantDomainFamily::Weather,
-            Self::WebSearchPublicWeb | Self::WebFetchPublicPageSummary => {
-                AssistantDomainFamily::Web
-            }
+            Self::WebListCuratedSources
+            | Self::WebSearchPublicWeb
+            | Self::WebFetchPublicPageSummary => AssistantDomainFamily::Web,
             Self::RoomsListActive | Self::RoomsListJoinable | Self::RoomsGetRoomSummary => {
                 AssistantDomainFamily::Rooms
             }
@@ -1696,6 +1740,7 @@ impl AssistantToolName {
                 | Self::DownloadsGetArtifactInstallSteps
                 | Self::DownloadsGetArtifactCompatibility
                 | Self::NetworkGetInterfaceDetails
+                | Self::NetworkGetInterfaceByIp
                 | Self::NetworkGetDefaultRoute
                 | Self::NetworkGetHostnameAliases
                 | Self::NetworkGetDnsServers
@@ -1717,8 +1762,10 @@ impl AssistantToolName {
                 | Self::MemoryListConflictingFacts
                 | Self::MemoryGetEntityProvenance
                 | Self::MemoryGetPersonSummary
+                | Self::WebListCuratedSources
                 | Self::WeatherResolveLocationAlias
                 | Self::WeatherGetForecastForDate
+                | Self::WeatherGetHourlyWindow
                 | Self::WeatherGetRecentHistoryForDate
                 | Self::RoomsListActive
                 | Self::RoomsListJoinable
@@ -1768,6 +1815,7 @@ impl AssistantToolName {
                 | Self::DownloadsGetArtifactInstallSteps
                 | Self::DownloadsGetArtifactCompatibility
                 | Self::NetworkGetInterfaceDetails
+                | Self::NetworkGetInterfaceByIp
                 | Self::NetworkGetDefaultRoute
                 | Self::NetworkGetHostnameAliases
                 | Self::NetworkGetDnsServers
@@ -1782,6 +1830,7 @@ impl AssistantToolName {
                 | Self::WeatherGetHistory
                 | Self::WeatherResolveLocationAlias
                 | Self::WeatherGetForecastForDate
+                | Self::WeatherGetHourlyWindow
                 | Self::WeatherGetRecentHistoryForDate
                 | Self::RoomsGetRoomSummary
                 | Self::MemoryGetEntityProvenance
@@ -1827,6 +1876,7 @@ impl AssistantToolName {
                 | Self::WeatherGetHistory
                 | Self::NetworkGetTopologySummary
                 | Self::NetworkGetInterfaceDetails
+                | Self::NetworkGetInterfaceByIp
                 | Self::NetworkGetDefaultRoute
                 | Self::NetworkGetHostnameAliases
                 | Self::NetworkGetDnsServers
@@ -1844,6 +1894,8 @@ impl AssistantToolName {
                 | Self::CalendarListOverlappingEvents
                 | Self::MemoryListRecentChanges
                 | Self::MemoryListConflictingFacts
+                | Self::WebSearchPublicWeb
+                | Self::WebFetchPublicPageSummary
                 | Self::DownloadsGetArtifactDetails
                 | Self::DownloadsGetArtifactSource
                 | Self::DownloadsGetReleaseNotes

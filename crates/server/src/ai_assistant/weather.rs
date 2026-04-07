@@ -59,6 +59,30 @@ pub struct PublicWeatherForecastSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicWeatherHourlyPoint {
+    pub time: String,
+    pub condition: String,
+    pub temperature_c: Option<f64>,
+    pub apparent_temperature_c: Option<f64>,
+    pub precipitation_probability_percent: Option<f64>,
+    pub rain_mm: Option<f64>,
+    pub showers_mm: Option<f64>,
+    pub snowfall_cm: Option<f64>,
+    pub wind_speed_kmh: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicWeatherHourlySummary {
+    pub source: String,
+    pub location_query: String,
+    pub resolved_location: String,
+    pub timezone: String,
+    pub date: String,
+    pub label: String,
+    pub hourly_points: Vec<PublicWeatherHourlyPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicWeatherHistorySummary {
     pub source: String,
     pub location_query: String,
@@ -111,6 +135,7 @@ struct ForecastResponse {
     timezone: String,
     current: Option<ForecastCurrent>,
     daily: Option<ForecastDaily>,
+    hourly: Option<ForecastHourly>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +176,28 @@ struct ForecastDaily {
     snowfall_sum: Vec<Option<f64>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ForecastHourly {
+    #[serde(default)]
+    time: Vec<String>,
+    #[serde(default)]
+    weather_code: Vec<Option<i32>>,
+    #[serde(default)]
+    temperature_2m: Vec<Option<f64>>,
+    #[serde(default)]
+    apparent_temperature: Vec<Option<f64>>,
+    #[serde(default)]
+    precipitation_probability: Vec<Option<f64>>,
+    #[serde(default)]
+    rain: Vec<Option<f64>>,
+    #[serde(default)]
+    showers: Vec<Option<f64>>,
+    #[serde(default)]
+    snowfall: Vec<Option<f64>>,
+    #[serde(default)]
+    wind_speed_10m: Vec<Option<f64>>,
+}
+
 pub async fn fetch_public_weather_current(
     location_query: &str,
 ) -> Result<PublicWeatherCurrentSummary, String> {
@@ -173,6 +220,21 @@ pub async fn fetch_public_weather_forecast(
         &client,
         location_query,
         forecast_days,
+        GEOCODING_URL,
+        FORECAST_URL,
+    )
+    .await
+}
+
+pub async fn fetch_public_weather_hourly_window(
+    location_query: &str,
+    date: NaiveDate,
+) -> Result<PublicWeatherHourlySummary, String> {
+    let client = weather_client()?;
+    fetch_public_weather_hourly_window_with_endpoints(
+        &client,
+        location_query,
+        date,
         GEOCODING_URL,
         FORECAST_URL,
     )
@@ -249,6 +311,28 @@ async fn fetch_public_weather_forecast_with_endpoints(
         timezone: forecast.timezone,
         current,
         forecast_days,
+    })
+}
+
+async fn fetch_public_weather_hourly_window_with_endpoints(
+    client: &reqwest::Client,
+    location_query: &str,
+    date: NaiveDate,
+    geocoding_url: &str,
+    forecast_url: &str,
+) -> Result<PublicWeatherHourlySummary, String> {
+    let query = normalize_location_query(location_query)?;
+    let resolved = geocode_location_from_base(client, &query, geocoding_url).await?;
+    let forecast = fetch_hourly_from_base(client, &resolved, date, forecast_url).await?;
+    let hourly_points = build_hourly_points(&forecast);
+    Ok(PublicWeatherHourlySummary {
+        source: "open_meteo".to_string(),
+        location_query: query,
+        resolved_location: format_resolved_location(&resolved),
+        timezone: forecast.timezone,
+        date: date.format("%F").to_string(),
+        label: format_weather_display_date(&date.format("%F").to_string()),
+        hourly_points,
     })
 }
 
@@ -393,6 +477,47 @@ async fn fetch_forecast_from_base(
         .map_err(|error| format!("failed to parse weather forecast response: {error}"))
 }
 
+async fn fetch_hourly_from_base(
+    client: &reqwest::Client,
+    location: &GeocodingResult,
+    date: NaiveDate,
+    forecast_url: &str,
+) -> Result<ForecastResponse, String> {
+    let latitude = location.latitude.to_string();
+    let longitude = location.longitude.to_string();
+    let date = date.format("%F").to_string();
+    let url = Url::parse_with_params(
+        forecast_url,
+        &[
+            ("latitude", latitude.as_str()),
+            ("longitude", longitude.as_str()),
+            (
+                "hourly",
+                "temperature_2m,apparent_temperature,precipitation_probability,rain,showers,snowfall,weather_code,wind_speed_10m",
+            ),
+            ("start_date", date.as_str()),
+            ("end_date", date.as_str()),
+            ("timezone", "auto"),
+        ],
+    )
+    .map_err(|error| format!("failed to build weather hourly URL: {error}"))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("weather hourly request failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "weather hourly request failed with status {}",
+            response.status()
+        ));
+    }
+    response
+        .json::<ForecastResponse>()
+        .await
+        .map_err(|error| format!("failed to parse weather hourly response: {error}"))
+}
+
 async fn fetch_history_from_base(
     client: &reqwest::Client,
     location: &GeocodingResult,
@@ -483,6 +608,33 @@ fn build_forecast_days(forecast: &ForecastResponse) -> Vec<PublicWeatherForecast
             rain_sum_mm: daily.rain_sum.get(index).copied().flatten(),
             showers_sum_mm: daily.showers_sum.get(index).copied().flatten(),
             snowfall_sum_cm: daily.snowfall_sum.get(index).copied().flatten(),
+        })
+        .collect()
+}
+
+fn build_hourly_points(forecast: &ForecastResponse) -> Vec<PublicWeatherHourlyPoint> {
+    let Some(hourly) = forecast.hourly.as_ref() else {
+        return Vec::new();
+    };
+    hourly
+        .time
+        .iter()
+        .enumerate()
+        .map(|(index, time)| PublicWeatherHourlyPoint {
+            time: time.clone(),
+            condition: weather_code_description(hourly.weather_code.get(index).copied().flatten())
+                .to_string(),
+            temperature_c: hourly.temperature_2m.get(index).copied().flatten(),
+            apparent_temperature_c: hourly.apparent_temperature.get(index).copied().flatten(),
+            precipitation_probability_percent: hourly
+                .precipitation_probability
+                .get(index)
+                .copied()
+                .flatten(),
+            rain_mm: hourly.rain.get(index).copied().flatten(),
+            showers_mm: hourly.showers.get(index).copied().flatten(),
+            snowfall_cm: hourly.snowfall.get(index).copied().flatten(),
+            wind_speed_kmh: hourly.wind_speed_10m.get(index).copied().flatten(),
         })
         .collect()
 }
@@ -798,10 +950,41 @@ pub fn deterministic_weather_reply(
         } else {
             format_weather_error(block)
         }),
+        "weather_get_hourly_window" => Some(if block.status == "ok" {
+            format_hourly_window_reply(
+                message,
+                serde_json::from_value::<PublicWeatherHourlySummary>(block.data.clone()).ok()?,
+            )
+        } else {
+            format_weather_error(block)
+        }),
+        "weather_get_forecast_for_date" => Some(if block.status == "ok" {
+            format_forecast_reply(
+                message,
+                serde_json::from_value::<PublicWeatherForecastSummary>(block.data.clone()).ok()?,
+            )
+        } else {
+            format_weather_error(block)
+        }),
         "weather_get_history" => Some(if block.status == "ok" {
             format_history_reply(
                 message,
                 serde_json::from_value::<PublicWeatherHistorySummary>(block.data.clone()).ok()?,
+            )
+        } else {
+            format_weather_error(block)
+        }),
+        "weather_get_recent_history_for_date" => Some(if block.status == "ok" {
+            format_history_reply(
+                message,
+                serde_json::from_value::<PublicWeatherHistorySummary>(block.data.clone()).ok()?,
+            )
+        } else {
+            format_weather_error(block)
+        }),
+        "weather_resolve_location_alias" => Some(if block.status == "ok" {
+            format_location_alias_reply(
+                serde_json::from_value::<PublicLocationTimezoneSummary>(block.data.clone()).ok()?,
             )
         } else {
             format_weather_error(block)
@@ -1091,6 +1274,45 @@ fn format_forecast_single_day_reply(
     )
 }
 
+fn format_hourly_window_reply(message: &str, summary: PublicWeatherHourlySummary) -> String {
+    let lower = message.to_ascii_lowercase();
+    if summary.hourly_points.is_empty() {
+        return format!(
+            "I loaded the hourly weather window for {}, but the provider did not return any hourly rows.",
+            summary.resolved_location
+        );
+    }
+
+    let mut parts = vec![format!(
+        "Hourly weather for {} on {}:",
+        summary.resolved_location, summary.label
+    )];
+
+    if lower.contains("rain") || lower.contains("precip") {
+        if let Some(first_precip) = summary.hourly_points.iter().find(|point| {
+            point_has_precipitation(point) || point.condition.to_ascii_lowercase().contains("rain")
+        }) {
+            parts.push(format!(
+                "First precipitation signal appears at {}.",
+                format_weather_hour_time(&first_precip.time)
+            ));
+        } else {
+            parts
+                .push("No grounded precipitation signal appears in the hourly window.".to_string());
+        }
+    }
+
+    let lines = summary
+        .hourly_points
+        .iter()
+        .take(24)
+        .map(format_hourly_point_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    parts.push(lines);
+    parts.join("\n")
+}
+
 fn should_render_day_by_day_forecast(message_lower: &str, forecast_day_count: usize) -> bool {
     forecast_day_count >= 7
         || message_lower.contains("this week")
@@ -1108,6 +1330,36 @@ fn format_forecast_day_line(day: &PublicWeatherForecastDay) -> String {
         optional_temperature(day.temperature_min_c),
         format_percent(day.precipitation_probability_max_percent.unwrap_or(0.0))
     )
+}
+
+fn format_hourly_point_line(point: &PublicWeatherHourlyPoint) -> String {
+    let mut parts = vec![format!(
+        "- {}: {}",
+        format_weather_hour_time(&point.time),
+        point.condition
+    )];
+    if let Some(temperature) = point.temperature_c {
+        parts.push(format!("temp {}", format_temperature(temperature)));
+    }
+    if let Some(apparent) = point.apparent_temperature_c {
+        parts.push(format!("feels {}", format_temperature(apparent)));
+    }
+    if let Some(probability) = point.precipitation_probability_percent {
+        parts.push(format!("rain {}", format_percent(probability)));
+    }
+    if let Some(rain) = point.rain_mm.filter(|value| *value > 0.0) {
+        parts.push(format!("rain {}", format_mm(rain)));
+    }
+    if let Some(showers) = point.showers_mm.filter(|value| *value > 0.0) {
+        parts.push(format!("showers {}", format_mm(showers)));
+    }
+    if let Some(snowfall) = point.snowfall_cm.filter(|value| *value > 0.0) {
+        parts.push(format!("snow {} cm", format_decimal(snowfall)));
+    }
+    if let Some(wind) = point.wind_speed_kmh {
+        parts.push(format!("wind {} km/h", format_decimal(wind)));
+    }
+    parts.join(", ")
 }
 
 fn format_history_reply(message: &str, history: PublicWeatherHistorySummary) -> String {
@@ -1155,6 +1407,16 @@ fn format_history_reply(message: &str, history: PublicWeatherHistorySummary) -> 
     )
 }
 
+fn format_location_alias_reply(summary: PublicLocationTimezoneSummary) -> String {
+    let mut lines = vec![format!(
+        "Resolved location alias for {}: {}.",
+        summary.location_query, summary.resolved_location
+    )];
+    lines.push(format!("Timezone: {}.", summary.timezone));
+    lines.push(format!("Source: {}.", summary.source));
+    lines.join(" ")
+}
+
 fn total_precipitation_mm(day: &PublicWeatherForecastDay) -> f64 {
     day.precipitation_sum_mm
         .or(day.rain_sum_mm)
@@ -1180,6 +1442,14 @@ fn optional_temperature(value: Option<f64>) -> String {
 
 fn format_temperature(value: f64) -> String {
     format!("{}C", format_decimal(value))
+}
+
+fn format_weather_hour_time(value: &str) -> String {
+    value
+        .split_once('T')
+        .map(|(_, time)| time)
+        .unwrap_or(value)
+        .to_string()
 }
 
 fn format_weather_display_date(value: &str) -> String {
@@ -1209,16 +1479,25 @@ fn format_decimal(value: f64) -> String {
     }
 }
 
+fn point_has_precipitation(point: &PublicWeatherHourlyPoint) -> bool {
+    point.rain_mm.unwrap_or(0.0) > 0.0
+        || point.showers_mm.unwrap_or(0.0) > 0.0
+        || point.snowfall_cm.unwrap_or(0.0) > 0.0
+        || point.precipitation_probability_percent.unwrap_or(0.0) > 0.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ForecastDaily, ForecastResponse, GeocodingResult, GeocodingSelection,
-        PublicWeatherCurrentSummary, PublicWeatherForecastDay, PublicWeatherForecastSummary,
-        PublicWeatherHistorySummary, build_forecast_days, deterministic_weather_reply,
-        fetch_public_weather_current_with_endpoints, fetch_public_weather_forecast_with_endpoints,
-        format_resolved_location, geocoding_query_variants, normalize_location_query,
-        select_best_geocoding_result, select_geocoding_result, weather_client,
-        weather_code_description,
+        ForecastDaily, ForecastHourly, ForecastResponse, GeocodingResult, GeocodingSelection,
+        PublicLocationTimezoneSummary, PublicWeatherCurrentSummary, PublicWeatherForecastDay,
+        PublicWeatherForecastSummary, PublicWeatherHistorySummary, PublicWeatherHourlyPoint,
+        PublicWeatherHourlySummary, build_forecast_days, build_hourly_points,
+        deterministic_weather_reply, fetch_public_weather_current_with_endpoints,
+        fetch_public_weather_forecast_with_endpoints,
+        fetch_public_weather_hourly_window_with_endpoints, format_resolved_location,
+        geocoding_query_variants, normalize_location_query, select_best_geocoding_result,
+        select_geocoding_result, weather_client, weather_code_description,
     };
     use axum::{
         Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
@@ -1318,6 +1597,7 @@ mod tests {
                 showers_sum: vec![Some(0.0), Some(0.0)],
                 snowfall_sum: vec![Some(0.0), Some(0.0)],
             }),
+            hourly: None,
         };
         let days = build_forecast_days(&forecast);
         assert_eq!(days.len(), 2);
@@ -1325,6 +1605,35 @@ mod tests {
         assert_eq!(days[1].condition, "Rain");
         assert_eq!(days[1].precipitation_probability_max_percent, Some(80.0));
         assert_eq!(days[1].precipitation_sum_mm, Some(4.2));
+    }
+
+    #[test]
+    fn build_hourly_points_zips_hourly_arrays() {
+        let forecast = ForecastResponse {
+            timezone: "Europe/Dublin".to_string(),
+            current: None,
+            daily: None,
+            hourly: Some(ForecastHourly {
+                time: vec![
+                    "2026-03-15T09:00".to_string(),
+                    "2026-03-15T10:00".to_string(),
+                ],
+                weather_code: vec![Some(1), Some(63)],
+                temperature_2m: vec![Some(6.0), Some(8.5)],
+                apparent_temperature: vec![Some(4.5), Some(7.0)],
+                precipitation_probability: vec![Some(10.0), Some(80.0)],
+                rain: vec![Some(0.0), Some(1.8)],
+                showers: vec![Some(0.0), Some(0.0)],
+                snowfall: vec![Some(0.0), Some(0.0)],
+                wind_speed_10m: vec![Some(12.0), Some(18.0)],
+            }),
+        };
+        let points = build_hourly_points(&forecast);
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].condition, "Mainly clear");
+        assert_eq!(points[1].condition, "Rain");
+        assert_eq!(points[1].precipitation_probability_percent, Some(80.0));
+        assert_eq!(points[1].rain_mm, Some(1.8));
     }
 
     #[test]
@@ -1618,7 +1927,7 @@ mod tests {
         let reply = deterministic_weather_reply(
             message,
             &[super::AssistantToolContextBlock {
-                tool: "weather_get_forecast",
+                tool: "weather_get_forecast_for_date",
                 label: "7-day weather forecast for Campile, County Wexford, Leinster, Ireland"
                     .to_string(),
                 status: "ok",
@@ -1678,6 +1987,82 @@ mod tests {
         assert!(!reply.contains("over the next 7 days"));
         assert!(!reply.contains("\n- "));
         assert!(!reply.contains("Cloudy"));
+    }
+
+    #[test]
+    fn deterministic_weather_reply_formats_location_aliases() {
+        let reply = deterministic_weather_reply(
+            "What is the timezone for Campile, Ireland?",
+            &[super::AssistantToolContextBlock {
+                tool: "weather_resolve_location_alias",
+                label: "Resolved public location alias for Campile, County Wexford, Ireland"
+                    .to_string(),
+                status: "ok",
+                data: serde_json::to_value(PublicLocationTimezoneSummary {
+                    source: "open_meteo".to_string(),
+                    location_query: "Campile, Ireland".to_string(),
+                    resolved_location: "Campile, County Wexford, Ireland".to_string(),
+                    timezone: "Europe/Dublin".to_string(),
+                })
+                .unwrap(),
+            }],
+        )
+        .expect("expected deterministic alias reply");
+        assert!(reply.contains("Resolved location alias for Campile, Ireland"));
+        assert!(reply.contains("Campile, County Wexford, Ireland"));
+        assert!(reply.contains("Europe/Dublin"));
+    }
+
+    #[test]
+    fn deterministic_weather_reply_formats_hourly_window_without_raw_json() {
+        let reply = deterministic_weather_reply(
+            "What is the hourly weather for Campile, Ireland tomorrow?",
+            &[super::AssistantToolContextBlock {
+                tool: "weather_get_hourly_window",
+                label: "Hourly weather window for Campile, County Wexford, Ireland".to_string(),
+                status: "ok",
+                data: serde_json::to_value(PublicWeatherHourlySummary {
+                    source: "open_meteo".to_string(),
+                    location_query: "Campile, Ireland".to_string(),
+                    resolved_location: "Campile, County Wexford, Ireland".to_string(),
+                    timezone: "Europe/Dublin".to_string(),
+                    date: "2026-04-07".to_string(),
+                    label: "Wednesday, 07-04-26".to_string(),
+                    hourly_points: vec![
+                        PublicWeatherHourlyPoint {
+                            time: "2026-04-07T09:00".to_string(),
+                            condition: "Cloudy".to_string(),
+                            temperature_c: Some(8.0),
+                            apparent_temperature_c: Some(6.0),
+                            precipitation_probability_percent: Some(20.0),
+                            rain_mm: Some(0.0),
+                            showers_mm: Some(0.0),
+                            snowfall_cm: Some(0.0),
+                            wind_speed_kmh: Some(14.0),
+                        },
+                        PublicWeatherHourlyPoint {
+                            time: "2026-04-07T10:00".to_string(),
+                            condition: "Rain".to_string(),
+                            temperature_c: Some(9.0),
+                            apparent_temperature_c: Some(7.0),
+                            precipitation_probability_percent: Some(85.0),
+                            rain_mm: Some(2.4),
+                            showers_mm: Some(0.0),
+                            snowfall_cm: Some(0.0),
+                            wind_speed_kmh: Some(18.0),
+                        },
+                    ],
+                })
+                .unwrap(),
+            }],
+        )
+        .expect("expected deterministic hourly reply");
+        assert!(reply.contains(
+            "Hourly weather for Campile, County Wexford, Ireland on Wednesday, 07-04-26:"
+        ));
+        assert!(reply.contains("First precipitation signal appears at 10:00."));
+        assert!(reply.contains("- 10:00: Rain"));
+        assert!(!reply.contains("\"hourly_points\""));
     }
 
     #[test]
@@ -1839,6 +2224,47 @@ mod tests {
         assert!(reply.contains("7.8 mm"));
     }
 
+    #[test]
+    fn deterministic_weather_reply_uses_exact_recent_history_day() {
+        let today = crate::ai_assistant::dates::assistant_local_today();
+        let requested_date = today - chrono::Duration::days(2);
+        let reply = deterministic_weather_reply(
+            &format!(
+                "What was the weather on {} in Galway?",
+                requested_date.format("%F")
+            ),
+            &[super::AssistantToolContextBlock {
+                tool: "weather_get_recent_history_for_date",
+                label: "Recent weather history for Galway, Connacht, Ireland".to_string(),
+                status: "ok",
+                data: serde_json::to_value(PublicWeatherHistorySummary {
+                    source: "open_meteo".to_string(),
+                    location_query: "Galway".to_string(),
+                    resolved_location: "Galway, Connacht, Ireland".to_string(),
+                    timezone: "Europe/Dublin".to_string(),
+                    from_date: requested_date.format("%F").to_string(),
+                    to_date: requested_date.format("%F").to_string(),
+                    history_days: vec![PublicWeatherForecastDay {
+                        date: requested_date.format("%F").to_string(),
+                        condition: "Rain".to_string(),
+                        temperature_min_c: Some(6.0),
+                        temperature_max_c: Some(11.0),
+                        precipitation_probability_max_percent: Some(95.0),
+                        precipitation_sum_mm: Some(7.8),
+                        precipitation_hours: Some(8.0),
+                        rain_sum_mm: Some(7.8),
+                        showers_sum_mm: Some(0.0),
+                        snowfall_sum_cm: Some(0.0),
+                    }],
+                })
+                .unwrap(),
+            }],
+        )
+        .expect("expected exact history reply");
+        assert!(reply.contains("Weather in Galway, Connacht, Ireland"));
+        assert!(reply.contains(&requested_date.format("%F").to_string()));
+    }
+
     #[tokio::test]
     async fn weather_current_reports_geocoding_status_failures() {
         let (base, handle) = spawn_weather_test_server(WeatherTestState {
@@ -1889,6 +2315,55 @@ mod tests {
         .await
         .expect_err("expected invalid forecast JSON failure");
         assert!(error.contains("failed to parse weather forecast response"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn weather_hourly_window_returns_hourly_data() {
+        let (base, handle) = spawn_weather_test_server(WeatherTestState {
+            geocode_status: StatusCode::OK,
+            geocode_body: json!({
+                "results": [{
+                    "name": "Dublin",
+                    "latitude": 53.3498,
+                    "longitude": -6.2603,
+                    "country": "Ireland",
+                    "admin1": "Leinster",
+                    "timezone": "Europe/Dublin"
+                }]
+            }),
+            forecast_status: StatusCode::OK,
+            forecast_body: json!({
+                "timezone": "Europe/Dublin",
+                "hourly": {
+                    "time": ["2026-04-07T09:00", "2026-04-07T10:00"],
+                    "weather_code": [1, 63],
+                    "temperature_2m": [6.0, 8.5],
+                    "apparent_temperature": [4.5, 7.0],
+                    "precipitation_probability": [10.0, 80.0],
+                    "rain": [0.0, 1.8],
+                    "showers": [0.0, 0.0],
+                    "snowfall": [0.0, 0.0],
+                    "wind_speed_10m": [12.0, 18.0]
+                }
+            })
+            .to_string(),
+        })
+        .await;
+        let client = weather_client().unwrap();
+        let summary = fetch_public_weather_hourly_window_with_endpoints(
+            &client,
+            "Dublin",
+            chrono::NaiveDate::from_ymd_opt(2026, 4, 7).unwrap(),
+            &format!("{base}/geocode"),
+            &format!("{base}/forecast"),
+        )
+        .await
+        .expect("expected hourly summary");
+        assert_eq!(summary.resolved_location, "Dublin, Leinster, Ireland");
+        assert_eq!(summary.date, "2026-04-07");
+        assert_eq!(summary.hourly_points.len(), 2);
+        assert_eq!(summary.hourly_points[1].condition, "Rain");
         handle.abort();
     }
 

@@ -25,6 +25,10 @@ impl ToolProvider for CalendarToolProvider {
         registry.register_tool(self, AssistantToolName::CalendarListOverlappingEvents);
         registry.register_tool(self, AssistantToolName::CalendarUpcomingBirthdays);
         registry.register_tool(self, AssistantToolName::CalendarGetEventDetails);
+        registry.register_tool(self, AssistantToolName::CalendarGetEventByExactDateAndTitle);
+        registry.register_tool(self, AssistantToolName::CalendarGetEventSeriesSummary);
+        registry.register_tool(self, AssistantToolName::CalendarGetNextFreeSlot);
+        registry.register_tool(self, AssistantToolName::CalendarListBusySlots);
         registry.register_tool(self, AssistantToolName::CalendarCreateEvent);
         registry.register_tool(self, AssistantToolName::CalendarCreateBirthday);
         registry.register_tool(self, AssistantToolName::CalendarDeleteEvent);
