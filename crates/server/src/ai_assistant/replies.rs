@@ -3,11 +3,13 @@ use std::collections::HashSet;
 
 use chrono::{Datelike, NaiveDate};
 use serde::Deserialize;
+use serde_json::Value;
 
 use super::types::{
     AssistantExecutionStopReason, AssistantExecutionTrace, AssistantGroundingChunk,
     AssistantGroundingCitation, AssistantToolContextBlock, AssistantToolOutcomeKind,
 };
+use super::web_sources::curated_web_category_label;
 
 pub const MAX_GROUNDING_CHUNKS: usize = 10;
 pub const MAX_GROUNDING_PROMPT_CHARS: usize = 5_500;
@@ -177,6 +179,35 @@ fn format_binary_bytes(bytes: u64) -> String {
     } else {
         format!("{value:.1} {}", UNITS[unit_index])
     }
+}
+
+fn format_decimal(value: f64) -> String {
+    let rounded = (value * 10.0).round() / 10.0;
+    if rounded.fract().abs() < f64::EPSILON {
+        format!("{rounded:.0}")
+    } else {
+        format!("{rounded:.1}")
+    }
+}
+
+fn format_elapsed_seconds(value: u64) -> String {
+    let days = value / 86_400;
+    let hours = (value % 86_400) / 3_600;
+    let minutes = (value % 3_600) / 60;
+    let seconds = value % 60;
+
+    let mut parts = Vec::new();
+    if days > 0 {
+        parts.push(format!("{days}d"));
+    }
+    if hours > 0 || !parts.is_empty() {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 || !parts.is_empty() {
+        parts.push(format!("{minutes}m"));
+    }
+    parts.push(format!("{seconds}s"));
+    parts.join(" ")
 }
 
 #[derive(Debug, Deserialize)]
@@ -349,6 +380,16 @@ struct GroundedMemoryEntityRelationsEnvelope {
     total_count: usize,
     #[serde(default)]
     root: Option<GroundedMemoryEntitySummary>,
+    relations: Vec<GroundedMemoryEntityRelationSummary>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct GroundedMemoryPersonSummaryEnvelope {
+    query: String,
+    matched_by: String,
+    person: GroundedMemoryEntitySummary,
+    relation_count: usize,
     relations: Vec<GroundedMemoryEntityRelationSummary>,
 }
 
@@ -784,6 +825,130 @@ struct GroundedSystemFailedUnitSummary {
 }
 
 #[derive(Debug, Deserialize)]
+struct GroundedSystemProcessDetailEnvelope {
+    #[serde(default)]
+    available: bool,
+    #[serde(default)]
+    observed_at: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    matched_by: Option<String>,
+    #[serde(default)]
+    total_count: usize,
+    #[serde(default)]
+    processes: Vec<GroundedSystemProcessSummary>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedSystemProcessSummary {
+    #[serde(default)]
+    pid: Option<u32>,
+    #[serde(default)]
+    ppid: Option<u32>,
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    cpu_percent: Option<f64>,
+    #[serde(default)]
+    mem_percent: Option<f64>,
+    #[serde(default)]
+    elapsed_secs: Option<u64>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Option<String>,
+    #[serde(default)]
+    raw_line: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedSystemListenerDetailEnvelope {
+    #[serde(default)]
+    available: bool,
+    #[serde(default)]
+    observed_at: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    matched_by: Option<String>,
+    #[serde(default)]
+    total_count: usize,
+    #[serde(default)]
+    listeners: Vec<GroundedSystemListenerSummary>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedSystemListenerSummary {
+    #[serde(default)]
+    protocol: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    recv_q: Option<String>,
+    #[serde(default)]
+    send_q: Option<String>,
+    #[serde(default)]
+    local_address: Option<String>,
+    #[serde(default)]
+    local_port: Option<u16>,
+    #[serde(default)]
+    peer_address: Option<String>,
+    #[serde(default)]
+    process: Option<String>,
+    #[serde(default)]
+    raw_line: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedSystemDiskUsageDetailEnvelope {
+    #[serde(default)]
+    available: bool,
+    #[serde(default)]
+    observed_at: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    matched_by: Option<String>,
+    #[serde(default)]
+    mount_point: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    fs_type: Option<String>,
+    #[serde(default)]
+    root: Option<String>,
+    #[serde(default)]
+    mount_id: Option<u64>,
+    #[serde(default)]
+    parent_id: Option<u64>,
+    #[serde(default)]
+    major_minor: Option<String>,
+    #[serde(default)]
+    options: Option<String>,
+    #[serde(default)]
+    super_options: Option<String>,
+    #[serde(default)]
+    total_bytes: Option<u64>,
+    #[serde(default)]
+    free_bytes: Option<u64>,
+    #[serde(default)]
+    available_bytes: Option<u64>,
+    #[serde(default)]
+    used_bytes: Option<u64>,
+    #[serde(default)]
+    used_percent: Option<f64>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GroundedStoragePathDetailEnvelope {
     query: String,
     matched_by: String,
@@ -942,6 +1107,8 @@ struct GroundedLibraryItemMediaEnvelope {
     resolved_media_path: Option<String>,
     #[serde(default)]
     first_descendant_media_path: Option<String>,
+    #[serde(default)]
+    source_paths: Vec<String>,
     #[serde(default)]
     poster_url: Option<String>,
     #[serde(default)]
@@ -1334,6 +1501,11 @@ pub fn deterministic_network_reply(
         .or_else(|| {
             grounding_blocks
                 .iter()
+                .find(|block| block.tool == "network_get_interface_by_ip")
+        })
+        .or_else(|| {
+            grounding_blocks
+                .iter()
                 .find(|block| block.tool == "network_get_interface_details")
         })
         .or_else(|| {
@@ -1357,6 +1529,10 @@ pub fn deterministic_network_reply(
             ),
             "network_get_dns_servers" => format_network_dns_servers_reply(
                 serde_json::from_value::<GroundedNetworkDnsServersEnvelope>(block.data.clone())
+                    .ok()?,
+            ),
+            "network_get_interface_by_ip" => format_network_interface_reply(
+                serde_json::from_value::<GroundedNetworkInterfaceEnvelope>(block.data.clone())
                     .ok()?,
             ),
             "network_get_topology_summary" => format_network_reply(
@@ -1385,7 +1561,22 @@ pub fn deterministic_system_reply(
 ) -> Option<String> {
     let block = grounding_blocks
         .iter()
-        .find(|block| block.tool == "system_get_port_conflict_detail")
+        .find(|block| block.tool == "system_get_process_detail")
+        .or_else(|| {
+            grounding_blocks
+                .iter()
+                .find(|block| block.tool == "system_get_listener_detail")
+        })
+        .or_else(|| {
+            grounding_blocks
+                .iter()
+                .find(|block| block.tool == "system_get_disk_usage_detail")
+        })
+        .or_else(|| {
+            grounding_blocks
+                .iter()
+                .find(|block| block.tool == "system_get_port_conflict_detail")
+        })
         .or_else(|| {
             grounding_blocks
                 .iter()
@@ -1424,6 +1615,21 @@ pub fn deterministic_system_reply(
 
     Some(if block.status == "ok" {
         match block.tool {
+            "system_get_process_detail" => format_system_process_detail_reply(
+                message,
+                serde_json::from_value::<GroundedSystemProcessDetailEnvelope>(block.data.clone())
+                    .ok()?,
+            ),
+            "system_get_listener_detail" => format_system_listener_detail_reply(
+                message,
+                serde_json::from_value::<GroundedSystemListenerDetailEnvelope>(block.data.clone())
+                    .ok()?,
+            ),
+            "system_get_disk_usage_detail" => format_system_disk_usage_detail_reply(
+                message,
+                serde_json::from_value::<GroundedSystemDiskUsageDetailEnvelope>(block.data.clone())
+                    .ok()?,
+            ),
             "system_get_port_conflict_detail" => format_system_port_conflict_detail_reply(
                 message,
                 serde_json::from_value::<GroundedSystemPortConflictDetailEnvelope>(
@@ -1480,6 +1686,7 @@ pub fn deterministic_memory_reply(
                 | "memory_search_facts"
                 | "memory_search_entities"
                 | "memory_get_entity_relations"
+                | "memory_get_person_summary"
                 | "memory_list_recent_changes"
                 | "memory_list_conflicting_facts"
                 | "memory_get_entity_provenance"
@@ -1499,6 +1706,10 @@ pub fn deterministic_memory_reply(
             }
             "memory_get_entity_relations" => format_memory_entity_relations_reply(
                 serde_json::from_value::<GroundedMemoryEntityRelationsEnvelope>(block.data.clone())
+                    .ok()?,
+            ),
+            "memory_get_person_summary" => format_memory_person_summary_reply(
+                serde_json::from_value::<GroundedMemoryPersonSummaryEnvelope>(block.data.clone())
                     .ok()?,
             ),
             "memory_list_recent_changes" => format_memory_recent_changes_reply(
@@ -1639,6 +1850,65 @@ fn format_memory_entity_relations_reply(envelope: GroundedMemoryEntityRelationsE
         }
         lines.push(root_line);
     }
+
+    for relation in envelope.relations.iter().take(6) {
+        let arrow = if relation.direction == "incoming" {
+            "<-"
+        } else {
+            "->"
+        };
+        let mut line = format!(
+            "- {} {} {}",
+            relation.relation, arrow, relation.entity.label
+        );
+        if !relation.entity.entity_kind.trim().is_empty() {
+            line.push_str(&format!(" ({})", relation.entity.entity_kind));
+        }
+        lines.push(line);
+    }
+
+    if envelope.relations.len() > 6 {
+        lines.push(format!("... and {} more.", envelope.relations.len() - 6));
+    }
+
+    lines.join("\n")
+}
+
+fn format_memory_person_summary_reply(envelope: GroundedMemoryPersonSummaryEnvelope) -> String {
+    let mut lines = vec![format!(
+        "Stored person summary for \"{}\" matched by {}.",
+        envelope.query, envelope.matched_by
+    )];
+
+    let mut person_line = format!(
+        "- Person: {} ({})",
+        envelope.person.label, envelope.person.entity_kind
+    );
+    if let Some(identifier) = envelope
+        .person
+        .identifier
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        person_line.push_str(&format!(" id={identifier}"));
+    }
+    if let Some(topic_key) = envelope
+        .person
+        .topic_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        person_line.push_str(&format!(" [{topic_key}]"));
+    }
+    lines.push(person_line);
+    lines.push(format!(
+        "- Scope: {}. Ordinal: {}. Created: {}. Updated: {}. Related entities: {}.",
+        envelope.person.access_scope,
+        envelope.person.ordinal,
+        format_unix_timestamp(envelope.person.created_ts),
+        format_unix_timestamp(envelope.person.updated_ts),
+        envelope.relation_count
+    ));
 
     for relation in envelope.relations.iter().take(6) {
         let arrow = if relation.direction == "incoming" {
@@ -2164,6 +2434,8 @@ pub fn deterministic_downloads_reply(
             "downloads_get_artifact_checksum"
                 | "downloads_get_artifact_install_steps"
                 | "downloads_get_artifact_compatibility"
+                | "downloads_get_artifact_source"
+                | "downloads_get_release_notes"
                 | "downloads_get_artifact_details"
                 | "downloads_list_available_artifacts"
         )
@@ -2194,6 +2466,16 @@ pub fn deterministic_downloads_reply(
                 serde_json::from_value::<GroundedDownloadDetailEnvelope>(block.data.clone())
                     .ok()?,
             ),
+            "downloads_get_artifact_source" => format_download_artifact_source_reply(
+                message,
+                serde_json::from_value::<GroundedDownloadDetailEnvelope>(block.data.clone())
+                    .ok()?,
+            ),
+            "downloads_get_release_notes" => format_download_release_notes_reply(
+                message,
+                serde_json::from_value::<GroundedDownloadDetailEnvelope>(block.data.clone())
+                    .ok()?,
+            ),
             _ => return None,
         }
     } else {
@@ -2208,6 +2490,11 @@ pub fn deterministic_library_reply(
     let block = grounding_blocks
         .iter()
         .find(|block| block.tool == "library_get_item_media_details")
+        .or_else(|| {
+            grounding_blocks
+                .iter()
+                .find(|block| block.tool == "library_get_item_source_paths")
+        })
         .or_else(|| {
             grounding_blocks
                 .iter()
@@ -2237,6 +2524,11 @@ pub fn deterministic_library_reply(
     Some(if block.status == "ok" {
         match block.tool {
             "library_get_item_media_details" => format_library_item_media_reply(
+                message,
+                serde_json::from_value::<GroundedLibraryItemMediaEnvelope>(block.data.clone())
+                    .ok()?,
+            ),
+            "library_get_item_source_paths" => format_library_item_source_paths_reply(
                 message,
                 serde_json::from_value::<GroundedLibraryItemMediaEnvelope>(block.data.clone())
                     .ok()?,
@@ -2282,6 +2574,226 @@ pub fn deterministic_library_reply(
     })
 }
 
+pub fn deterministic_web_reply(
+    message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let block = grounding_blocks
+        .iter()
+        .find(|block| block.tool == "web_list_curated_sources")
+        .or_else(|| {
+            grounding_blocks
+                .iter()
+                .find(|block| block.tool == "web_search_public_web")
+        })
+        .or_else(|| {
+            grounding_blocks
+                .iter()
+                .find(|block| block.tool == "web_fetch_public_page_summary")
+        })?;
+
+    Some(if block.status == "ok" {
+        match block.tool {
+            "web_list_curated_sources" => format_web_curated_sources_reply(&block.data)
+                .unwrap_or_else(|| {
+                    "I loaded the curated public web source catalog, but I couldn't format it."
+                        .to_string()
+                }),
+            "web_search_public_web" => format_web_search_reply(message, &block.data)
+                .unwrap_or_else(|| {
+                    "I loaded public web search results, but I couldn't format them.".to_string()
+                }),
+            "web_fetch_public_page_summary" => format_web_page_summary_reply(message, &block.data)
+                .unwrap_or_else(|| {
+                    "I loaded the public web page summary, but I couldn't format it.".to_string()
+                }),
+            _ => return None,
+        }
+    } else {
+        format_tool_error(block, "I couldn't load the public web details.")
+    })
+}
+
+fn format_web_curated_sources_reply(data: &Value) -> Option<String> {
+    let categories = data.get("categories")?.as_array()?;
+    let mut lines = vec!["Curated public web source catalog:".to_string()];
+
+    for category in categories {
+        let label = category
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or("Curated");
+        let description = category
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let source_count = category
+            .get("source_count")
+            .and_then(Value::as_u64)
+            .map(|count| count as usize)
+            .or_else(|| {
+                category
+                    .get("sources")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+            })
+            .unwrap_or(0);
+
+        let mut line = format!("- {}: {} source(s)", label, source_count);
+        if let Some(description) = description {
+            line.push_str(&format!(" - {description}"));
+        }
+        lines.push(line);
+
+        if let Some(source_names) = category
+            .get("sources")
+            .and_then(Value::as_array)
+            .map(|sources| {
+                sources
+                    .iter()
+                    .filter_map(|source| source.get("name").and_then(Value::as_str))
+                    .take(8)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|names| !names.is_empty())
+        {
+            lines.push(format!("  Sources: {}.", source_names.join(", ")));
+        }
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn format_web_search_reply(message: &str, data: &Value) -> Option<String> {
+    let query = data
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("the public web");
+    let category_label = data
+        .get("category")
+        .and_then(Value::as_str)
+        .and_then(curated_web_category_label);
+    let results = data.get("results").and_then(Value::as_array)?;
+
+    let mut lines = vec![match category_label {
+        Some(label) => format!("Curated {label} web results for \"{query}\":"),
+        None => format!("Public web results for \"{query}\":"),
+    }];
+    if results.is_empty() {
+        lines.push("No results were returned.".to_string());
+        return Some(lines.join("\n"));
+    }
+
+    for (index, result) in results.iter().take(5).enumerate() {
+        let title = result
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Untitled");
+        let source_host = result
+            .get("source_host")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown host");
+        let url = result
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        let mut line = format!("{}. {} ({source_host})", index + 1, title);
+        if let Some(url) = url {
+            line.push_str(&format!(": {url}"));
+        }
+        lines.push(line);
+
+        if let Some(snippet) = result
+            .get("snippet")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lines.push(format!("   {}", compact_text(snippet, 220)));
+        }
+    }
+
+    if message.to_ascii_lowercase().contains("raw") {
+        lines.push("I kept this answer grounded and omitted the raw payload.".to_string());
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn format_web_page_summary_reply(_message: &str, data: &Value) -> Option<String> {
+    let category_label = data
+        .get("category")
+        .and_then(Value::as_str)
+        .and_then(curated_web_category_label);
+    let page_title = data
+        .get("page_title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let source_host = data
+        .get("source_host")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown host");
+    let requested_url = data
+        .get("requested_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let final_url = data
+        .get("final_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let summary = data
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let content_type = data
+        .get("content_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let mut lines = vec![match (category_label, page_title) {
+        (Some(label), Some(title)) => format!("{label} page summary for \"{title}\":"),
+        (Some(label), None) => format!("{label} page summary from {source_host}:"),
+        (None, Some(title)) => format!("Public page summary for \"{title}\":"),
+        (None, None) => format!("Public page summary from {source_host}:"),
+    }];
+
+    if let Some(requested_url) = requested_url {
+        if final_url.map(|url| url != requested_url).unwrap_or(true) {
+            lines.push(format!("Requested URL: {requested_url}."));
+        }
+    }
+    if let Some(final_url) = final_url {
+        lines.push(format!("Final URL: {final_url}."));
+    }
+    lines.push(format!("Source host: {source_host}."));
+    if let Some(summary) = summary {
+        lines.push(format!("Summary: {summary}."));
+    } else {
+        lines.push("No page summary text was returned.".to_string());
+    }
+    if let Some(content_type) = content_type {
+        lines.push(format!("Content type: {content_type}."));
+    }
+
+    Some(lines.join("\n"))
+}
+
 pub fn deterministic_multi_step_reply(
     message: &str,
     execution_trace: Option<&AssistantExecutionTrace>,
@@ -2320,6 +2832,9 @@ pub fn deterministic_multi_step_reply(
                 return Some(reply);
             }
             if let Some(reply) = deterministic_library_reply(message, grounding_blocks) {
+                return Some(reply);
+            }
+            if let Some(reply) = deterministic_web_reply(message, grounding_blocks) {
                 return Some(reply);
             }
             if let Some(reply) = deterministic_memory_reply(message, grounding_blocks) {
@@ -3256,6 +3771,329 @@ fn format_system_failed_unit_detail_reply(
     lines.join("\n")
 }
 
+fn format_system_process_detail_reply(
+    message: &str,
+    envelope: GroundedSystemProcessDetailEnvelope,
+) -> String {
+    if !envelope.available {
+        return envelope
+            .reason
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|reason| format!("Process detail is not available on this host. {reason}"))
+            .unwrap_or_else(|| "Process detail is not available on this host.".to_string());
+    }
+
+    let query_suffix = envelope
+        .query
+        .as_deref()
+        .map(|query| format!(" matching \"{query}\""))
+        .unwrap_or_default();
+    let matched_by = envelope
+        .matched_by
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("query_contains");
+    let mut lines = vec![format!(
+        "Process detail{query_suffix}: {} process(es) matched by {}.",
+        envelope.total_count, matched_by
+    )];
+
+    if let Some(observed_at) = envelope
+        .observed_at
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Observed at: {observed_at}."));
+    }
+
+    for process in envelope.processes.iter().take(5) {
+        let mut line = String::from("- ");
+        if let Some(pid) = process.pid {
+            line.push_str(&format!("pid={pid} "));
+        }
+        if let Some(user) = process
+            .user
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!("user={user} "));
+        }
+        if let Some(state) = process
+            .state
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!("state={state} "));
+        }
+        if let Some(cpu) = process.cpu_percent {
+            line.push_str(&format!("cpu={} ", format_decimal(cpu)));
+        }
+        if let Some(mem) = process.mem_percent {
+            line.push_str(&format!("mem={} ", format_decimal(mem)));
+        }
+        if let Some(elapsed_secs) = process.elapsed_secs {
+            line.push_str(&format!(
+                "elapsed={} ",
+                format_elapsed_seconds(elapsed_secs)
+            ));
+        }
+        if let Some(command) = process
+            .command
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!("command={command}"));
+        }
+        if let Some(args) = process
+            .args
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            if !line.ends_with(' ') {
+                line.push(' ');
+            }
+            line.push_str(&format!("args={args}"));
+        }
+        lines.push(line.trim_end().to_string());
+        if message.to_ascii_lowercase().contains("raw") {
+            if let Some(raw_line) = process
+                .raw_line
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                lines.push(format!("  raw: {raw_line}"));
+            }
+        }
+    }
+
+    if envelope.processes.len() > 5 {
+        lines.push(format!("... and {} more.", envelope.processes.len() - 5));
+    }
+
+    lines.join("\n")
+}
+
+fn format_system_listener_detail_reply(
+    message: &str,
+    envelope: GroundedSystemListenerDetailEnvelope,
+) -> String {
+    if !envelope.available {
+        return envelope
+            .reason
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|reason| format!("Listener detail is not available on this host. {reason}"))
+            .unwrap_or_else(|| "Listener detail is not available on this host.".to_string());
+    }
+
+    let query_suffix = envelope
+        .query
+        .as_deref()
+        .map(|query| format!(" matching \"{query}\""))
+        .unwrap_or_default();
+    let matched_by = envelope
+        .matched_by
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("query_contains");
+    let mut lines = vec![format!(
+        "Listener detail{query_suffix}: {} listener(s) matched by {}.",
+        envelope.total_count, matched_by
+    )];
+
+    if let Some(observed_at) = envelope
+        .observed_at
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Observed at: {observed_at}."));
+    }
+
+    for listener in envelope.listeners.iter().take(5) {
+        let mut line = String::from("- ");
+        if let Some(protocol) = listener
+            .protocol
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!("{protocol} "));
+        }
+        if let Some(state) = listener
+            .state
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!("state={state} "));
+        }
+        if let Some(local_address) = listener
+            .local_address
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!("local={local_address}"));
+        }
+        if let Some(local_port) = listener.local_port {
+            line.push_str(&format!(":{local_port}"));
+        }
+        if let Some(peer_address) = listener
+            .peer_address
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!(" peer={peer_address}"));
+        }
+        if let Some(process) = listener
+            .process
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!(" process={process}"));
+        }
+        if let Some(recv_q) = listener
+            .recv_q
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!(" recv_q={recv_q}"));
+        }
+        if let Some(send_q) = listener
+            .send_q
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!(" send_q={send_q}"));
+        }
+        lines.push(line.trim_end().to_string());
+        if message.to_ascii_lowercase().contains("raw") {
+            if let Some(raw_line) = listener
+                .raw_line
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                lines.push(format!("  raw: {raw_line}"));
+            }
+        }
+    }
+
+    if envelope.listeners.len() > 5 {
+        lines.push(format!("... and {} more.", envelope.listeners.len() - 5));
+    }
+
+    lines.join("\n")
+}
+
+fn format_system_disk_usage_detail_reply(
+    message: &str,
+    envelope: GroundedSystemDiskUsageDetailEnvelope,
+) -> String {
+    if !envelope.available {
+        return envelope
+            .reason
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|reason| format!("Disk usage detail is not available on this host. {reason}"))
+            .unwrap_or_else(|| "Disk usage detail is not available on this host.".to_string());
+    }
+
+    let query_suffix = envelope
+        .query
+        .as_deref()
+        .map(|query| format!(" matching \"{query}\""))
+        .unwrap_or_default();
+    let matched_by = envelope
+        .matched_by
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("contains_match");
+    let mut lines = vec![format!(
+        "Disk usage detail{query_suffix} on {} matched by {}.",
+        envelope
+            .mount_point
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("the mounted filesystem"),
+        matched_by
+    )];
+
+    if let Some(observed_at) = envelope
+        .observed_at
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Observed at: {observed_at}."));
+    }
+    if let Some(source) = envelope
+        .source
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Source: {source}."));
+    }
+    if let Some(fs_type) = envelope
+        .fs_type
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("File system: {fs_type}."));
+    }
+    if let Some(root) = envelope
+        .root
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Mount root: {root}."));
+    }
+    if let Some(mount_id) = envelope.mount_id {
+        lines.push(format!("Mount id: {mount_id}."));
+    }
+    if let Some(parent_id) = envelope.parent_id {
+        lines.push(format!("Parent id: {parent_id}."));
+    }
+    if let Some(major_minor) = envelope
+        .major_minor
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Device: {major_minor}."));
+    }
+    if let Some(options) = envelope
+        .options
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Options: {options}."));
+    }
+    if let Some(super_options) = envelope
+        .super_options
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Super options: {super_options}."));
+    }
+    if let Some(total_bytes) = envelope.total_bytes {
+        lines.push(format!("Total bytes: {total_bytes}."));
+    }
+    if let Some(free_bytes) = envelope.free_bytes {
+        lines.push(format!("Free bytes: {free_bytes}."));
+    }
+    if let Some(available_bytes) = envelope.available_bytes {
+        lines.push(format!("Available bytes: {available_bytes}."));
+    }
+    if let Some(used_bytes) = envelope.used_bytes {
+        lines.push(format!("Used bytes: {used_bytes}."));
+    }
+    if let Some(used_percent) = envelope.used_percent {
+        lines.push(format!("Used percent: {}.", format_decimal(used_percent)));
+    }
+
+    if message.to_ascii_lowercase().contains("raw") {
+        lines.push("I kept this answer grounded and omitted the raw disk payload.".to_string());
+    }
+
+    lines.join("\n")
+}
+
 fn format_downloads_reply(envelope: GroundedDownloadListEnvelope) -> String {
     let query = envelope
         .query
@@ -3528,6 +4366,125 @@ fn format_download_artifact_compatibility_reply(
     } else {
         "This artifact does not require a signed-in host session.".to_string()
     });
+    if message.to_ascii_lowercase().contains("raw") {
+        lines.push("I kept this answer grounded and omitted the raw catalog payload.".to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn format_download_artifact_source_reply(
+    message: &str,
+    envelope: GroundedDownloadDetailEnvelope,
+) -> String {
+    let artifact = envelope.artifact;
+    let mut lines = vec![format!(
+        "Download artifact source for \"{}\":",
+        artifact.title
+    )];
+    if let Some(query) = envelope
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let matched_by = envelope
+            .matched_by
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("query");
+        lines.push(format!("Matched by {matched_by} for \"{query}\"."));
+    }
+
+    let mut source_bits = Vec::new();
+    if let Some(external_url) = artifact
+        .external_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        source_bits.push(format!("external URL {external_url}"));
+    }
+    if let Some(download_path) = artifact
+        .download_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        source_bits.push(format!("download path {download_path}"));
+    }
+    if let Some(setup_path) = artifact
+        .setup_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        source_bits.push(format!("setup path {setup_path}"));
+    }
+    if let Some(package_filename) = artifact
+        .package_filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        source_bits.push(format!("package filename {package_filename}"));
+    }
+
+    if source_bits.is_empty() {
+        lines.push("No dedicated source path or URL was published for this artifact.".to_string());
+    } else {
+        lines.push(format!("Source: {}.", source_bits.join("; ")));
+    }
+    lines.push(format!(
+        "Distribution mode: {}.",
+        artifact.distribution_mode
+    ));
+    if message.to_ascii_lowercase().contains("raw") {
+        lines.push("I kept this answer grounded and omitted the raw catalog payload.".to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn format_download_release_notes_reply(
+    message: &str,
+    envelope: GroundedDownloadDetailEnvelope,
+) -> String {
+    let artifact = envelope.artifact;
+    let mut lines = vec![format!(
+        "Download release notes for \"{}\":",
+        artifact.title
+    )];
+    if let Some(query) = envelope
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let matched_by = envelope
+            .matched_by
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("query");
+        lines.push(format!("Matched by {matched_by} for \"{query}\"."));
+    }
+    if artifact.detail.trim().is_empty() {
+        lines.push("No separate release-note text was published for this artifact.".to_string());
+    } else if artifact.detail.trim() == artifact.summary.trim() {
+        lines.push(format!("Release notes: {}.", artifact.detail.trim()));
+    } else {
+        lines.push(format!("Release notes: {}.", artifact.detail.trim()));
+    }
+    if let Some(version) = artifact
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Version: {version}."));
+    }
     if message.to_ascii_lowercase().contains("raw") {
         lines.push("I kept this answer grounded and omitted the raw catalog payload.".to_string());
     }
@@ -3861,6 +4818,12 @@ fn format_library_item_media_reply(
             "First descendant media path: {first_descendant_media_path}."
         ));
     }
+    if !envelope.source_paths.is_empty() {
+        lines.push(format!(
+            "Source paths: {}.",
+            envelope.source_paths.join(", ")
+        ));
+    }
 
     let mut artwork_bits = Vec::new();
     if let Some(poster_url) = envelope
@@ -3914,6 +4877,72 @@ fn format_library_item_media_reply(
         format_unix_timestamp(envelope.created_ts),
         format_unix_timestamp(envelope.updated_ts),
     ));
+    if message.to_ascii_lowercase().contains("raw") {
+        lines.push("I kept this answer grounded and omitted the raw item payload.".to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn format_library_item_source_paths_reply(
+    message: &str,
+    envelope: GroundedLibraryItemMediaEnvelope,
+) -> String {
+    let mut lines = vec![format!(
+        "Library item source paths for \"{}\" from {}:",
+        envelope.title, envelope.library_id
+    )];
+    if let Some(library_name) = envelope
+        .library_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Library: {library_name}."));
+    }
+    lines.push(format!("Item id: {}.", envelope.id));
+    lines.push(format!(
+        "Matched by {} for \"{}\".",
+        envelope.matched_by, envelope.query
+    ));
+
+    if envelope.source_paths.is_empty() {
+        lines.push("No source paths were returned for this item.".to_string());
+    } else {
+        for path in envelope.source_paths.iter().take(6) {
+            lines.push(format!("- {path}"));
+        }
+        if envelope.source_paths.len() > 6 {
+            lines.push(format!("... and {} more.", envelope.source_paths.len() - 6));
+        }
+    }
+
+    if let Some(resolved_media_path) = envelope
+        .resolved_media_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Resolved media path: {resolved_media_path}."));
+    }
+    if let Some(media_path) = envelope
+        .media_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("Direct media path: {media_path}."));
+    }
+    if let Some(first_descendant_media_path) = envelope
+        .first_descendant_media_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!(
+            "First descendant media path: {first_descendant_media_path}."
+        ));
+    }
     if message.to_ascii_lowercase().contains("raw") {
         lines.push("I kept this answer grounded and omitted the raw item payload.".to_string());
     }
@@ -4065,8 +5094,8 @@ mod tests {
     use super::{
         deterministic_ai_runtime_reply, deterministic_calendar_reply,
         deterministic_downloads_reply, deterministic_library_reply, deterministic_memory_reply,
-        deterministic_network_reply, deterministic_system_reply, grounding_chunks_prompt,
-        rank_and_compress_grounding_chunks,
+        deterministic_network_reply, deterministic_system_reply, deterministic_web_reply,
+        grounding_chunks_prompt, rank_and_compress_grounding_chunks,
     };
     use crate::ai_assistant::types::{
         AssistantGroundingChunk, AssistantGroundingCitation, AssistantGroundingVisibility,
@@ -4449,6 +5478,49 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_network_reply_formats_interface_by_ip_details() {
+        let reply = deterministic_network_reply(
+            "Which interface owns 192.168.0.36?",
+            &[AssistantToolContextBlock {
+                tool: "network_get_interface_by_ip",
+                label: "Network interface for IP \"192.168.0.36\"".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "192.168.0.36",
+                    "matched_by": "exact_address",
+                    "host_label": "server",
+                    "remote_access_enabled": true,
+                    "access": {
+                        "ui_port": 3008,
+                        "backend_port": 8097,
+                        "calendar_port": 8099,
+                        "preferred_local_interface": "enp3s0",
+                        "preferred_local_ipv4": "192.168.0.36",
+                        "preferred_local_url": "https://192.168.0.36:3008",
+                        "login_url": "https://192.168.0.36:3008/login",
+                        "ai_url": "https://192.168.0.36:3008/ai",
+                        "public_url": "https://192.168.0.36:3008"
+                    },
+                    "interface": {
+                        "name": "enp3s0",
+                        "status": "online",
+                        "is_loopback": false,
+                        "addresses": [
+                            { "family": "inet", "address": "192.168.0.36" }
+                        ]
+                    }
+                }),
+            }],
+        )
+        .expect("expected deterministic interface-by-ip reply");
+
+        assert!(reply.contains("Network interface details for \"192.168.0.36\""));
+        assert!(reply.contains("enp3s0"));
+        assert!(reply.contains("192.168.0.36"));
+        assert!(!reply.contains('{'));
+    }
+
+    #[test]
     fn deterministic_network_reply_formats_default_route_details() {
         let reply = deterministic_network_reply(
             "What is the default route on this machine?",
@@ -4623,6 +5695,123 @@ mod tests {
         assert!(reply.contains("Tracked paths"));
         assert!(reply.contains("Usage"));
         assert!(!reply.contains("\"mount_point\""));
+    }
+
+    #[test]
+    fn deterministic_system_reply_formats_process_details_without_raw_json() {
+        let reply = deterministic_system_reply(
+            "Which process is using node on the host?",
+            &[AssistantToolContextBlock {
+                tool: "system_get_process_detail",
+                label: "Process detail for node".to_string(),
+                status: "ok",
+                data: json!({
+                    "available": true,
+                    "observed_at": "2026-04-06T10:00:00Z",
+                    "query": "node",
+                    "matched_by": "query_contains",
+                    "total_count": 1,
+                    "processes": [
+                        {
+                            "pid": 123,
+                            "ppid": 1,
+                            "user": "root",
+                            "state": "S",
+                            "cpu_percent": 1.5,
+                            "mem_percent": 2.2,
+                            "elapsed_secs": 3600,
+                            "command": "node",
+                            "args": "server.js",
+                            "raw_line": "123 1 root S 1.5 2.2 3600 node server.js"
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic process detail reply");
+
+        assert!(reply.contains("Process detail"));
+        assert!(reply.contains("pid=123"));
+        assert!(reply.contains("user=root"));
+        assert!(reply.contains("command=node"));
+        assert!(!reply.contains("\"processes\""));
+    }
+
+    #[test]
+    fn deterministic_system_reply_formats_listener_details_without_raw_json() {
+        let reply = deterministic_system_reply(
+            "What is listening on port 3008?",
+            &[AssistantToolContextBlock {
+                tool: "system_get_listener_detail",
+                label: "Listener detail for 3008".to_string(),
+                status: "ok",
+                data: json!({
+                    "available": true,
+                    "observed_at": "2026-04-06T10:00:00Z",
+                    "query": "3008",
+                    "matched_by": "port_exact",
+                    "total_count": 1,
+                    "listeners": [
+                        {
+                            "protocol": "tcp",
+                            "state": "LISTEN",
+                            "recv_q": "0",
+                            "send_q": "0",
+                            "local_address": "127.0.0.1",
+                            "local_port": 3008,
+                            "peer_address": null,
+                            "process": "users:(\"node\",pid=123,fd=10)",
+                            "raw_line": "tcp LISTEN 0 0 127.0.0.1:3008 *:* users:(\"node\",pid=123,fd=10)"
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic listener detail reply");
+
+        assert!(reply.contains("Listener detail"));
+        assert!(reply.contains("local=127.0.0.1:3008"));
+        assert!(reply.contains("process=users"));
+        assert!(!reply.contains("\"listeners\""));
+    }
+
+    #[test]
+    fn deterministic_system_reply_formats_disk_usage_details_without_raw_json() {
+        let reply = deterministic_system_reply(
+            "How full is /var/lib?",
+            &[AssistantToolContextBlock {
+                tool: "system_get_disk_usage_detail",
+                label: "Disk usage detail for /var/lib".to_string(),
+                status: "ok",
+                data: json!({
+                    "available": true,
+                    "observed_at": "2026-04-06T10:00:00Z",
+                    "query": "/var/lib",
+                    "matched_by": "mount_point_exact",
+                    "mount_point": "/var/lib",
+                    "source": "/dev/sda1",
+                    "fs_type": "ext4",
+                    "root": "/",
+                    "mount_id": 42,
+                    "parent_id": 1,
+                    "major_minor": "8:1",
+                    "options": "rw,relatime",
+                    "super_options": "errors=remount-ro",
+                    "total_bytes": 1000000,
+                    "free_bytes": 100000,
+                    "available_bytes": 75000,
+                    "used_bytes": 900000,
+                    "used_percent": 90.0
+                }),
+            }],
+        )
+        .expect("expected deterministic disk usage detail reply");
+
+        assert!(reply.contains("Disk usage detail"));
+        assert!(reply.contains("/var/lib"));
+        assert!(reply.contains("File system: ext4"));
+        assert!(reply.contains("Used percent: 90"));
+        assert!(!reply.contains("\"mount_id\""));
     }
 
     #[test]
@@ -5108,6 +6297,64 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_memory_reply_formats_person_summary_without_raw_json() {
+        let reply = deterministic_memory_reply(
+            "Give me a summary of Rachel.",
+            &[AssistantToolContextBlock {
+                tool: "memory_get_person_summary",
+                label: "Stored person summary for Rachel".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "Rachel",
+                    "matched_by": "exact entity search",
+                    "person": {
+                        "id": "entity-1",
+                        "node_key": "person:rachel",
+                        "entity_kind": "person",
+                        "label": "Rachel",
+                        "identifier": "rachel",
+                        "topic_key": "memory:people",
+                        "source_chunk_id": null,
+                        "access_scope": "user",
+                        "ordinal": 1,
+                        "created_ts": 3000,
+                        "updated_ts": 4000
+                    },
+                    "relation_count": 1,
+                    "relations": [
+                        {
+                            "direction": "outgoing",
+                            "relation": "sibling_of",
+                            "weight": 1.0,
+                            "created_ts": 4000,
+                            "entity": {
+                                "id": "entity-2",
+                                "node_key": "person:sam",
+                                "entity_kind": "person",
+                                "label": "Sam",
+                                "identifier": "sam",
+                                "topic_key": "memory:people",
+                                "source_chunk_id": null,
+                                "access_scope": "user",
+                                "ordinal": 2,
+                                "created_ts": 3001,
+                                "updated_ts": 3001
+                            }
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic person summary reply");
+
+        assert!(reply.contains("Stored person summary for \"Rachel\""));
+        assert!(reply.contains("Rachel (person)"));
+        assert!(reply.contains("sibling_of -> Sam"));
+        assert!(!reply.contains("\"person\""));
+        assert!(!reply.contains("[{"));
+    }
+
+    #[test]
     fn deterministic_library_reply_formats_search_results_without_raw_json() {
         let reply = deterministic_library_reply(
             "Search my libraries for Star Trek",
@@ -5202,6 +6449,49 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_library_reply_formats_item_source_paths_without_raw_json() {
+        let reply = deterministic_library_reply(
+            "Where are the source paths for Interstellar?",
+            &[AssistantToolContextBlock {
+                tool: "library_get_item_source_paths",
+                label: "Library item source paths for Interstellar".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "Interstellar",
+                    "matched_by": "exact_title",
+                    "library_id": "library-1",
+                    "id": "item-1",
+                    "title": "Interstellar",
+                    "kind": "movie",
+                    "year": 2014,
+                    "library_name": "Movies",
+                    "overview": "A team travels through a wormhole.",
+                    "duration_ms": 101 * 60 * 1000,
+                    "parent_id": null,
+                    "media_path": "/media/movies/Interstellar.mkv",
+                    "resolved_media_path": "/media/movies/Interstellar.mkv",
+                    "first_descendant_media_path": null,
+                    "source_paths": [
+                        "/media/movies/Interstellar.mkv"
+                    ],
+                    "poster_url": "/art/poster.jpg",
+                    "backdrop_url": "/art/backdrop.jpg",
+                    "logo_url": null,
+                    "thumb_url": "/art/thumb.jpg",
+                    "created_ts": 1712500000,
+                    "updated_ts": 1712600000
+                }),
+            }],
+        )
+        .expect("expected deterministic library source paths reply");
+
+        assert!(reply.contains("Library item source paths for \"Interstellar\""));
+        assert!(reply.contains("/media/movies/Interstellar.mkv"));
+        assert!(reply.contains("Source paths"));
+        assert!(!reply.contains("\"source_paths\""));
+    }
+
+    #[test]
     fn deterministic_downloads_reply_formats_artifact_details_without_raw_json() {
         let reply = deterministic_downloads_reply(
             "Tell me more about the RustyVault browser extension package.",
@@ -5248,6 +6538,98 @@ mod tests {
         assert!(reply.contains("Download artifact details"));
         assert!(!reply.contains("\"artifact_id\""));
         assert!(!reply.contains("\"install_steps\""));
+    }
+
+    #[test]
+    fn deterministic_downloads_reply_formats_source_without_raw_json() {
+        let reply = deterministic_downloads_reply(
+            "Where is the Rustyfin App package source?",
+            &[AssistantToolContextBlock {
+                tool: "downloads_get_artifact_source",
+                label: "Download artifact source for Rustyfin App".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "Rustyfin App",
+                    "matched_by": "title",
+                    "id": "download-2",
+                    "artifact_id": "rustyfin-app",
+                    "title": "Rustyfin App",
+                    "summary": "Desktop companion app",
+                    "availability": "available",
+                    "detail": "Desktop client for Rustyfin.",
+                    "platform": "linux",
+                    "architecture": "x86_64",
+                    "version": "1.2.3",
+                    "channel": "stable",
+                    "package_filename": "rustyfin-app.tar.gz",
+                    "file_size": 123456,
+                    "checksum": "sha256:abc123",
+                    "signature_status": "verified",
+                    "distribution_mode": "download",
+                    "external_url": "https://example.com",
+                    "download_path": "/api/v1/downloads/artifacts/rustyfin-app/package",
+                    "install_mode": "package",
+                    "setup_path": "/opt/rustyfin/setup.sh",
+                    "requires_sign_in": true,
+                    "install_steps": [
+                        "Download package",
+                        "Run setup"
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic artifact source reply");
+
+        assert!(reply.contains("Download artifact source for \"Rustyfin App\""));
+        assert!(reply.contains("external URL https://example.com"));
+        assert!(reply.contains("download path /api/v1/downloads/artifacts/rustyfin-app/package"));
+        assert!(!reply.contains("\"download_path\""));
+    }
+
+    #[test]
+    fn deterministic_downloads_reply_formats_release_notes_without_raw_json() {
+        let reply = deterministic_downloads_reply(
+            "What are the release notes for Rustyfin App?",
+            &[AssistantToolContextBlock {
+                tool: "downloads_get_release_notes",
+                label: "Download release notes for Rustyfin App".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "Rustyfin App",
+                    "matched_by": "title",
+                    "id": "download-2",
+                    "artifact_id": "rustyfin-app",
+                    "title": "Rustyfin App",
+                    "summary": "Desktop companion app",
+                    "availability": "available",
+                    "detail": "Desktop client for Rustyfin with bug fixes and polish.",
+                    "platform": "linux",
+                    "architecture": "x86_64",
+                    "version": "1.2.3",
+                    "channel": "stable",
+                    "package_filename": "rustyfin-app.tar.gz",
+                    "file_size": 123456,
+                    "checksum": "sha256:abc123",
+                    "signature_status": "verified",
+                    "distribution_mode": "download",
+                    "external_url": null,
+                    "download_path": "/api/v1/downloads/artifacts/rustyfin-app/package",
+                    "install_mode": "package",
+                    "setup_path": "/opt/rustyfin/setup.sh",
+                    "requires_sign_in": true,
+                    "install_steps": [
+                        "Download package",
+                        "Run setup"
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic release notes reply");
+
+        assert!(reply.contains("Download release notes for \"Rustyfin App\""));
+        assert!(reply.contains("Desktop client for Rustyfin with bug fixes and polish."));
+        assert!(reply.contains("Version: 1.2.3"));
+        assert!(!reply.contains("\"detail\""));
     }
 
     #[test]
@@ -5562,6 +6944,105 @@ mod tests {
         assert!(reply.contains("https://192.168.0.36:3008"));
         assert!(reply.contains("192.168.0.36"));
         assert!(!reply.contains("192.168.112.1"));
+    }
+
+    #[test]
+    fn deterministic_web_reply_formats_curated_source_catalog() {
+        let reply = deterministic_web_reply(
+            "What sites do you use for technology?",
+            &[AssistantToolContextBlock {
+                tool: "web_list_curated_sources",
+                label: "Curated public web source catalog".to_string(),
+                status: "ok",
+                data: json!({
+                    "categories": [
+                        {
+                            "category": "technology",
+                            "label": "Technology",
+                            "description": "Technology news, engineering, product, and developer sources.",
+                            "source_count": 2,
+                            "sources": [
+                                { "name": "Ars Technica" },
+                                { "name": "TechCrunch" }
+                            ]
+                        },
+                        {
+                            "category": "business",
+                            "label": "Business",
+                            "description": "Business and company news sources.",
+                            "source_count": 1,
+                            "sources": [
+                                { "name": "Reuters Business" }
+                            ]
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic web catalog reply");
+
+        assert!(reply.contains("Curated public web source catalog"));
+        assert!(reply.contains("Technology"));
+        assert!(reply.contains("Reuters Business"));
+        assert!(!reply.contains("\"categories\""));
+    }
+
+    #[test]
+    fn deterministic_web_reply_formats_curated_search_results() {
+        let reply = deterministic_web_reply(
+            "search the web for Rust compiler release notes",
+            &[AssistantToolContextBlock {
+                tool: "web_search_public_web",
+                label: "Curated Technology web results".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "Rust compiler release notes",
+                    "category": "technology",
+                    "results": [
+                        {
+                            "title": "Rust 1.78.0 Release Notes",
+                            "url": "https://blog.rust-lang.org/2024/05/02/Rust-1.78.0.html",
+                            "source_host": "blog.rust-lang.org",
+                            "snippet": "The Rust team is happy to announce a new version of Rust."
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic web search reply");
+
+        assert!(reply.contains("Curated Technology web results"));
+        assert!(reply.contains("Rust 1.78.0 Release Notes"));
+        assert!(reply.contains("blog.rust-lang.org"));
+        assert!(reply.contains("https://blog.rust-lang.org/2024/05/02/Rust-1.78.0.html"));
+        assert!(!reply.contains("\"results\""));
+    }
+
+    #[test]
+    fn deterministic_web_reply_formats_curated_page_summary() {
+        let reply = deterministic_web_reply(
+            "Fetch https://www.reuters.com/markets/",
+            &[AssistantToolContextBlock {
+                tool: "web_fetch_public_page_summary",
+                label: "Curated Business page summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "category": "business",
+                    "requested_url": "https://www.reuters.com/markets/",
+                    "final_url": "https://www.reuters.com/markets/",
+                    "source_host": "www.reuters.com",
+                    "page_title": "Markets",
+                    "summary": "Reuters markets coverage and reporting.",
+                    "content_type": "text/html; charset=utf-8"
+                }),
+            }],
+        )
+        .expect("expected deterministic web page reply");
+
+        assert!(reply.contains("Business page summary"));
+        assert!(reply.contains("Reuters markets coverage"));
+        assert!(reply.contains("www.reuters.com"));
+        assert!(!reply.contains("\"summary\""));
     }
 
     #[test]

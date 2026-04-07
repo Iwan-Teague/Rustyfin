@@ -75,6 +75,7 @@ fn visibility_for_tool(tool: &str) -> AssistantGroundingVisibility {
         }
         "network_get_topology_summary"
         | "network_get_interface_details"
+        | "network_get_interface_by_ip"
         | "network_get_default_route"
         | "network_get_hostname_aliases" => AssistantGroundingVisibility::Shared,
         "network_get_route_table"
@@ -161,6 +162,13 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
             .and_then(Value::as_str)
             .map(|name| format!("network:{name}"))
             .or_else(|| Some("network:topology".to_string())),
+        "network_get_interface_by_ip" => block
+            .data
+            .get("interface")
+            .and_then(|interface| interface.get("name"))
+            .and_then(Value::as_str)
+            .map(|name| format!("network:{name}"))
+            .or_else(|| Some("network:topology".to_string())),
         "network_get_default_route" => Some("network:default_route".to_string()),
         "network_get_hostname_aliases" => Some("network:hostname_aliases".to_string()),
         "network_get_route_table" => Some("admin:route_table".to_string()),
@@ -222,6 +230,27 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
             })
             .map(str::to_string)
             .or_else(|| Some("memory:provenance".to_string())),
+        "memory_get_person_summary" => block
+            .data
+            .get("person")
+            .and_then(|person| person.get("topic_key"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                block
+                    .data
+                    .get("relations")
+                    .and_then(Value::as_array)
+                    .and_then(|relations| {
+                        relations.iter().find_map(|relation| {
+                            relation
+                                .get("entity")
+                                .and_then(|entity| entity.get("topic_key"))
+                        })
+                    })
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_string)
+            .or_else(|| Some("memory:people".to_string())),
         "system_get_port_conflicts" => Some("admin:port_conflicts".to_string()),
         "system_get_failed_units" => Some("admin:failed_units".to_string()),
         "system_get_kernel_info" => Some("admin:kernel".to_string()),
@@ -276,7 +305,13 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
             .and_then(Value::as_str)
             .or_else(|| block.data.get("location").and_then(Value::as_str))
             .map(|location| format!("weather:{location}")),
-        "web_search_public_web" | "web_fetch_public_page_summary" => Some("web:public".to_string()),
+        "web_list_curated_sources" => Some("web:catalog".to_string()),
+        "web_search_public_web" | "web_fetch_public_page_summary" => block
+            .data
+            .get("category")
+            .and_then(Value::as_str)
+            .map(|category| format!("web:{category}"))
+            .or_else(|| Some("web:public".to_string())),
         _ => None,
     }
 }
@@ -964,6 +999,18 @@ fn maybe_topic_from_message(message: &str) -> Option<String> {
     if lower.contains("calendar") || lower.contains("birthday") {
         return Some("calendar:recent".to_string());
     }
+    if lower.contains("person summary")
+        || lower.contains("profile summary")
+        || lower.contains("person profile")
+        || lower.contains("profile details")
+        || lower.contains("profile info")
+        || lower.contains("profile information")
+        || lower.contains("person details")
+        || lower.contains("person info")
+        || lower.contains("person information")
+    {
+        return Some("memory:people".to_string());
+    }
     None
 }
 
@@ -1496,6 +1543,10 @@ mod tests {
             maybe_topic_from_message("what downloads are available"),
             Some("downloads:catalog".to_string())
         );
+        assert_eq!(
+            maybe_topic_from_message("give me a person summary for Rachel"),
+            Some("memory:people".to_string())
+        );
     }
 
     #[test]
@@ -1557,6 +1608,41 @@ mod tests {
         assert_eq!(
             topic_key_for_tool(&library_call, &library_block).as_deref(),
             Some("library:library-1")
+        );
+
+        let memory_person_call = PlannedToolCall {
+            tool: AssistantToolName::MemoryGetPersonSummary,
+            input: AssistantToolInput::SystemService {
+                query: "Rachel".to_string(),
+            },
+        };
+        let memory_person_block = AssistantToolContextBlock {
+            tool: "memory_get_person_summary",
+            label: "Stored person summary for Rachel".to_string(),
+            status: "ok",
+            data: json!({
+                "query": "Rachel",
+                "matched_by": "exact entity search",
+                "person": {
+                    "id": "entity-1",
+                    "node_key": "person:rachel",
+                    "entity_kind": "person",
+                    "label": "Rachel",
+                    "identifier": "rachel",
+                    "topic_key": "memory:people",
+                    "source_chunk_id": null,
+                    "access_scope": "user",
+                    "ordinal": 1,
+                    "created_ts": 0,
+                    "updated_ts": 0
+                },
+                "relation_count": 0,
+                "relations": []
+            }),
+        };
+        assert_eq!(
+            topic_key_for_tool(&memory_person_call, &memory_person_block).as_deref(),
+            Some("memory:people")
         );
     }
 

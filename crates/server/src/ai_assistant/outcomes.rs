@@ -390,6 +390,19 @@ fn classify_weather_outcome(block: &AssistantToolContextBlock) -> OutcomeInspect
             ..OutcomeInspection::default()
         };
     }
+    if block.tool == "weather_get_hourly_window"
+        && block
+            .data
+            .get("hourly_points")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        return OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Empty,
+            confidence: 0.99,
+            ..OutcomeInspection::default()
+        };
+    }
     OutcomeInspection {
         kind: AssistantToolOutcomeKind::Answer,
         confidence: 0.98,
@@ -729,7 +742,8 @@ fn classify_network_outcome(
                 }
             }
         }
-        AssistantToolName::NetworkGetInterfaceDetails => {
+        AssistantToolName::NetworkGetInterfaceDetails
+        | AssistantToolName::NetworkGetInterfaceByIp => {
             if tool_message(block)
                 .as_deref()
                 .unwrap_or_default()
@@ -1084,6 +1098,21 @@ fn classify_memory_outcome(
                 .is_some_and(|value| !value.is_null());
             OutcomeInspection {
                 kind: if entity_present || source_present {
+                    AssistantToolOutcomeKind::Answer
+                } else {
+                    AssistantToolOutcomeKind::Empty
+                },
+                confidence: 0.95,
+                ..OutcomeInspection::default()
+            }
+        }
+        AssistantToolName::MemoryGetPersonSummary => {
+            let person_present = block
+                .data
+                .get("person")
+                .is_some_and(|value| !value.is_null());
+            OutcomeInspection {
+                kind: if person_present {
                     AssistantToolOutcomeKind::Answer
                 } else {
                     AssistantToolOutcomeKind::Empty

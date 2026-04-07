@@ -24,6 +24,10 @@ use super::weather::{
     fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
 };
 use super::web::{fetch_public_page_summary, public_web_tools_enabled, search_public_web};
+use super::web_sources::{
+    CuratedWebCategory, curated_web_catalog_summary, curated_web_category_for_url,
+    curated_web_category_label, fetch_curated_web_page_summary, search_curated_web,
+};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -624,12 +628,41 @@ struct LibraryItemMediaDetailSummary {
     media_path: Option<String>,
     resolved_media_path: Option<String>,
     first_descendant_media_path: Option<String>,
+    source_paths: Vec<String>,
     poster_url: Option<String>,
     backdrop_url: Option<String>,
     logo_url: Option<String>,
     thumb_url: Option<String>,
     created_ts: i64,
     updated_ts: i64,
+}
+
+fn push_unique_nonempty_string(target: &mut Vec<String>, candidate: Option<String>) {
+    let Some(candidate) = candidate
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    if target
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&candidate))
+    {
+        return;
+    }
+    target.push(candidate);
+}
+
+fn collect_library_item_source_paths(
+    media_path: Option<String>,
+    resolved_media_path: Option<String>,
+    first_descendant_media_path: Option<String>,
+) -> Vec<String> {
+    let mut source_paths = Vec::new();
+    push_unique_nonempty_string(&mut source_paths, media_path);
+    push_unique_nonempty_string(&mut source_paths, resolved_media_path);
+    push_unique_nonempty_string(&mut source_paths, first_descendant_media_path);
+    source_paths
 }
 
 #[derive(Debug, Serialize)]
@@ -957,6 +990,8 @@ struct CurrentDateTimeAssistantSummary {
 #[derive(Debug, Serialize)]
 struct PublicWebSearchSummary {
     query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category: Option<String>,
     results: Vec<super::web::PublicWebSearchResult>,
 }
 
@@ -1469,6 +1504,9 @@ pub(crate) async fn execute_network_provider_tool(
         AssistantToolName::NetworkGetInterfaceDetails => {
             network_get_interface_details(state, context, call).await
         }
+        AssistantToolName::NetworkGetInterfaceByIp => {
+            network_get_interface_by_ip(state, context, call).await
+        }
         AssistantToolName::NetworkGetDefaultRoute => {
             network_get_default_route(state, context, call).await
         }
@@ -1615,6 +1653,9 @@ pub(crate) async fn execute_weather_provider_tool(
         AssistantToolName::WeatherGetCurrent => weather_get_current(state, context, call).await,
         AssistantToolName::WeatherGetForecast => weather_get_forecast(state, context, call).await,
         AssistantToolName::WeatherGetHistory => weather_get_history(state, context, call).await,
+        AssistantToolName::WeatherGetHourlyWindow => {
+            weather_get_hourly_window(state, context, call).await
+        }
         AssistantToolName::WeatherResolveLocationAlias => {
             weather_resolve_location_alias(state, context, call).await
         }
@@ -1638,6 +1679,9 @@ pub(crate) async fn execute_web_provider_tool(
     call: &PlannedToolCall,
 ) -> AssistantToolContextBlock {
     let result = match call.tool {
+        AssistantToolName::WebListCuratedSources => {
+            web_list_curated_sources(state, context, call).await
+        }
         AssistantToolName::WebSearchPublicWeb => web_search_public_web(state, context, call).await,
         AssistantToolName::WebFetchPublicPageSummary => {
             web_fetch_public_page_summary(state, context, call).await
@@ -3204,6 +3248,44 @@ async fn weather_get_history(
     ))
 }
 
+async fn weather_get_hourly_window(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::WeatherHistory {
+        location,
+        start_date,
+        end_date,
+        label,
+    } = &call.input
+    else {
+        return Err("missing public weather hourly input".to_string());
+    };
+    let start_date = NaiveDate::parse_from_str(start_date, "%F")
+        .map_err(|error| format!("invalid public weather hourly start date: {error}"))?;
+    let end_date = NaiveDate::parse_from_str(end_date, "%F")
+        .map_err(|error| format!("invalid public weather hourly end date: {error}"))?;
+    if start_date != end_date {
+        return Err("public weather hourly windows must cover exactly one day".to_string());
+    }
+    let today = assistant_local_today();
+    if start_date < today {
+        return Err(
+            "public weather hourly windows are only available for today and future dates"
+                .to_string(),
+        );
+    }
+    let hourly = super::weather::fetch_public_weather_hourly_window(location, start_date).await?;
+    Ok((
+        format!(
+            "Hourly weather window for {} on {}",
+            hourly.resolved_location, label
+        ),
+        serde_json::to_value(hourly).unwrap_or_else(|_| json!({})),
+    ))
+}
+
 async fn weather_get_recent_history_for_date(
     state: &AppState,
     context: &AssistantContext,
@@ -3223,15 +3305,33 @@ async fn web_search_public_web(
             super::web::AI_PUBLIC_WEB_ENABLE_ENV
         ));
     }
-    let AssistantToolInput::WebSearch { query } = &call.input else {
+    let AssistantToolInput::WebSearch { query, category } = &call.input else {
         return Err("missing public web search query".to_string());
     };
-    let results = search_public_web(query, Some(5)).await?;
-    let label = format!("{} public web results for \"{}\"", results.len(), query);
+    let results = if let Some(category_slug) = category.as_deref() {
+        let category = CuratedWebCategory::from_slug(category_slug)
+            .ok_or_else(|| format!("unknown curated web category: {category_slug}"))?;
+        search_curated_web(category, query).await?
+    } else {
+        search_public_web(query, Some(5)).await?
+    };
+    let label = match category.as_deref() {
+        Some(category_slug) => {
+            let category_label = curated_web_category_label(category_slug).unwrap_or("Curated");
+            format!(
+                "{} {} results for \"{}\"",
+                results.len(),
+                category_label,
+                query
+            )
+        }
+        None => format!("{} public web results for \"{}\"", results.len(), query),
+    };
     Ok((
         label,
         serde_json::to_value(PublicWebSearchSummary {
             query: query.clone(),
+            category: category.clone(),
             results,
         })
         .unwrap_or_else(|_| json!({})),
@@ -3249,18 +3349,61 @@ async fn web_fetch_public_page_summary(
             super::web::AI_PUBLIC_WEB_ENABLE_ENV
         ));
     }
-    let AssistantToolInput::WebFetch { url } = &call.input else {
+    let AssistantToolInput::WebFetch { url, category } = &call.input else {
         return Err("missing public web URL".to_string());
     };
-    let summary = fetch_public_page_summary(url).await?;
-    let label = if let Some(title) = summary.page_title.as_deref() {
-        format!("Fetched public page \"{title}\"")
+    let summary = if let Some(category_slug) = category.as_deref() {
+        let category = CuratedWebCategory::from_slug(category_slug)
+            .ok_or_else(|| format!("unknown curated web category: {category_slug}"))?;
+        let mut summary = fetch_curated_web_page_summary(category, url).await?;
+        summary.category = Some(category.slug().to_string());
+        summary
+    } else if let Some(category_slug) = curated_web_category_for_url(url) {
+        let category = CuratedWebCategory::from_slug(category_slug)
+            .ok_or_else(|| format!("unknown curated web category: {category_slug}"))?;
+        let mut summary = fetch_curated_web_page_summary(category, url).await?;
+        summary.category = Some(category.slug().to_string());
+        summary
     } else {
-        format!("Fetched public page from {}", summary.source_host)
+        fetch_public_page_summary(url).await?
+    };
+    let label = match summary
+        .category
+        .as_deref()
+        .and_then(curated_web_category_label)
+    {
+        Some(category_label) => match summary.page_title.as_deref() {
+            Some(title) => format!("Fetched {category_label} page \"{title}\""),
+            None => format!("Fetched {category_label} page from {}", summary.source_host),
+        },
+        None => match summary.page_title.as_deref() {
+            Some(title) => format!("Fetched public page \"{title}\""),
+            None => format!("Fetched public page from {}", summary.source_host),
+        },
     };
     Ok((
         label,
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn web_list_curated_sources(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    if !public_web_tools_enabled() {
+        return Err(format!(
+            "public web tools are disabled on this host. Set {}=1 to enable them.",
+            super::web::AI_PUBLIC_WEB_ENABLE_ENV
+        ));
+    }
+    if !matches!(call.input, AssistantToolInput::None) {
+        return Err("web list curated sources does not accept arguments".to_string());
+    }
+    Ok((
+        "Curated public web source catalog".to_string(),
+        serde_json::to_value(curated_web_catalog_summary()).unwrap_or_else(|_| json!({})),
     ))
 }
 
@@ -3612,6 +3755,11 @@ async fn library_get_item_media_details(
     let resolved_media_path = media_path
         .clone()
         .or_else(|| first_descendant_media_path.clone());
+    let source_paths = collect_library_item_source_paths(
+        media_path.clone(),
+        resolved_media_path.clone(),
+        first_descendant_media_path.clone(),
+    );
 
     let summary = LibraryItemMediaDetailSummary {
         query,
@@ -3628,6 +3776,7 @@ async fn library_get_item_media_details(
         media_path,
         resolved_media_path,
         first_descendant_media_path,
+        source_paths,
         poster_url,
         backdrop_url,
         logo_url,
@@ -3674,6 +3823,11 @@ async fn library_get_item_source_paths(
     let resolved_media_path = media_path
         .clone()
         .or_else(|| first_descendant_media_path.clone());
+    let source_paths = collect_library_item_source_paths(
+        media_path.clone(),
+        resolved_media_path.clone(),
+        first_descendant_media_path.clone(),
+    );
 
     let summary = LibraryItemMediaDetailSummary {
         query,
@@ -3690,6 +3844,7 @@ async fn library_get_item_source_paths(
         media_path,
         resolved_media_path,
         first_descendant_media_path,
+        source_paths,
         poster_url,
         backdrop_url,
         logo_url,
@@ -3872,6 +4027,27 @@ fn network_find_interface_detail(
     None
 }
 
+fn network_find_interface_by_ip(
+    snapshot: &crate::network_diagnostics::NetworkTopologySnapshot,
+    query: &str,
+) -> Option<(crate::network_diagnostics::NetworkNodeSummary, String)> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() || trimmed.parse::<std::net::IpAddr>().is_err() {
+        return None;
+    }
+
+    snapshot
+        .nodes
+        .iter()
+        .find(|node| {
+            node.addresses
+                .iter()
+                .any(|address| address.address.eq_ignore_ascii_case(trimmed))
+        })
+        .cloned()
+        .map(|node| (node, "exact_address".to_string()))
+}
+
 async fn network_get_interface_details(
     state: &AppState,
     context: &AssistantContext,
@@ -3895,6 +4071,50 @@ async fn network_get_interface_details(
     };
 
     let title = format!("Network interface details for \"{}\"", interface.name);
+    Ok((
+        title,
+        serde_json::to_value(NetworkInterfaceDetailSummary {
+            query: query.clone(),
+            matched_by,
+            host_label: snapshot.host_label,
+            remote_access_enabled: snapshot.remote_access_enabled,
+            access: snapshot.access,
+            interface,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn network_get_interface_by_ip(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::NetworkInterface { query } = &call.input else {
+        return Err("missing network interface IP query".to_string());
+    };
+
+    let trimmed = query.trim();
+    if trimmed.parse::<std::net::IpAddr>().is_err() {
+        return Err(format!(
+            "network interface by IP requires a valid IP address, got \"{query}\""
+        ));
+    }
+
+    let snapshot =
+        crate::network_diagnostics::collect_network_topology_snapshot(state, context.is_admin)
+            .await;
+    if !snapshot.available {
+        return Err(snapshot
+            .reason
+            .unwrap_or_else(|| "network diagnostics are unavailable".to_string()));
+    }
+
+    let Some((interface, matched_by)) = network_find_interface_by_ip(&snapshot, trimmed) else {
+        return Err(format!("no network interface matched IP \"{trimmed}\""));
+    };
+
+    let title = format!("Network interface for IP \"{}\"", trimmed);
     Ok((
         title,
         serde_json::to_value(NetworkInterfaceDetailSummary {
@@ -9012,12 +9232,14 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             weather_label: Some(label.clone()),
             ..AssistantFollowUpInputHint::default()
         },
-        AssistantToolInput::WebSearch { query } => AssistantFollowUpInputHint {
+        AssistantToolInput::WebSearch { query, category } => AssistantFollowUpInputHint {
             web_search_query: Some(query.clone()),
+            web_category: category.clone(),
             ..AssistantFollowUpInputHint::default()
         },
-        AssistantToolInput::WebFetch { url } => AssistantFollowUpInputHint {
+        AssistantToolInput::WebFetch { url, category } => AssistantFollowUpInputHint {
             web_url: Some(url.clone()),
+            web_category: category.clone(),
             ..AssistantFollowUpInputHint::default()
         },
         AssistantToolInput::DocumentCreateDownload { request_prompt, .. } => {
@@ -9650,6 +9872,47 @@ fn follow_up_entities(
             let mut entities = block
                 .data
                 .get("root")
+                .and_then(|value| serde_json::from_value::<MemoryEntitySummary>(value.clone()).ok())
+                .map(|entity| {
+                    vec![AssistantFollowUpEntity {
+                        ordinal: 1,
+                        label: format!("{} ({})", entity.label, entity.entity_kind),
+                        identifier: Some(entity.node_key),
+                        kind: Some(entity.entity_kind),
+                        topic_key: entity.topic_key,
+                        ..Default::default()
+                    }]
+                })
+                .unwrap_or_default();
+
+            if let Some(relations) = block
+                .data
+                .get("relations")
+                .and_then(serde_json::Value::as_array)
+            {
+                entities.extend(relations.iter().take(8).enumerate().filter_map(
+                    |(index, relation)| {
+                        let entity = relation.get("entity")?;
+                        let entity =
+                            serde_json::from_value::<MemoryEntitySummary>(entity.clone()).ok()?;
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 2,
+                            label: format!("{} ({})", entity.label, entity.entity_kind),
+                            identifier: Some(entity.node_key),
+                            kind: Some(entity.entity_kind),
+                            topic_key: entity.topic_key,
+                            ..Default::default()
+                        })
+                    },
+                ));
+            }
+
+            entities
+        }
+        AssistantToolName::MemoryGetPersonSummary => {
+            let mut entities = block
+                .data
+                .get("person")
                 .and_then(|value| serde_json::from_value::<MemoryEntitySummary>(value.clone()).ok())
                 .map(|entity| {
                     vec![AssistantFollowUpEntity {
@@ -10330,6 +10593,121 @@ fn follow_up_entities(
                 .map(|mount_point| format!("storage_mount:{mount_point}")),
             ..Default::default()
         }],
+        AssistantToolName::SystemGetProcessDetail => block
+            .data
+            .get("processes")
+            .and_then(serde_json::Value::as_array)
+            .map(|processes| {
+                processes
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, process)| {
+                        let pid = process.get("pid").and_then(serde_json::Value::as_u64);
+                        let command = process
+                            .get("command")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("process");
+                        let args = process
+                            .get("args")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
+                        let label = if args.is_empty() {
+                            pid.map(|pid| format!("{command} pid={pid}"))
+                                .unwrap_or_else(|| command.to_string())
+                        } else {
+                            format!("{command} {args}")
+                        };
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: label.clone(),
+                            identifier: pid
+                                .map(|pid| pid.to_string())
+                                .or_else(|| Some(command.to_string())),
+                            kind: Some("system_process".to_string()),
+                            topic_key: Some("system:processes".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::SystemGetListenerDetail => block
+            .data
+            .get("listeners")
+            .and_then(serde_json::Value::as_array)
+            .map(|listeners| {
+                listeners
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, listener)| {
+                        let protocol = listener
+                            .get("protocol")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tcp");
+                        let local_address = listener
+                            .get("local_address")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("*");
+                        let local_port = listener
+                            .get("local_port")
+                            .and_then(serde_json::Value::as_u64);
+                        let process = listener
+                            .get("process")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
+                        let label = match local_port {
+                            Some(port) if !process.is_empty() => {
+                                format!("{protocol} {local_address}:{port} {process}")
+                            }
+                            Some(port) => format!("{protocol} {local_address}:{port}"),
+                            None if !process.is_empty() => {
+                                format!("{protocol} {local_address} {process}")
+                            }
+                            None => format!("{protocol} {local_address}"),
+                        };
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: label.clone(),
+                            identifier: local_port
+                                .map(|port| format!("{protocol}:{local_address}:{port}"))
+                                .or_else(|| Some(format!("{protocol}:{local_address}"))),
+                            kind: Some("system_listener".to_string()),
+                            topic_key: Some("system:listeners".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::SystemGetDiskUsageDetail => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
+                .data
+                .get("mount_point")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| block.data.get("query").and_then(serde_json::Value::as_str))
+                .unwrap_or(&block.label)
+                .to_string(),
+            identifier: block
+                .data
+                .get("mount_point")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| block.data.get("source").and_then(serde_json::Value::as_str))
+                .map(str::to_string),
+            kind: Some("storage_mount".to_string()),
+            topic_key: block
+                .data
+                .get("mount_point")
+                .and_then(serde_json::Value::as_str)
+                .map(|mount_point| format!("storage_mount:{mount_point}")),
+            ..Default::default()
+        }],
         AssistantToolName::LibraryGetItemSummary
         | AssistantToolName::LibraryGetItemMediaDetails
         | AssistantToolName::LibraryGetItemSourcePaths => {
@@ -10466,6 +10844,12 @@ fn follow_up_entities(
             .get("results")
             .and_then(serde_json::Value::as_array)
             .map(|results| {
+                let topic_key = block
+                    .data
+                    .get("category")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|category| format!("web:{category}"))
+                    .or_else(|| Some("web:public".to_string()));
                 results
                     .iter()
                     .take(8)
@@ -10478,6 +10862,8 @@ fn follow_up_entities(
                                 .get("url")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            kind: Some("web_result".to_string()),
+                            topic_key: topic_key.clone(),
                             ..Default::default()
                         })
                     })
@@ -10497,6 +10883,13 @@ fn follow_up_entities(
                 .get("final_url")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            kind: Some("web_page".to_string()),
+            topic_key: block
+                .data
+                .get("category")
+                .and_then(serde_json::Value::as_str)
+                .map(|category| format!("web:{category}"))
+                .or_else(|| Some("web:public".to_string())),
             ..Default::default()
         }],
         AssistantToolName::WeatherGetCurrent

@@ -17,6 +17,7 @@ pub mod tools;
 pub mod types;
 pub mod weather;
 pub mod web;
+pub mod web_sources;
 
 pub use orchestrator::{
     build_assistant_messages, build_assistant_messages_with_budget,
@@ -29,7 +30,7 @@ pub use orchestrator::{
 pub use replies::{
     deterministic_ai_runtime_reply, deterministic_calendar_reply, deterministic_downloads_reply,
     deterministic_library_reply, deterministic_memory_reply, deterministic_multi_step_reply,
-    deterministic_network_reply, deterministic_system_reply,
+    deterministic_network_reply, deterministic_system_reply, deterministic_web_reply,
 };
 pub use types::{
     AssistantActivityTraceItem, AssistantChatRequest, AssistantClarificationRequest,

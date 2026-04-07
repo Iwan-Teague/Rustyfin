@@ -151,9 +151,13 @@ pub enum AssistantToolInput {
     },
     WebSearch {
         query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
     },
     WebFetch {
         url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
     },
     CurrentDateTime {
         location: Option<String>,
@@ -909,6 +913,7 @@ pub struct AssistantFollowUpInputHint {
     pub current_datetime_location: Option<String>,
     pub web_search_query: Option<String>,
     pub web_url: Option<String>,
+    pub web_category: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
