@@ -25,6 +25,9 @@ impl ToolProvider for MemoryToolProvider {
         registry.register_tool(self, AssistantToolName::MemoryListRecentChanges);
         registry.register_tool(self, AssistantToolName::MemoryListConflictingFacts);
         registry.register_tool(self, AssistantToolName::MemoryGetEntityProvenance);
+        registry.register_tool(self, AssistantToolName::MemoryGetPersonTimeline);
+        registry.register_tool(self, AssistantToolName::MemoryGetSourceCitation);
+        registry.register_tool(self, AssistantToolName::MemoryGetConflictExplanations);
     }
 
     fn execute<'a>(

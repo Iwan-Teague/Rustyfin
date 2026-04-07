@@ -21,6 +21,9 @@ impl ToolProvider for DownloadsToolProvider {
         registry.register_tool(self, AssistantToolName::DownloadsGetArtifactChecksum);
         registry.register_tool(self, AssistantToolName::DownloadsGetArtifactInstallSteps);
         registry.register_tool(self, AssistantToolName::DownloadsGetArtifactCompatibility);
+        registry.register_tool(self, AssistantToolName::DownloadsGetLatestForPlatform);
+        registry.register_tool(self, AssistantToolName::DownloadsGetArtifactPlatformMatrix);
+        registry.register_tool(self, AssistantToolName::DownloadsGetArtifactSigningInfo);
     }
 
     fn execute<'a>(

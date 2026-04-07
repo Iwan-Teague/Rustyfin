@@ -1,20 +1,26 @@
 use axum::extract::{Path, Query, State};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthUser;
+use crate::dictionary_hardening_helpers::{
+    AttachNodeMode, WorkspaceMemberRole, WorkspaceMembershipMutationError, decide_attach_node_mode,
+    validate_workspace_membership_change,
+};
 use crate::error::AppError;
 use crate::state::AppState;
 use rustfin_db::repo::dictionary::{
     self, BootstrapWorkspacesResult, CreatePersonInput, CreateTreeNodeInput, CreateWorkspaceInput,
     DictionaryAccountLinkRow, DictionaryDocumentRow, DictionaryFactRow, DictionaryPersonAliasRow,
     DictionaryPersonRow, DictionaryResolvedRelationRow, DictionaryTreeNodeRow,
-    DictionaryWorkspaceMemberRow, DictionaryWorkspaceRow, FactValueType, MutationSourceKind,
-    RelationPairInput, SaveDocumentInput, SearchVisiblePeopleParams, SubjectKind, TreeNodeKind,
-    UpdatePersonInput, UpsertAccountLinkInput, UpsertFactInput, WorkspaceKind, WorkspaceRole,
+    DictionaryWorkspaceMemberRow, DictionaryWorkspaceMemberWithUserRow, DictionaryWorkspaceRow,
+    FactValueType, MutationSourceKind, RelationPairInput, SaveDocumentInput,
+    SearchVisiblePeopleParams, SubjectKind, TreeNodeKind, UpdatePersonInput,
+    UpsertAccountLinkInput, UpsertFactInput, WorkspaceKind, WorkspaceRole,
 };
+use rustfin_db::repo::users;
 
 const MAX_PERSON_NAME_CHARS: usize = 120;
 const MAX_PERSON_SUMMARY_CHARS: usize = 320;
@@ -36,8 +42,20 @@ pub fn router() -> Router<AppState> {
         )
         .route("/workspaces/{workspace_id}/tree", get(get_workspace_tree))
         .route(
+            "/workspaces/{workspace_id}/members",
+            get(list_workspace_members).post(upsert_workspace_member),
+        )
+        .route(
+            "/workspaces/{workspace_id}/members/{user_id}",
+            delete(delete_workspace_member),
+        )
+        .route(
             "/workspaces/{workspace_id}/people",
             get(list_or_search_workspace_people).post(create_workspace_person),
+        )
+        .route(
+            "/workspaces/{workspace_id}/people/attach",
+            post(attach_existing_workspace_person),
         )
         .route(
             "/workspaces/{workspace_id}/people/{person_id}",
@@ -191,6 +209,34 @@ pub struct PutMyAccountLinkRequest {
     pub work_workspace_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpsertWorkspaceMemberRequest {
+    pub login_username: String,
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AttachExistingPersonRequest {
+    pub person_id: String,
+    #[serde(default)]
+    pub parent_node_id: Option<String>,
+    #[serde(default)]
+    pub node_title: Option<String>,
+    #[serde(default)]
+    pub as_shortcut: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DictionaryWorkspaceMemberView {
+    pub workspace_id: String,
+    pub user_id: String,
+    pub login_username: String,
+    pub display_name: String,
+    pub role: String,
+    pub added_by_user_id: Option<String>,
+    pub created_ts: i64,
+}
+
 fn normalize_person_name(raw: &str) -> Result<String, AppError> {
     let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = collapsed.trim();
@@ -283,6 +329,20 @@ fn parse_fact_value_type(raw: &str) -> Result<FactValueType, AppError> {
             "value_type must be one of: text, int, bool, date, json".into(),
         )
         .into()),
+    }
+}
+
+fn dictionary_workspace_member_view_from_row(
+    row: DictionaryWorkspaceMemberWithUserRow,
+) -> DictionaryWorkspaceMemberView {
+    DictionaryWorkspaceMemberView {
+        workspace_id: row.workspace_id,
+        user_id: row.user_id,
+        login_username: row.login_username,
+        display_name: row.display_name,
+        role: row.role,
+        added_by_user_id: row.added_by_user_id,
+        created_ts: row.created_ts,
     }
 }
 
@@ -427,6 +487,26 @@ async fn ensure_workspace_write_access(
     Ok(workspace)
 }
 
+fn parse_workspace_role_strict(role: &str) -> Result<WorkspaceRole, AppError> {
+    WorkspaceRole::from_str(role)
+        .ok_or_else(|| ApiError::Internal("invalid dictionary membership role".into()).into())
+}
+
+async fn ensure_workspace_manage_access(
+    state: &AppState,
+    auth: &AuthUser,
+    workspace_id: &str,
+) -> Result<DictionaryWorkspaceRow, AppError> {
+    let (workspace, membership) = ensure_workspace_role(state, auth, workspace_id).await?;
+    let role = parse_workspace_role_strict(&membership.role)?;
+    if !role.can_manage() {
+        return Err(
+            ApiError::Forbidden("dictionary workspace membership is owner-managed".into()).into(),
+        );
+    }
+    Ok(workspace)
+}
+
 async fn ensure_tree_parent_in_workspace(
     state: &AppState,
     workspace_id: &str,
@@ -485,6 +565,67 @@ async fn default_parent_node_id(
         return Ok(Some(node.id.clone()));
     }
     Ok(None)
+}
+
+fn normalize_login_username(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return Err(ApiError::BadRequest("login_username must not be empty".into()).into());
+    }
+    if trimmed.len() > 64 {
+        return Err(ApiError::BadRequest("login_username is too long".into()).into());
+    }
+    Ok(trimmed)
+}
+
+fn parse_requested_member_role(raw: &str) -> Result<WorkspaceRole, AppError> {
+    WorkspaceRole::from_str(raw.trim().to_ascii_lowercase().as_str()).ok_or_else(|| {
+        ApiError::BadRequest("role must be one of: owner, editor, viewer".into()).into()
+    })
+}
+
+async fn validate_selected_link_workspace(
+    state: &AppState,
+    auth: &AuthUser,
+    person: &DictionaryPersonRow,
+    workspace_id: &str,
+    field_name: &'static str,
+) -> Result<String, AppError> {
+    let workspace = dictionary::find_workspace_by_id(&state.db, workspace_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?
+        .ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "{field_name} must reference an existing dictionary workspace"
+            ))
+        })?;
+
+    let can_read = dictionary::user_can_access_workspace(&state.db, workspace_id, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+    if !can_read {
+        return Err(ApiError::Forbidden(format!(
+            "{field_name} must reference a dictionary workspace you can read"
+        ))
+        .into());
+    }
+
+    if workspace.space_id != person.space_id {
+        return Err(ApiError::BadRequest(format!(
+            "{field_name} must belong to the same dictionary space as the linked person"
+        ))
+        .into());
+    }
+
+    let _ = ensure_person_visible_in_workspace(state, &workspace.id, &person.id)
+        .await
+        .map_err(|_| {
+            ApiError::BadRequest(format!(
+                "linked person must be visible in {field_name} before the account link can be saved"
+            ))
+        })?;
+
+    Ok(workspace.id)
 }
 
 async fn ensure_workspace_seeded(
@@ -774,26 +915,45 @@ async fn put_my_account_link(
 
     let family_workspace_id = req
         .family_workspace_id
-        .clone()
+        .as_deref()
         .ok_or_else(|| ApiError::BadRequest("family_workspace_id is required".into()))?;
-    let family_workspace =
-        ensure_workspace_read_access(&state, &auth, &family_workspace_id).await?;
-    if family_workspace.space_id != person.space_id {
-        return Err(ApiError::BadRequest(
-            "linked person must belong to the same dictionary space as the family workspace".into(),
-        )
-        .into());
-    }
-    let _ = ensure_person_visible_in_workspace(&state, &family_workspace.id, person_id).await?;
 
-    for workspace_id in [&req.friends_workspace_id, &req.work_workspace_id] {
-        if let Some(workspace_id) = workspace_id.as_deref() {
-            let workspace = ensure_workspace_read_access(&state, &auth, workspace_id).await?;
-            if workspace.space_id != person.space_id {
-                return Err(ApiError::BadRequest("linked workspaces must belong to the same dictionary space as the linked person".into()).into());
-            }
-        }
-    }
+    let family_workspace_id = validate_selected_link_workspace(
+        &state,
+        &auth,
+        &person,
+        family_workspace_id,
+        "family_workspace_id",
+    )
+    .await?;
+
+    let friends_workspace_id = match req.friends_workspace_id.as_deref() {
+        Some(workspace_id) => Some(
+            validate_selected_link_workspace(
+                &state,
+                &auth,
+                &person,
+                workspace_id,
+                "friends_workspace_id",
+            )
+            .await?,
+        ),
+        None => None,
+    };
+
+    let work_workspace_id = match req.work_workspace_id.as_deref() {
+        Some(workspace_id) => Some(
+            validate_selected_link_workspace(
+                &state,
+                &auth,
+                &person,
+                workspace_id,
+                "work_workspace_id",
+            )
+            .await?,
+        ),
+        None => None,
+    };
 
     let row = dictionary::upsert_account_link(
         &state.db,
@@ -801,9 +961,9 @@ async fn put_my_account_link(
             user_id: auth.user_id.clone(),
             space_id: person.space_id.clone(),
             person_id: person.id.clone(),
-            family_workspace_id: Some(family_workspace.id.clone()),
-            friends_workspace_id: req.friends_workspace_id.clone(),
-            work_workspace_id: req.work_workspace_id.clone(),
+            family_workspace_id: Some(family_workspace_id),
+            friends_workspace_id,
+            work_workspace_id,
             created_by_user_id: auth.user_id.clone(),
         },
     )
@@ -811,6 +971,114 @@ async fn put_my_account_link(
     .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
 
     Ok(Json(row))
+}
+
+async fn list_workspace_members(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(workspace_id): Path<String>,
+) -> Result<Json<Vec<DictionaryWorkspaceMemberView>>, AppError> {
+    let workspace = ensure_workspace_manage_access(&state, &auth, &workspace_id).await?;
+    let rows = dictionary::list_workspace_members_with_users(&state.db, &workspace.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+    Ok(Json(
+        rows.into_iter()
+            .map(dictionary_workspace_member_view_from_row)
+            .collect(),
+    ))
+}
+
+async fn upsert_workspace_member(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(workspace_id): Path<String>,
+    Json(req): Json<UpsertWorkspaceMemberRequest>,
+) -> Result<Json<Vec<DictionaryWorkspaceMemberView>>, AppError> {
+    let workspace = ensure_workspace_manage_access(&state, &auth, &workspace_id).await?;
+    let login_username = normalize_login_username(&req.login_username)?;
+    let role = parse_requested_member_role(&req.role)?;
+
+    let target_user = users::find_by_username(&state.db, &login_username)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("dictionary member user not found".into()))?;
+
+    let current_rows = dictionary::list_workspace_members_with_users(&state.db, &workspace.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+    let target_existing = current_rows
+        .iter()
+        .find(|row| row.user_id == target_user.id)
+        .cloned();
+
+    if let Some(existing) = target_existing
+        && let Err(WorkspaceMembershipMutationError::LastOwner) =
+            validate_workspace_membership_change(
+                &current_rows
+                    .iter()
+                    .map(|row| WorkspaceMemberRole {
+                        user_id: row.user_id.as_str(),
+                        role: row.role.as_str(),
+                    })
+                    .collect::<Vec<_>>(),
+                &existing.user_id,
+                Some(role.as_str()),
+            )
+    {
+        return Err(ApiError::Conflict("cannot demote the last workspace owner".into()).into());
+    }
+
+    dictionary::ensure_workspace_member(
+        &state.db,
+        &workspace.id,
+        &target_user.id,
+        role,
+        Some(&auth.user_id),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+
+    let rows = dictionary::list_workspace_members_with_users(&state.db, &workspace.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+    Ok(Json(
+        rows.into_iter()
+            .map(dictionary_workspace_member_view_from_row)
+            .collect(),
+    ))
+}
+
+async fn delete_workspace_member(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((workspace_id, user_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let workspace = ensure_workspace_manage_access(&state, &auth, &workspace_id).await?;
+    let current_rows = dictionary::list_workspace_members_with_users(&state.db, &workspace.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+    let target = current_rows
+        .iter()
+        .find(|row| row.user_id == user_id)
+        .ok_or_else(|| ApiError::NotFound("workspace member not found".into()))?;
+    if let Err(WorkspaceMembershipMutationError::LastOwner) = validate_workspace_membership_change(
+        &current_rows
+            .iter()
+            .map(|row| WorkspaceMemberRole {
+                user_id: row.user_id.as_str(),
+                role: row.role.as_str(),
+            })
+            .collect::<Vec<_>>(),
+        &target.user_id,
+        None,
+    ) {
+        return Err(ApiError::Conflict("cannot remove the last workspace owner".into()).into());
+    }
+    let deleted = dictionary::delete_workspace_member(&state.db, &workspace.id, &user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
 }
 
 async fn get_workspace_tree(
@@ -897,6 +1165,73 @@ async fn create_workspace_person(
             parent_node_id,
             node_kind: TreeNodeKind::Person,
             title: req.node_title.unwrap_or_else(|| display_name.clone()),
+            person_id: Some(person.id.clone()),
+            sort_order: 0,
+            icon_name: None,
+            note: None,
+            is_system_seeded: false,
+            created_by_user_id: auth.user_id.clone(),
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+
+    Ok(Json(
+        build_person_bundle(&state, workspace, &person.id).await?,
+    ))
+}
+
+async fn attach_existing_workspace_person(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(workspace_id): Path<String>,
+    Json(req): Json<AttachExistingPersonRequest>,
+) -> Result<Json<PersonBundleResponse>, AppError> {
+    let workspace = ensure_workspace_write_access(&state, &auth, &workspace_id).await?;
+    let person_id = req.person_id.trim();
+    if person_id.is_empty() {
+        return Err(ApiError::BadRequest("person_id must not be empty".into()).into());
+    }
+
+    let person = dictionary::find_person_by_id(&state.db, person_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("person not found".into()))?;
+    if person.space_id != workspace.space_id {
+        return Err(ApiError::BadRequest(
+            "person must belong to the same dictionary space as the target workspace".into(),
+        )
+        .into());
+    }
+
+    if let Some(parent_node_id) = req.parent_node_id.as_deref() {
+        ensure_tree_parent_in_workspace(&state, &workspace.id, parent_node_id).await?;
+    }
+
+    let existing_nodes =
+        dictionary::list_tree_nodes_for_person(&state.db, &workspace.id, &person.id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("dictionary db error: {e}")))?;
+    let parent_node_id = match req.parent_node_id {
+        Some(parent) => Some(parent),
+        None => default_parent_node_id(&state, &workspace.id).await?,
+    };
+    let node_kind = match decide_attach_node_mode(existing_nodes.len(), req.as_shortcut) {
+        AttachNodeMode::Person => TreeNodeKind::Person,
+        AttachNodeMode::Shortcut => TreeNodeKind::Shortcut,
+    };
+    let title = match req.node_title {
+        Some(raw) if !raw.trim().is_empty() => raw.trim().to_string(),
+        _ => person.display_name.clone(),
+    };
+
+    dictionary::attach_existing_person_to_workspace(
+        &state.db,
+        &CreateTreeNodeInput {
+            workspace_id: workspace.id.clone(),
+            parent_node_id,
+            node_kind,
+            title,
             person_id: Some(person.id.clone()),
             sort_order: 0,
             icon_name: None,

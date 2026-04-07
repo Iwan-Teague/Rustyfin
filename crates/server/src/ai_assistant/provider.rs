@@ -209,6 +209,14 @@ mod tests {
             Some("dictionary")
         );
         assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::DictionaryListVisibleWorkspaces),
+            Some("dictionary")
+        );
+        assert_eq!(
+            registry.provider_id_for_tool(AssistantToolName::DictionaryBrowseWorkspacePeople),
+            Some("dictionary")
+        );
+        assert_eq!(
             registry.provider_id_for_tool(AssistantToolName::LibrarySearchTitles),
             Some("libraries")
         );
@@ -380,6 +388,16 @@ mod tests {
         assert!(
             registry
                 .entry(AssistantToolName::DictionarySearchPeople)
+                .is_some()
+        );
+        assert!(
+            registry
+                .entry(AssistantToolName::DictionaryListVisibleWorkspaces)
+                .is_some()
+        );
+        assert!(
+            registry
+                .entry(AssistantToolName::DictionaryBrowseWorkspacePeople)
                 .is_some()
         );
         assert!(

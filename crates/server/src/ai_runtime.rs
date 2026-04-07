@@ -3,6 +3,7 @@ use axum::extract::State;
 use serde::Serialize;
 
 use crate::ai_assistant::types::AssistantRuntimePhase;
+use crate::ai_role_routing::AiRoleRoutingDecision;
 use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -14,7 +15,7 @@ pub struct AiRuntimeResponse {
     pub scheduler: AiRuntimeSchedulerSummary,
     pub resources: AiRuntimeResourcesSummary,
     pub gpus: Vec<AiRuntimeGpuSummary>,
-    pub role_routing: Vec<crate::ai_model_routing::RoleRoutingDecision>,
+    pub role_routing: Vec<AiRoleRoutingDecision>,
 }
 
 #[derive(Debug, Serialize)]

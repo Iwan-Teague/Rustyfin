@@ -115,6 +115,14 @@ pub enum AssistantToolInput {
         group_name: String,
     },
     DictionaryGetAccountIdentity,
+    DictionaryListVisibleWorkspaces,
+    DictionaryBrowseWorkspacePeople {
+        workspace_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<i64>,
+    },
     DictionarySearchPeople {
         workspace_id: String,
         query: String,
@@ -137,6 +145,20 @@ pub enum AssistantToolInput {
         query: Option<String>,
         availability: Option<String>,
     },
+    DownloadsGetLatestForPlatform {
+        platform: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        architecture: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
+    DownloadsGetArtifactPlatformMatrix {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
+    DownloadsGetArtifactSigningInfo {
+        query: String,
+    },
     NetworkInterface {
         query: String,
     },
@@ -149,11 +171,23 @@ pub enum AssistantToolInput {
     NetworkDnsServers {
         query: Option<String>,
     },
+    NetworkRouteDestination {
+        destination: String,
+    },
+    NetworkActiveConnection {
+        query: String,
+    },
     LibrarySearch {
         query: String,
     },
     LibraryRecent {
         query: Option<String>,
+    },
+    LibraryGetItemExternalIds {
+        query: String,
+    },
+    LibraryGetItemPlayHistory {
+        query: String,
     },
     Weather {
         location: String,
@@ -164,6 +198,17 @@ pub enum AssistantToolInput {
         start_date: String,
         end_date: String,
         label: String,
+    },
+    WeatherCompareLocationsForDate {
+        left_location: String,
+        right_location: String,
+        date: String,
+        label: String,
+    },
+    WeatherGetNextRainWindow {
+        location: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
     },
     WebSearch {
         query: String,
@@ -189,11 +234,43 @@ pub enum AssistantToolInput {
     SystemService {
         query: String,
     },
+    SystemGetServiceLogs {
+        query: String,
+    },
+    SystemGetServiceDependencies {
+        query: String,
+    },
     SystemPortConflicts {
         query: Option<String>,
     },
     SystemFailedUnits {
         query: Option<String>,
+    },
+    SystemGetFailedServiceLogs {
+        query: String,
+    },
+    SystemGetProcessTreeDetail {
+        query: String,
+    },
+    MemoryFindNearestEntityMatch {
+        query: String,
+    },
+    MemoryGetPersonTimeline {
+        query: String,
+    },
+    MemoryGetSourceCitation {
+        query: String,
+    },
+    MemoryGetConflictExplanations {
+        query: String,
+    },
+    CalendarCompareFreeDays {
+        left_from_date: String,
+        left_to_date: String,
+        left_label: String,
+        right_from_date: String,
+        right_to_date: String,
+        right_label: String,
     },
 }
 
@@ -915,19 +992,34 @@ pub struct AssistantFollowUpInputHint {
     pub calendar_from_date: Option<String>,
     pub calendar_to_date: Option<String>,
     pub calendar_query: Option<String>,
+    pub calendar_left_label: Option<String>,
+    pub calendar_left_from_date: Option<String>,
+    pub calendar_left_to_date: Option<String>,
+    pub calendar_right_label: Option<String>,
+    pub calendar_right_from_date: Option<String>,
+    pub calendar_right_to_date: Option<String>,
     pub channels_query: Option<String>,
     pub downloads_query: Option<String>,
     pub downloads_availability: Option<String>,
+    pub downloads_platform: Option<String>,
+    pub downloads_architecture: Option<String>,
     pub room_mode: Option<String>,
     pub room_query: Option<String>,
     pub server_query: Option<String>,
     pub server_availability: Option<String>,
     pub library_query: Option<String>,
+    pub memory_query: Option<String>,
+    pub network_destination: Option<String>,
+    pub service_query: Option<String>,
     pub weather_location: Option<String>,
     pub weather_days: Option<u8>,
     pub weather_start_date: Option<String>,
     pub weather_end_date: Option<String>,
     pub weather_label: Option<String>,
+    pub weather_compare_left_location: Option<String>,
+    pub weather_compare_right_location: Option<String>,
+    pub weather_compare_date: Option<String>,
+    pub weather_next_rain_location: Option<String>,
     pub current_datetime_location: Option<String>,
     pub web_search_query: Option<String>,
     pub web_url: Option<String>,

@@ -20,6 +20,8 @@ impl ToolProvider for SystemToolProvider {
         registry.register_tool(self, AssistantToolName::SystemGetBackupSummary);
         registry.register_tool(self, AssistantToolName::SystemGetServiceHealth);
         registry.register_tool(self, AssistantToolName::SystemGetServiceDetail);
+        registry.register_tool(self, AssistantToolName::SystemGetServiceLogs);
+        registry.register_tool(self, AssistantToolName::SystemGetServiceDependencies);
         registry.register_tool(self, AssistantToolName::SystemGetTranscodeSummary);
         registry.register_tool(self, AssistantToolName::SystemGetStorageSummary);
         registry.register_tool(self, AssistantToolName::SystemGetStoragePathDetail);
@@ -42,6 +44,8 @@ impl ToolProvider for SystemToolProvider {
         registry.register_tool(self, AssistantToolName::SystemGetPortConflictDetail);
         registry.register_tool(self, AssistantToolName::SystemGetFailedUnits);
         registry.register_tool(self, AssistantToolName::SystemGetFailedUnitDetail);
+        registry.register_tool(self, AssistantToolName::SystemGetFailedServiceLogs);
+        registry.register_tool(self, AssistantToolName::SystemGetProcessTreeDetail);
     }
 
     fn execute<'a>(

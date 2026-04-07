@@ -4,6 +4,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Row;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 fn now_ts() -> i64 {
@@ -336,6 +337,17 @@ fn map_dictionary_workspace_member_row(
 
 const DICTIONARY_WORKSPACE_MEMBER_COLUMNS: &str =
     "workspace_id, user_id, role, added_by_user_id, created_ts";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DictionaryWorkspaceMemberWithUserRow {
+    pub workspace_id: String,
+    pub user_id: String,
+    pub role: String,
+    pub added_by_user_id: Option<String>,
+    pub created_ts: i64,
+    pub login_username: String,
+    pub display_name: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DictionaryPersonRow {
@@ -1026,6 +1038,51 @@ pub async fn get_workspace_member(
     Ok(row.map(map_dictionary_workspace_member_row))
 }
 
+pub async fn list_workspace_members_with_users(
+    pool: &DbPool,
+    workspace_id: &str,
+) -> Result<Vec<DictionaryWorkspaceMemberWithUserRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT
+             m.workspace_id,
+             m.user_id,
+             m.role,
+             m.added_by_user_id,
+             m.created_ts,
+             u.username AS login_username,
+             COALESCE(NULLIF(u.display_name, ''), u.username) AS display_name
+         FROM dictionary_workspace_member m
+         INNER JOIN \"user\" u ON u.id = m.user_id
+         WHERE m.workspace_id = $1
+         ORDER BY
+             CASE m.role
+                 WHEN 'owner' THEN 0
+                 WHEN 'editor' THEN 1
+                 ELSE 2
+             END,
+             lower(COALESCE(NULLIF(u.display_name, ''), u.username)),
+             m.created_ts,
+             m.user_id",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(DictionaryWorkspaceMemberWithUserRow {
+                workspace_id: row.try_get("workspace_id")?,
+                user_id: row.try_get("user_id")?,
+                role: row.try_get("role")?,
+                added_by_user_id: row.try_get("added_by_user_id")?,
+                created_ts: row.try_get("created_ts")?,
+                login_username: row.try_get("login_username")?,
+                display_name: row.try_get("display_name")?,
+            })
+        })
+        .collect()
+}
+
 pub async fn user_can_access_workspace(
     pool: &DbPool,
     workspace_id: &str,
@@ -1059,6 +1116,22 @@ pub async fn list_visible_workspaces(
     let rows: Vec<DictionaryWorkspaceTuple> =
         sqlx::query_as(&sql).bind(user_id).fetch_all(pool).await?;
     Ok(rows.into_iter().map(map_dictionary_workspace_row).collect())
+}
+
+pub async fn delete_workspace_member(
+    pool: &DbPool,
+    workspace_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM dictionary_workspace_member
+         WHERE workspace_id = $1 AND user_id = $2",
+    )
+    .bind(workspace_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn ensure_default_workspaces_for_user(
@@ -1227,6 +1300,13 @@ pub async fn create_tree_node(
         .fetch_one(pool)
         .await?;
     Ok(map_dictionary_tree_node_row(row))
+}
+
+pub async fn attach_existing_person_to_workspace(
+    pool: &DbPool,
+    input: &CreateTreeNodeInput,
+) -> Result<DictionaryTreeNodeRow, DbError> {
+    create_tree_node(pool, input).await
 }
 
 pub async fn find_person_by_id(
@@ -1680,6 +1760,40 @@ pub async fn list_facts_for_subject(
         .collect()
 }
 
+pub async fn list_facts_for_people(
+    pool: &DbPool,
+    workspace_id: &str,
+    person_ids: &[String],
+) -> Result<HashMap<String, Vec<DictionaryFactRow>>, sqlx::Error> {
+    if person_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = crate::repo::dollar_placeholders(2, person_ids.len());
+    let sql = format!(
+        "SELECT {cols}
+         FROM dictionary_fact
+         WHERE workspace_id = $1
+           AND subject_kind = 'person'
+           AND subject_id IN ({placeholders})
+         ORDER BY subject_id, fact_key, created_ts, id",
+        cols = DICTIONARY_FACT_COLUMNS
+    );
+
+    let mut query = sqlx::query(&sql).bind(workspace_id);
+    for person_id in person_ids {
+        query = query.bind(person_id);
+    }
+
+    let rows = query.fetch_all(pool).await?;
+    let mut out: HashMap<String, Vec<DictionaryFactRow>> = HashMap::new();
+    for row in rows {
+        let fact = dictionary_fact_row_from_pg_row(&row)?;
+        out.entry(fact.subject_id.clone()).or_default().push(fact);
+    }
+    Ok(out)
+}
+
 pub async fn get_document_for_subject(
     pool: &DbPool,
     workspace_id: &str,
@@ -1698,6 +1812,39 @@ pub async fn get_document_for_subject(
         .fetch_optional(pool)
         .await?;
     Ok(row.map(map_dictionary_document_row))
+}
+
+pub async fn list_documents_for_people(
+    pool: &DbPool,
+    workspace_id: &str,
+    person_ids: &[String],
+) -> Result<HashMap<String, DictionaryDocumentRow>, sqlx::Error> {
+    if person_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = crate::repo::dollar_placeholders(2, person_ids.len());
+    let sql = format!(
+        "SELECT {cols}
+         FROM dictionary_document
+         WHERE workspace_id = $1
+           AND subject_kind = 'person'
+           AND subject_id IN ({placeholders})",
+        cols = DICTIONARY_DOCUMENT_COLUMNS
+    );
+
+    let mut query = sqlx::query_as::<_, DictionaryDocumentTuple>(&sql).bind(workspace_id);
+    for person_id in person_ids {
+        query = query.bind(person_id);
+    }
+
+    let rows = query.fetch_all(pool).await?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let document = map_dictionary_document_row(row);
+        out.insert(document.subject_id.clone(), document);
+    }
+    Ok(out)
 }
 
 pub async fn save_document(

@@ -675,6 +675,22 @@ struct GroundedDictionaryAccountIdentityEnvelope {
 }
 
 #[derive(Debug, Deserialize)]
+struct GroundedDictionaryWorkspaceSummary {
+    workspace_id: String,
+    title: String,
+    workspace_kind: String,
+    #[serde(default)]
+    owner_user_id: Option<String>,
+    is_system_seeded: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDictionaryVisibleWorkspacesEnvelope {
+    #[serde(default)]
+    workspaces: Vec<GroundedDictionaryWorkspaceSummary>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GroundedDictionaryPersonSummary {
     id: String,
     display_name: String,
@@ -723,6 +739,16 @@ struct GroundedDictionaryPersonBundleEnvelope {
     document_title: Option<String>,
     #[serde(default)]
     document_excerpt: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDictionaryWorkspacePeopleEnvelope {
+    workspace_id: String,
+    workspace_title: String,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    people: Vec<GroundedDictionaryPersonSummary>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1843,6 +1869,8 @@ pub fn deterministic_dictionary_reply(
         matches!(
             block.tool,
             "dictionary_get_account_identity"
+                | "dictionary_list_visible_workspaces"
+                | "dictionary_browse_workspace_people"
                 | "dictionary_search_people"
                 | "dictionary_get_person_bundle"
                 | "dictionary_resolve_relationship_reference"
@@ -1853,6 +1881,18 @@ pub fn deterministic_dictionary_reply(
         match block.tool {
             "dictionary_get_account_identity" => format_dictionary_account_identity_reply(
                 serde_json::from_value::<GroundedDictionaryAccountIdentityEnvelope>(
+                    block.data.clone(),
+                )
+                .ok()?,
+            ),
+            "dictionary_list_visible_workspaces" => format_dictionary_workspaces_reply(
+                serde_json::from_value::<GroundedDictionaryVisibleWorkspacesEnvelope>(
+                    block.data.clone(),
+                )
+                .ok()?,
+            ),
+            "dictionary_browse_workspace_people" => format_dictionary_workspace_people_reply(
+                serde_json::from_value::<GroundedDictionaryWorkspacePeopleEnvelope>(
                     block.data.clone(),
                 )
                 .ok()?,
@@ -1921,6 +1961,91 @@ fn format_dictionary_account_identity_reply(
             if scopes.len() == 1 { "" } else { "s" }
         )
     }
+}
+
+fn format_dictionary_workspaces_reply(
+    envelope: GroundedDictionaryVisibleWorkspacesEnvelope,
+) -> String {
+    if envelope.workspaces.is_empty() {
+        return "I couldn't find any visible Human Dictionary workspaces.".to_string();
+    }
+
+    let mut lines = vec!["Visible Human Dictionary workspaces:".to_string()];
+    for workspace in envelope.workspaces.iter().take(8) {
+        let mut line = format!(
+            "- {} ({})",
+            workspace.title,
+            dictionary_workspace_kind_label(&workspace.workspace_kind)
+        );
+        if workspace.is_system_seeded {
+            line.push_str(" [seeded]");
+        }
+        lines.push(line);
+    }
+    if envelope.workspaces.len() > 8 {
+        lines.push(format!("... and {} more.", envelope.workspaces.len() - 8));
+    }
+    lines.join("\n")
+}
+
+fn format_dictionary_workspace_people_reply(
+    envelope: GroundedDictionaryWorkspacePeopleEnvelope,
+) -> String {
+    if envelope.people.is_empty() {
+        return envelope
+            .query
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                format!(
+                    "I couldn't find any visible Human Dictionary people in {} matching \"{}\".",
+                    envelope.workspace_title, value
+                )
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "I couldn't find any visible Human Dictionary people in {}.",
+                    envelope.workspace_title
+                )
+            });
+    }
+
+    let mut lines = vec![
+        envelope
+            .query
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                format!(
+                    "Visible Human Dictionary people in {} matching \"{}\":",
+                    envelope.workspace_title, value
+                )
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "Visible Human Dictionary people in {}:",
+                    envelope.workspace_title
+                )
+            }),
+    ];
+    for person in envelope.people.iter().take(8) {
+        let mut line = format!("- {}", person.display_name);
+        if person.canonical_name != person.display_name {
+            line.push_str(&format!(" ({})", person.canonical_name));
+        }
+        if let Some(summary) = person
+            .summary
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!(": {}", compact_text(summary, 120)));
+        }
+        lines.push(line);
+    }
+    if envelope.people.len() > 8 {
+        lines.push(format!("... and {} more.", envelope.people.len() - 8));
+    }
+    lines.join("\n")
 }
 
 fn format_dictionary_search_reply(
@@ -2206,6 +2331,15 @@ fn dictionary_fact_hobbies(fact: &GroundedDictionaryFactSummary) -> Vec<String> 
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+fn dictionary_workspace_kind_label(workspace_kind: &str) -> &str {
+    match workspace_kind {
+        "family_shared" => "family",
+        "friends_private" => "friends",
+        "work_private" => "work",
+        other => other,
+    }
 }
 
 fn format_dictionary_date(raw: &str) -> String {
@@ -6058,6 +6192,70 @@ mod tests {
         assert!(reply.contains("your co-workers in Work"));
         assert!(reply.contains("Alice"));
         assert!(reply.contains("Brian"));
+    }
+
+    #[test]
+    fn deterministic_dictionary_reply_formats_visible_workspaces() {
+        let reply = deterministic_dictionary_reply(
+            "Show me my dictionary workspaces",
+            &[AssistantToolContextBlock {
+                tool: "dictionary_list_visible_workspaces",
+                label: "Visible Human Dictionary workspaces".to_string(),
+                status: "ok",
+                data: json!({
+                    "workspaces": [
+                        {
+                            "workspace_id": "ws-family",
+                            "title": "Family",
+                            "workspace_kind": "family_shared",
+                            "owner_user_id": "user-1",
+                            "is_system_seeded": true
+                        },
+                        {
+                            "workspace_id": "ws-work",
+                            "title": "Work",
+                            "workspace_kind": "work_private",
+                            "owner_user_id": "user-1",
+                            "is_system_seeded": true
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic dictionary reply");
+
+        assert!(reply.contains("Visible Human Dictionary workspaces"));
+        assert!(reply.contains("Family (family)"));
+        assert!(reply.contains("Work (work)"));
+    }
+
+    #[test]
+    fn deterministic_dictionary_reply_formats_workspace_people() {
+        let reply = deterministic_dictionary_reply(
+            "Find Rachel in my work dictionary",
+            &[AssistantToolContextBlock {
+                tool: "dictionary_browse_workspace_people",
+                label: "Visible Human Dictionary people in workspace".to_string(),
+                status: "ok",
+                data: json!({
+                    "workspace_id": "ws-work",
+                    "workspace_title": "Work",
+                    "query": "Rachel",
+                    "people": [
+                        {
+                            "id": "person-rachel",
+                            "display_name": "Rachel",
+                            "canonical_name": "Rachel Murphy",
+                            "summary": "Backend engineer on the infra team."
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic dictionary reply");
+
+        assert!(reply.contains("Visible Human Dictionary people in Work matching \"Rachel\""));
+        assert!(reply.contains("Rachel (Rachel Murphy)"));
     }
 
     #[test]

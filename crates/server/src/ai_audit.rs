@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::ai_role_routing::AiRoleRoutingDecision;
+
 pub const DEFAULT_AI_AUDIT_RETENTION_DAYS: i64 = 30;
 pub const MIN_AI_AUDIT_RETENTION_DAYS: i64 = 1;
 pub const MAX_AI_AUDIT_RETENTION_DAYS: i64 = 365;
@@ -84,7 +86,7 @@ pub struct AiAssistantAuditEventResponse {
     pub history_len: i64,
     pub response_kind: String,
     pub planner: serde_json::Value,
-    pub model_routing: Vec<crate::ai_model_routing::RoleRoutingDecision>,
+    pub model_routing: Vec<AiRoleRoutingDecision>,
     pub planned_tools: Vec<String>,
     pub executed_tools: Vec<AiAssistantAuditToolExecution>,
     pub grounding_chunks: Vec<AiGroundingChunk>,
@@ -284,7 +286,7 @@ pub async fn persist_chat_audit_event_with_planner(
     };
     let effective_model_name = role_routing
         .iter()
-        .find(|decision| decision.role == rustfin_ai_agent::ModelRole::Answer)
+        .find(|decision| decision.role.eq_ignore_ascii_case("answer"))
         .map(|decision| decision.model_name.as_str())
         .unwrap_or(request.model.as_str());
     let planned_tools_json = serde_json::to_string(
@@ -483,6 +485,12 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
                 query.as_deref().unwrap_or("*")
             )
         }
+        AssistantToolInput::NetworkRouteDestination { destination } => {
+            format!("network_route_destination:{destination}")
+        }
+        AssistantToolInput::NetworkActiveConnection { query } => {
+            format!("network_active_connection:query={query}")
+        }
         AssistantToolInput::Weather {
             location,
             forecast_days,
@@ -517,6 +525,20 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
         AssistantToolInput::DictionaryGetAccountIdentity => {
             "dictionary_account_identity".to_string()
         }
+        AssistantToolInput::DictionaryListVisibleWorkspaces => {
+            "dictionary_list_visible_workspaces".to_string()
+        }
+        AssistantToolInput::DictionaryBrowseWorkspacePeople {
+            workspace_id,
+            query,
+            limit,
+        } => format!(
+            "dictionary_browse_workspace_people:workspace_id={workspace_id}:query={}:limit={}",
+            query.as_deref().unwrap_or("*"),
+            limit
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "*".to_string())
+        ),
         AssistantToolInput::DictionarySearchPeople {
             workspace_id,
             query,
@@ -563,6 +585,7 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
             query.as_deref().unwrap_or("*"),
             availability.as_deref().unwrap_or("*")
         ),
+        other => format!("tool_input:{other:?}"),
     }
 }
 

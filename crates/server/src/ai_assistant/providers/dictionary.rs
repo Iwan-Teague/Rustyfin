@@ -15,6 +15,8 @@ impl ToolProvider for DictionaryToolProvider {
 
     fn register(&self, registry: &mut ToolRegistryBuilder) {
         registry.register_tool(self, AssistantToolName::DictionaryGetAccountIdentity);
+        registry.register_tool(self, AssistantToolName::DictionaryListVisibleWorkspaces);
+        registry.register_tool(self, AssistantToolName::DictionaryBrowseWorkspacePeople);
         registry.register_tool(self, AssistantToolName::DictionarySearchPeople);
         registry.register_tool(self, AssistantToolName::DictionaryGetPersonBundle);
         registry.register_tool(

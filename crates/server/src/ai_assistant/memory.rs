@@ -251,8 +251,8 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
             })
             .map(str::to_string)
             .or_else(|| Some("memory:people".to_string())),
-        "system_get_port_conflicts" => Some("admin:port_conflicts".to_string()),
-        "system_get_failed_units" => Some("admin:failed_units".to_string()),
+        "system_get_port_conflicts" => Some("system:port_conflicts".to_string()),
+        "system_get_failed_units" => Some("system:failed_units".to_string()),
         "system_get_kernel_info" => Some("admin:kernel".to_string()),
         "system_get_cpu_topology" => Some("admin:cpu_topology".to_string()),
         "system_get_temperature_sensors" => Some("admin:temperature_sensors".to_string()),
