@@ -5,6 +5,7 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 
 use chrono::{Datelike, Duration, NaiveDate, Utc};
+use rustfin_db::repo::dictionary::{self as dictionary_repo, SubjectKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -15,6 +16,7 @@ use super::diagnostics;
 use super::outcomes::normalize_tool_result;
 use super::provider::{ToolExecutionProfile, default_tool_registry};
 use super::registry::AssistantToolName;
+use super::replies::compact_text;
 use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
     AssistantGroundingSource, AssistantToolContextBlock, AssistantToolInput, AssistantToolOutcome,
@@ -37,6 +39,80 @@ struct AccountProfileSummary {
     role: String,
     time_zone: Option<String>,
     accessible_library_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryAccountIdentityEnvelope {
+    linked: bool,
+    person_id: Option<String>,
+    person_name: Option<String>,
+    family_workspace_id: Option<String>,
+    friends_workspace_id: Option<String>,
+    work_workspace_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryPersonSummary {
+    id: String,
+    display_name: String,
+    canonical_name: String,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryFactSummary {
+    fact_key: String,
+    value_type: String,
+    value_text: Option<String>,
+    value_int: Option<i64>,
+    value_bool: Option<bool>,
+    value_date: Option<String>,
+    value_json: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryRelationSummary {
+    relation_id: String,
+    relation_group_key: String,
+    relation_type: String,
+    direction: String,
+    other_person_id: String,
+    other_person_name: String,
+    other_person_summary: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryPersonBundleEnvelope {
+    workspace_id: String,
+    person: DictionaryPersonSummary,
+    facts: Vec<DictionaryFactSummary>,
+    relations: Vec<DictionaryRelationSummary>,
+    document_title: Option<String>,
+    document_excerpt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryResolvedCandidate {
+    person_id: String,
+    display_name: String,
+    summary: Option<String>,
+    relation_type: String,
+    birthday: Option<String>,
+    hobbies: Vec<String>,
+    document_excerpt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryRelationshipResolutionEnvelope {
+    reference: String,
+    relation_kind: String,
+    workspace_id: Option<String>,
+    workspace_title: Option<String>,
+    status: String,
+    message: Option<String>,
+    linked_person_id: Option<String>,
+    linked_person_name: Option<String>,
+    candidates: Vec<DictionaryResolvedCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1236,6 +1312,32 @@ pub(crate) async fn execute_account_provider_tool(
     tool_context_block_for_result(call.tool, result)
 }
 
+pub(crate) async fn execute_dictionary_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::DictionaryGetAccountIdentity => {
+            dictionary_get_account_identity(state, context).await
+        }
+        AssistantToolName::DictionarySearchPeople => {
+            dictionary_search_people(state, context, call).await
+        }
+        AssistantToolName::DictionaryGetPersonBundle => {
+            dictionary_get_person_bundle(state, context, call).await
+        }
+        AssistantToolName::DictionaryResolveRelationshipReference => {
+            dictionary_resolve_relationship_reference(state, context, call).await
+        }
+        _ => Err(format!(
+            "{} is not handled by the dictionary provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
 pub(crate) async fn execute_ai_runtime_provider_tool(
     state: &AppState,
     _context: &AssistantContext,
@@ -1933,6 +2035,606 @@ async fn account_get_profile_summary(
     Ok((
         "Signed-in Rustyfin account summary".to_string(),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DictionaryReferenceKind {
+    Mother,
+    Father,
+    Parent,
+    Brother,
+    Sister,
+    Sibling,
+    Spouse,
+    Partner,
+    Friend,
+    Coworker,
+    Child,
+    Grandparent,
+}
+
+impl DictionaryReferenceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mother => "mother",
+            Self::Father => "father",
+            Self::Parent => "parent",
+            Self::Brother => "brother",
+            Self::Sister => "sister",
+            Self::Sibling => "sibling",
+            Self::Spouse => "spouse",
+            Self::Partner => "partner",
+            Self::Friend => "friend",
+            Self::Coworker => "coworker",
+            Self::Child => "child",
+            Self::Grandparent => "grandparent",
+        }
+    }
+
+    fn prefers_plural(self, reference: &str) -> bool {
+        let lower = reference.to_ascii_lowercase();
+        matches!(self, Self::Coworker)
+            || lower.contains("co-workers")
+            || lower.contains("coworkers")
+            || lower.contains("colleagues")
+            || lower.contains("friends")
+            || lower.contains("siblings")
+            || lower.contains("parents")
+            || lower.contains("grandparents")
+            || lower.contains("children")
+    }
+}
+
+fn classify_dictionary_reference(reference: &str) -> Option<DictionaryReferenceKind> {
+    let lower = reference.to_ascii_lowercase();
+    if lower.contains("my mother") || lower.contains("my mum") || lower.contains("my mom") {
+        return Some(DictionaryReferenceKind::Mother);
+    }
+    if lower.contains("my father") || lower.contains("my dad") {
+        return Some(DictionaryReferenceKind::Father);
+    }
+    if lower.contains("my parent") || lower.contains("my parents") {
+        return Some(DictionaryReferenceKind::Parent);
+    }
+    if lower.contains("my brother") {
+        return Some(DictionaryReferenceKind::Brother);
+    }
+    if lower.contains("my sister") {
+        return Some(DictionaryReferenceKind::Sister);
+    }
+    if lower.contains("my sibling") || lower.contains("my siblings") {
+        return Some(DictionaryReferenceKind::Sibling);
+    }
+    if lower.contains("my spouse") || lower.contains("my wife") || lower.contains("my husband") {
+        return Some(DictionaryReferenceKind::Spouse);
+    }
+    if lower.contains("my partner") {
+        return Some(DictionaryReferenceKind::Partner);
+    }
+    if lower.contains("my co-worker")
+        || lower.contains("my co-workers")
+        || lower.contains("my coworker")
+        || lower.contains("my coworkers")
+        || lower.contains("my colleague")
+        || lower.contains("my colleagues")
+    {
+        return Some(DictionaryReferenceKind::Coworker);
+    }
+    if lower.contains("my friend") || lower.contains("my friends") {
+        return Some(DictionaryReferenceKind::Friend);
+    }
+    if lower.contains("my child")
+        || lower.contains("my children")
+        || lower.contains("my son")
+        || lower.contains("my daughter")
+    {
+        return Some(DictionaryReferenceKind::Child);
+    }
+    if lower.contains("my grandparent") || lower.contains("my grandparents") {
+        return Some(DictionaryReferenceKind::Grandparent);
+    }
+    None
+}
+
+fn dictionary_person_summary_from_row(
+    row: &dictionary_repo::DictionaryPersonRow,
+) -> DictionaryPersonSummary {
+    DictionaryPersonSummary {
+        id: row.id.clone(),
+        display_name: row.display_name.clone(),
+        canonical_name: row.canonical_name.clone(),
+        summary: row.summary.clone(),
+    }
+}
+
+fn dictionary_fact_summary_from_row(
+    row: &dictionary_repo::DictionaryFactRow,
+) -> DictionaryFactSummary {
+    DictionaryFactSummary {
+        fact_key: row.fact_key.clone(),
+        value_type: row.value_type.clone(),
+        value_text: row.value_text.clone(),
+        value_int: row.value_int,
+        value_bool: row.value_bool,
+        value_date: row.value_date.clone(),
+        value_json: row.value_json.clone(),
+    }
+}
+
+fn dictionary_relation_summary_from_row(
+    row: &dictionary_repo::DictionaryResolvedRelationRow,
+) -> DictionaryRelationSummary {
+    DictionaryRelationSummary {
+        relation_id: row.relation_id.clone(),
+        relation_group_key: row.relation_group_key.clone(),
+        relation_type: row.relation_type.clone(),
+        direction: row.direction.clone(),
+        other_person_id: row.other_person.id.clone(),
+        other_person_name: row.other_person.display_name.clone(),
+        other_person_summary: row.other_person.summary.clone(),
+    }
+}
+
+fn dictionary_gender_from_facts(facts: &[dictionary_repo::DictionaryFactRow]) -> Option<&str> {
+    facts.iter().find_map(|fact| {
+        if !matches!(fact.fact_key.as_str(), "gender" | "sex") {
+            return None;
+        }
+        fact.value_text
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .and_then(|value| match value.as_str() {
+                "female" | "woman" | "girl" => Some("female"),
+                "male" | "man" | "boy" => Some("male"),
+                _ => None,
+            })
+    })
+}
+
+fn dictionary_birthday_from_facts(facts: &[dictionary_repo::DictionaryFactRow]) -> Option<String> {
+    facts
+        .iter()
+        .find(|fact| fact.fact_key == "birthday")
+        .and_then(|fact| fact.value_date.clone())
+}
+
+fn dictionary_hobbies_from_facts(facts: &[dictionary_repo::DictionaryFactRow]) -> Vec<String> {
+    facts
+        .iter()
+        .find(|fact| fact.fact_key == "hobbies")
+        .and_then(|fact| fact.value_json.clone())
+        .and_then(|value| value.as_array().cloned())
+        .map(|items| {
+            items
+                .into_iter()
+                .filter_map(|item| item.as_str().map(str::trim).map(str::to_string))
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn dictionary_document_excerpt(
+    document: &Option<dictionary_repo::DictionaryDocumentRow>,
+) -> Option<String> {
+    document
+        .as_ref()
+        .map(|row| compact_text(&row.markdown_body, 220))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn dictionary_workspace_id_for_kind(
+    account_link: &dictionary_repo::DictionaryAccountLinkRow,
+    kind: DictionaryReferenceKind,
+) -> Option<String> {
+    match kind {
+        DictionaryReferenceKind::Coworker => account_link.work_workspace_id.clone(),
+        DictionaryReferenceKind::Friend => account_link.friends_workspace_id.clone(),
+        _ => account_link.family_workspace_id.clone(),
+    }
+}
+
+fn dictionary_relation_matches_kind(
+    kind: DictionaryReferenceKind,
+    relation: &dictionary_repo::DictionaryResolvedRelationRow,
+    facts: &[dictionary_repo::DictionaryFactRow],
+    sibling_pool_len: usize,
+    parent_pool_len: usize,
+) -> bool {
+    match kind {
+        DictionaryReferenceKind::Mother => {
+            if relation.relation_type != "child_of" {
+                return false;
+            }
+            matches!(dictionary_gender_from_facts(facts), Some("female")) || parent_pool_len == 1
+        }
+        DictionaryReferenceKind::Father => {
+            if relation.relation_type != "child_of" {
+                return false;
+            }
+            matches!(dictionary_gender_from_facts(facts), Some("male")) || parent_pool_len == 1
+        }
+        DictionaryReferenceKind::Parent => relation.relation_type == "child_of",
+        DictionaryReferenceKind::Brother => {
+            if relation.relation_type != "sibling_of" {
+                return false;
+            }
+            matches!(dictionary_gender_from_facts(facts), Some("male")) || sibling_pool_len == 1
+        }
+        DictionaryReferenceKind::Sister => {
+            if relation.relation_type != "sibling_of" {
+                return false;
+            }
+            matches!(dictionary_gender_from_facts(facts), Some("female")) || sibling_pool_len == 1
+        }
+        DictionaryReferenceKind::Sibling => relation.relation_type == "sibling_of",
+        DictionaryReferenceKind::Spouse | DictionaryReferenceKind::Partner => {
+            relation.relation_type == "spouse_of"
+        }
+        DictionaryReferenceKind::Friend => relation.relation_type == "friend_of",
+        DictionaryReferenceKind::Coworker => matches!(
+            relation.relation_type.as_str(),
+            "coworker_of" | "manager_of" | "reports_to"
+        ),
+        DictionaryReferenceKind::Child => matches!(
+            relation.relation_type.as_str(),
+            "mother_of" | "father_of" | "parent_of"
+        ),
+        DictionaryReferenceKind::Grandparent => matches!(
+            relation.relation_type.as_str(),
+            "grandparent_of" | "grandchild_of"
+        ),
+    }
+}
+
+async fn dictionary_get_account_identity(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, Value), String> {
+    let link = dictionary_repo::get_account_link(&state.db, &context.user_id)
+        .await
+        .map_err(|e| format!("failed to load dictionary account link: {e}"))?;
+
+    let (person_id, person_name, family_workspace_id, friends_workspace_id, work_workspace_id) =
+        if let Some(link) = link {
+            let person_name = dictionary_repo::find_person_by_id(&state.db, &link.person_id)
+                .await
+                .map_err(|e| format!("failed to load linked dictionary person: {e}"))?
+                .map(|row| row.display_name);
+            (
+                Some(link.person_id),
+                person_name,
+                link.family_workspace_id,
+                link.friends_workspace_id,
+                link.work_workspace_id,
+            )
+        } else {
+            (None, None, None, None, None)
+        };
+
+    Ok((
+        "Linked Human Dictionary identity".to_string(),
+        serde_json::to_value(DictionaryAccountIdentityEnvelope {
+            linked: person_id.is_some(),
+            person_id,
+            person_name,
+            family_workspace_id,
+            friends_workspace_id,
+            work_workspace_id,
+        })
+        .unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn dictionary_search_people(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, Value), String> {
+    let (workspace_id, query, limit) = match &call.input {
+        AssistantToolInput::DictionarySearchPeople {
+            workspace_id,
+            query,
+            limit,
+        } => (workspace_id, query, limit.unwrap_or(12)),
+        _ => {
+            return Err("dictionary_search_people requires a workspace_id and query".to_string());
+        }
+    };
+
+    let visible =
+        dictionary_repo::user_can_access_workspace(&state.db, workspace_id, &context.user_id)
+            .await
+            .map_err(|e| format!("failed to validate dictionary workspace access: {e}"))?;
+    if !visible {
+        return Err("dictionary workspace access denied".to_string());
+    }
+
+    let rows = dictionary_repo::search_visible_people(
+        &state.db,
+        &dictionary_repo::SearchVisiblePeopleParams {
+            workspace_id: workspace_id.clone(),
+            query: query.clone(),
+            limit,
+        },
+    )
+    .await
+    .map_err(|e| format!("failed to search dictionary people: {e}"))?;
+
+    let people = rows
+        .iter()
+        .map(dictionary_person_summary_from_row)
+        .collect::<Vec<_>>();
+
+    Ok((
+        "Visible Human Dictionary people".to_string(),
+        json!({
+            "workspace_id": workspace_id,
+            "query": query,
+            "people": people,
+        }),
+    ))
+}
+
+async fn dictionary_get_person_bundle(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, Value), String> {
+    let (workspace_id, person_id) = match &call.input {
+        AssistantToolInput::DictionaryGetPersonBundle {
+            workspace_id,
+            person_id,
+        } => (workspace_id, person_id),
+        _ => {
+            return Err(
+                "dictionary_get_person_bundle requires a workspace_id and person_id".to_string(),
+            );
+        }
+    };
+
+    let visible =
+        dictionary_repo::user_can_access_workspace(&state.db, workspace_id, &context.user_id)
+            .await
+            .map_err(|e| format!("failed to validate dictionary workspace access: {e}"))?;
+    if !visible {
+        return Err("dictionary workspace access denied".to_string());
+    }
+
+    let nodes = dictionary_repo::list_tree_nodes_for_person(&state.db, workspace_id, person_id)
+        .await
+        .map_err(|e| format!("failed to validate dictionary person visibility: {e}"))?;
+    if nodes.is_empty() {
+        return Err("dictionary person is not visible in that workspace".to_string());
+    }
+
+    let person = dictionary_repo::find_person_by_id(&state.db, person_id)
+        .await
+        .map_err(|e| format!("failed to load dictionary person: {e}"))?
+        .ok_or_else(|| "dictionary person not found".to_string())?;
+    let facts = dictionary_repo::list_facts_for_subject(
+        &state.db,
+        workspace_id,
+        SubjectKind::Person,
+        person_id,
+    )
+    .await
+    .map_err(|e| format!("failed to load dictionary facts: {e}"))?;
+    let relations =
+        dictionary_repo::list_resolved_relations_for_person(&state.db, workspace_id, person_id)
+            .await
+            .map_err(|e| format!("failed to load dictionary relations: {e}"))?;
+    let document = dictionary_repo::get_document_for_subject(
+        &state.db,
+        workspace_id,
+        SubjectKind::Person,
+        person_id,
+    )
+    .await
+    .map_err(|e| format!("failed to load dictionary document: {e}"))?;
+
+    let envelope = DictionaryPersonBundleEnvelope {
+        workspace_id: workspace_id.clone(),
+        person: dictionary_person_summary_from_row(&person),
+        facts: facts.iter().map(dictionary_fact_summary_from_row).collect(),
+        relations: relations
+            .iter()
+            .map(dictionary_relation_summary_from_row)
+            .collect(),
+        document_title: document.as_ref().map(|row| row.title.clone()),
+        document_excerpt: dictionary_document_excerpt(&document),
+    };
+
+    Ok((
+        "Visible Human Dictionary person bundle".to_string(),
+        serde_json::to_value(envelope).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn dictionary_resolve_relationship_reference(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, Value), String> {
+    let (reference, workspace_override) = match &call.input {
+        AssistantToolInput::DictionaryResolveRelationshipReference {
+            reference,
+            workspace_id,
+        } => (reference, workspace_id.clone()),
+        _ => {
+            return Err(
+                "dictionary_resolve_relationship_reference requires a relationship reference"
+                    .to_string(),
+            );
+        }
+    };
+
+    let relation_kind = classify_dictionary_reference(reference)
+        .ok_or_else(|| "unsupported dictionary relationship reference".to_string())?;
+
+    let account_link = dictionary_repo::get_account_link(&state.db, &context.user_id)
+        .await
+        .map_err(|e| format!("failed to load dictionary account link: {e}"))?
+        .ok_or_else(|| {
+            "Link your Rustyfin account to a Human Dictionary person before using relationship-relative questions."
+                .to_string()
+        })?;
+
+    let workspace_id = workspace_override
+        .or_else(|| dictionary_workspace_id_for_kind(&account_link, relation_kind))
+        .ok_or_else(|| {
+            format!(
+                "I couldn't find a default Human Dictionary workspace for {}.",
+                relation_kind.as_str()
+            )
+        })?;
+
+    let visible =
+        dictionary_repo::user_can_access_workspace(&state.db, &workspace_id, &context.user_id)
+            .await
+            .map_err(|e| format!("failed to validate dictionary workspace access: {e}"))?;
+    if !visible {
+        return Err("dictionary workspace access denied".to_string());
+    }
+
+    let workspace = dictionary_repo::find_workspace_by_id(&state.db, &workspace_id)
+        .await
+        .map_err(|e| format!("failed to load dictionary workspace: {e}"))?
+        .ok_or_else(|| "dictionary workspace not found".to_string())?;
+
+    let linked_person = dictionary_repo::find_person_by_id(&state.db, &account_link.person_id)
+        .await
+        .map_err(|e| format!("failed to load linked dictionary person: {e}"))?
+        .ok_or_else(|| "linked dictionary person not found".to_string())?;
+
+    let visible_nodes = dictionary_repo::list_tree_nodes_for_person(
+        &state.db,
+        &workspace_id,
+        &account_link.person_id,
+    )
+    .await
+    .map_err(|e| format!("failed to validate linked dictionary person visibility: {e}"))?;
+    if visible_nodes.is_empty() {
+        return Err(format!(
+            "I couldn't find your linked Human Dictionary person inside the {} workspace.",
+            workspace.title
+        ));
+    }
+
+    let relations = dictionary_repo::list_resolved_relations_for_person(
+        &state.db,
+        &workspace_id,
+        &account_link.person_id,
+    )
+    .await
+    .map_err(|e| format!("failed to load dictionary relations: {e}"))?;
+
+    let sibling_pool_len = relations
+        .iter()
+        .filter(|relation| relation.relation_type == "sibling_of")
+        .count();
+    let parent_pool_len = relations
+        .iter()
+        .filter(|relation| relation.relation_type == "child_of")
+        .count();
+
+    let mut candidates = Vec::new();
+    for relation in relations {
+        let facts = dictionary_repo::list_facts_for_subject(
+            &state.db,
+            &workspace_id,
+            SubjectKind::Person,
+            &relation.other_person.id,
+        )
+        .await
+        .map_err(|e| format!("failed to load candidate dictionary facts: {e}"))?;
+        if !dictionary_relation_matches_kind(
+            relation_kind,
+            &relation,
+            &facts,
+            sibling_pool_len,
+            parent_pool_len,
+        ) {
+            continue;
+        }
+        let document = dictionary_repo::get_document_for_subject(
+            &state.db,
+            &workspace_id,
+            SubjectKind::Person,
+            &relation.other_person.id,
+        )
+        .await
+        .map_err(|e| format!("failed to load candidate dictionary document: {e}"))?;
+
+        candidates.push(DictionaryResolvedCandidate {
+            person_id: relation.other_person.id.clone(),
+            display_name: relation.other_person.display_name.clone(),
+            summary: relation.other_person.summary.clone(),
+            relation_type: relation.relation_type.clone(),
+            birthday: dictionary_birthday_from_facts(&facts),
+            hobbies: dictionary_hobbies_from_facts(&facts),
+            document_excerpt: dictionary_document_excerpt(&document),
+        });
+    }
+
+    let plural_expected = relation_kind.prefers_plural(reference);
+    if candidates.is_empty() {
+        let message = format!(
+            "I couldn't find a visible Human Dictionary match for {} in {}.",
+            reference.trim(),
+            workspace.title
+        );
+        return Ok((
+            "Human Dictionary relationship reference".to_string(),
+            json!(DictionaryRelationshipResolutionEnvelope {
+                reference: reference.clone(),
+                relation_kind: relation_kind.as_str().to_string(),
+                workspace_id: Some(workspace.id),
+                workspace_title: Some(workspace.title),
+                status: "not_found".to_string(),
+                message: Some(message),
+                linked_person_id: Some(linked_person.id),
+                linked_person_name: Some(linked_person.display_name),
+                candidates,
+            }),
+        ));
+    }
+
+    if !plural_expected && candidates.len() > 1 {
+        let names = candidates
+            .iter()
+            .map(|candidate| candidate.display_name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(super::types::encode_assistant_clarification_message(
+            &format!(
+                "I found multiple visible Human Dictionary matches for {} in {}: {}. Which one did you mean?",
+                reference.trim(),
+                workspace.title,
+                names
+            ),
+        ));
+    }
+
+    Ok((
+        "Human Dictionary relationship reference".to_string(),
+        json!(DictionaryRelationshipResolutionEnvelope {
+            reference: reference.clone(),
+            relation_kind: relation_kind.as_str().to_string(),
+            workspace_id: Some(workspace.id),
+            workspace_title: Some(workspace.title),
+            status: if plural_expected {
+                "list".to_string()
+            } else {
+                "resolved".to_string()
+            },
+            message: None,
+            linked_person_id: Some(linked_person.id),
+            linked_person_name: Some(linked_person.display_name),
+            candidates,
+        }),
     ))
 }
 
@@ -7259,7 +7961,11 @@ fn calendar_window_for_call(
         | AssistantToolInput::SystemService { .. }
         | AssistantToolInput::SystemPortConflicts { .. }
         | AssistantToolInput::SystemFailedUnits { .. }
-        | AssistantToolInput::ServerFilter { .. } => {
+        | AssistantToolInput::ServerFilter { .. }
+        | AssistantToolInput::DictionaryGetAccountIdentity
+        | AssistantToolInput::DictionarySearchPeople { .. }
+        | AssistantToolInput::DictionaryGetPersonBundle { .. }
+        | AssistantToolInput::DictionaryResolveRelationshipReference { .. } => {
             let from = assistant_local_today();
             let to = from + Duration::days(fallback_days);
             (
@@ -9262,6 +9968,12 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             room_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
         },
+        AssistantToolInput::DictionaryGetAccountIdentity
+        | AssistantToolInput::DictionarySearchPeople { .. }
+        | AssistantToolInput::DictionaryGetPersonBundle { .. }
+        | AssistantToolInput::DictionaryResolveRelationshipReference { .. } => {
+            AssistantFollowUpInputHint::default()
+        }
         AssistantToolInput::ServerFilter {
             query,
             availability,

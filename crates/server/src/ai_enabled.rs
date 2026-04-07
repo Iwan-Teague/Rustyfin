@@ -39,12 +39,12 @@ use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
     AssistantChatRequest, build_assistant_messages, build_assistant_messages_with_budget,
     deterministic_ai_runtime_reply, deterministic_calendar_reply,
-    deterministic_current_datetime_reply, deterministic_downloads_reply,
-    deterministic_library_reply, deterministic_multi_step_reply, deterministic_network_reply,
-    deterministic_system_reply, deterministic_tool_inventory_reply, deterministic_web_reply,
-    immediate_response_for_message, plan_execution_candidates, plan_tool_calls_with_model_assist,
-    status_label_for_tool_call, unsafe_action_response_for_message,
-    unsupported_write_response_for_message,
+    deterministic_current_datetime_reply, deterministic_dictionary_reply,
+    deterministic_downloads_reply, deterministic_library_reply, deterministic_multi_step_reply,
+    deterministic_network_reply, deterministic_system_reply, deterministic_tool_inventory_reply,
+    deterministic_web_reply, immediate_response_for_message, plan_execution_candidates,
+    plan_tool_calls_with_model_assist, status_label_for_tool_call,
+    unsafe_action_response_for_message, unsupported_write_response_for_message,
 };
 use crate::ai_audit::{
     AiAssistantAuditResponseKind, persist_chat_audit_event, persist_chat_audit_event_with_planner,
@@ -1675,6 +1675,109 @@ fn stream_chat_response(
             deterministic_current_datetime_reply(&req.message, &req.history, &grounding_blocks)
         {
             assistant_content = datetime_reply;
+            if let Some(executor) = grounded_executor.as_mut() {
+                executor.finalize_deterministic_reply();
+                execution_trace = Some(executor.trace().clone());
+                planner_debug.execution_trace = execution_trace.clone();
+            }
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                Some(&planner_debug),
+                execution_trace.as_ref(),
+            ));
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            persist_chat_audit_event_with_planner(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &attempted_tool_calls,
+                &grounding_blocks,
+                &grounding_chunks,
+                &grounding_sources,
+                Some(&planner_debug),
+                None,
+            )
+            .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    tool_step_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.tool_step_count)
+                        .unwrap_or(0),
+                    alternate_tool_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.alternate_tool_count)
+                        .unwrap_or(0),
+                    recovery_step_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.recovery_step_count)
+                        .unwrap_or(0),
+                },
+            ));
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(dictionary_reply) =
+            deterministic_dictionary_reply(&req.message, &grounding_blocks)
+        {
+            assistant_content = dictionary_reply;
             if let Some(executor) = grounded_executor.as_mut() {
                 executor.finalize_deterministic_reply();
                 execution_trace = Some(executor.trace().clone());
@@ -4176,6 +4279,32 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
                 query.as_deref().unwrap_or("*")
             )
         }
+        AssistantToolInput::DictionaryGetAccountIdentity => {
+            "dictionary_account_identity".to_string()
+        }
+        AssistantToolInput::DictionarySearchPeople {
+            workspace_id,
+            query,
+            limit,
+        } => format!(
+            "dictionary_search_people:workspace_id={workspace_id}:query={query}:limit={}",
+            limit
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "*".to_string())
+        ),
+        AssistantToolInput::DictionaryGetPersonBundle {
+            workspace_id,
+            person_id,
+        } => format!(
+            "dictionary_get_person_bundle:workspace_id={workspace_id}:person_id={person_id}"
+        ),
+        AssistantToolInput::DictionaryResolveRelationshipReference {
+            reference,
+            workspace_id,
+        } => format!(
+            "dictionary_resolve_relationship_reference:reference={reference}:workspace_id={}",
+            workspace_id.as_deref().unwrap_or("*")
+        ),
         AssistantToolInput::SystemService { query } => {
             format!("system_service:query={query}")
         }

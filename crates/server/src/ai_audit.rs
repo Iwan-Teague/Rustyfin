@@ -514,6 +514,32 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
             room_mode.as_deref().unwrap_or("*"),
             query.as_deref().unwrap_or("*")
         ),
+        AssistantToolInput::DictionaryGetAccountIdentity => {
+            "dictionary_account_identity".to_string()
+        }
+        AssistantToolInput::DictionarySearchPeople {
+            workspace_id,
+            query,
+            limit,
+        } => format!(
+            "dictionary_search_people:workspace_id={workspace_id}:query={query}:limit={}",
+            limit
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "*".to_string())
+        ),
+        AssistantToolInput::DictionaryGetPersonBundle {
+            workspace_id,
+            person_id,
+        } => format!(
+            "dictionary_get_person_bundle:workspace_id={workspace_id}:person_id={person_id}"
+        ),
+        AssistantToolInput::DictionaryResolveRelationshipReference {
+            reference,
+            workspace_id,
+        } => format!(
+            "dictionary_resolve_relationship_reference:reference={reference}:workspace_id={}",
+            workspace_id.as_deref().unwrap_or("*")
+        ),
         AssistantToolInput::SystemService { query } => {
             format!("system_service:query={query}")
         }

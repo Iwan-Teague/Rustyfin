@@ -660,6 +660,106 @@ struct GroundedDownloadDetailEnvelope {
 }
 
 #[derive(Debug, Deserialize)]
+struct GroundedDictionaryAccountIdentityEnvelope {
+    linked: bool,
+    #[serde(default)]
+    person_id: Option<String>,
+    #[serde(default)]
+    person_name: Option<String>,
+    #[serde(default)]
+    family_workspace_id: Option<String>,
+    #[serde(default)]
+    friends_workspace_id: Option<String>,
+    #[serde(default)]
+    work_workspace_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDictionaryPersonSummary {
+    id: String,
+    display_name: String,
+    canonical_name: String,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDictionaryFactSummary {
+    fact_key: String,
+    value_type: String,
+    #[serde(default)]
+    value_text: Option<String>,
+    #[serde(default)]
+    value_int: Option<i64>,
+    #[serde(default)]
+    value_bool: Option<bool>,
+    #[serde(default)]
+    value_date: Option<String>,
+    #[serde(default)]
+    value_json: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDictionaryRelationSummary {
+    relation_id: String,
+    relation_group_key: String,
+    relation_type: String,
+    direction: String,
+    other_person_id: String,
+    other_person_name: String,
+    #[serde(default)]
+    other_person_summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDictionaryPersonBundleEnvelope {
+    workspace_id: String,
+    person: GroundedDictionaryPersonSummary,
+    #[serde(default)]
+    facts: Vec<GroundedDictionaryFactSummary>,
+    #[serde(default)]
+    relations: Vec<GroundedDictionaryRelationSummary>,
+    #[serde(default)]
+    document_title: Option<String>,
+    #[serde(default)]
+    document_excerpt: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDictionaryResolvedCandidate {
+    person_id: String,
+    display_name: String,
+    #[serde(default)]
+    summary: Option<String>,
+    relation_type: String,
+    #[serde(default)]
+    birthday: Option<String>,
+    #[serde(default)]
+    hobbies: Vec<String>,
+    #[serde(default)]
+    document_excerpt: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDictionaryRelationshipResolutionEnvelope {
+    reference: String,
+    relation_kind: String,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_title: Option<String>,
+    status: String,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    linked_person_id: Option<String>,
+    #[serde(default)]
+    linked_person_name: Option<String>,
+    #[serde(default)]
+    candidates: Vec<GroundedDictionaryResolvedCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GroundedLibraryDuplicateTitlesEnvelope {
     #[serde(default)]
     total_count: usize,
@@ -1733,6 +1833,402 @@ pub fn deterministic_memory_reply(
     } else {
         format_tool_error(block, "I couldn't load the stored memory details.")
     })
+}
+
+pub fn deterministic_dictionary_reply(
+    message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let block = grounding_blocks.iter().find(|block| {
+        matches!(
+            block.tool,
+            "dictionary_get_account_identity"
+                | "dictionary_search_people"
+                | "dictionary_get_person_bundle"
+                | "dictionary_resolve_relationship_reference"
+        )
+    })?;
+
+    Some(if block.status == "ok" {
+        match block.tool {
+            "dictionary_get_account_identity" => format_dictionary_account_identity_reply(
+                serde_json::from_value::<GroundedDictionaryAccountIdentityEnvelope>(
+                    block.data.clone(),
+                )
+                .ok()?,
+            ),
+            "dictionary_search_people" => format_dictionary_search_reply(
+                serde_json::from_value::<Vec<GroundedDictionaryPersonSummary>>(
+                    block
+                        .data
+                        .get("people")
+                        .cloned()
+                        .unwrap_or_else(|| Value::Array(Vec::new())),
+                )
+                .ok()?,
+                block.data.get("query").and_then(Value::as_str),
+            ),
+            "dictionary_get_person_bundle" => format_dictionary_person_bundle_reply(
+                message,
+                serde_json::from_value::<GroundedDictionaryPersonBundleEnvelope>(
+                    block.data.clone(),
+                )
+                .ok()?,
+            ),
+            "dictionary_resolve_relationship_reference" => format_dictionary_relationship_reply(
+                message,
+                serde_json::from_value::<GroundedDictionaryRelationshipResolutionEnvelope>(
+                    block.data.clone(),
+                )
+                .ok()?,
+            ),
+            _ => return None,
+        }
+    } else {
+        format_tool_error(block, "I couldn't load the Human Dictionary details.")
+    })
+}
+
+fn format_dictionary_account_identity_reply(
+    envelope: GroundedDictionaryAccountIdentityEnvelope,
+) -> String {
+    if !envelope.linked {
+        return "Your Rustyfin account is not linked to a Human Dictionary person yet.".to_string();
+    }
+
+    let name = envelope
+        .person_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("an unnamed person");
+    let mut scopes = Vec::new();
+    if envelope.family_workspace_id.is_some() {
+        scopes.push("family");
+    }
+    if envelope.friends_workspace_id.is_some() {
+        scopes.push("friends");
+    }
+    if envelope.work_workspace_id.is_some() {
+        scopes.push("work");
+    }
+
+    if scopes.is_empty() {
+        format!("Your Rustyfin account is linked to {name} in the Human Dictionary.")
+    } else {
+        format!(
+            "Your Rustyfin account is linked to {name} in the Human Dictionary, with {} workspace link{} available.",
+            scopes.join(", "),
+            if scopes.len() == 1 { "" } else { "s" }
+        )
+    }
+}
+
+fn format_dictionary_search_reply(
+    people: Vec<GroundedDictionaryPersonSummary>,
+    query: Option<&str>,
+) -> String {
+    if people.is_empty() {
+        return query
+            .map(|value| {
+                format!("I couldn't find any visible Human Dictionary people matching \"{value}\".")
+            })
+            .unwrap_or_else(|| {
+                "I couldn't find any visible Human Dictionary people there.".to_string()
+            });
+    }
+
+    let mut lines = vec![
+        query
+            .map(|value| format!("Visible Human Dictionary people matching \"{value}\":"))
+            .unwrap_or_else(|| "Visible Human Dictionary people:".to_string()),
+    ];
+    for person in people.iter().take(8) {
+        let mut line = format!("- {}", person.display_name);
+        if person.canonical_name != person.display_name {
+            line.push_str(&format!(" ({})", person.canonical_name));
+        }
+        if let Some(summary) = person
+            .summary
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!(": {}", compact_text(summary, 120)));
+        }
+        lines.push(line);
+    }
+    if people.len() > 8 {
+        lines.push(format!("... and {} more.", people.len() - 8));
+    }
+    lines.join("\n")
+}
+
+fn format_dictionary_person_bundle_reply(
+    message: &str,
+    envelope: GroundedDictionaryPersonBundleEnvelope,
+) -> String {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("birthday") || lower.contains("born") {
+        if let Some(birthday) = envelope
+            .facts
+            .iter()
+            .find(|fact| fact.fact_key == "birthday")
+            .and_then(dictionary_fact_birthday)
+        {
+            return format!(
+                "{} has a birthday recorded for {}.",
+                envelope.person.display_name,
+                format_dictionary_date(&birthday)
+            );
+        }
+        return format!(
+            "I don't have a birthday recorded for {}.",
+            envelope.person.display_name
+        );
+    }
+
+    if lower.contains("hobbies") || lower.contains("hobby") {
+        let hobbies = envelope
+            .facts
+            .iter()
+            .find(|fact| fact.fact_key == "hobbies")
+            .map(dictionary_fact_hobbies)
+            .unwrap_or_default();
+        if hobbies.is_empty() {
+            return format!(
+                "I don't have any hobbies recorded for {}.",
+                envelope.person.display_name
+            );
+        }
+        return format!(
+            "{} has these hobbies recorded: {}.",
+            envelope.person.display_name,
+            hobbies.join(", ")
+        );
+    }
+
+    let mut lines = vec![format!(
+        "Human Dictionary summary for {}.",
+        envelope.person.display_name
+    )];
+    if let Some(summary) = envelope
+        .person
+        .summary
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(compact_text(summary, 180));
+    }
+    if let Some(birthday) = envelope
+        .facts
+        .iter()
+        .find(|fact| fact.fact_key == "birthday")
+        .and_then(dictionary_fact_birthday)
+    {
+        lines.push(format!("Birthday: {}.", format_dictionary_date(&birthday)));
+    }
+    let hobbies = envelope
+        .facts
+        .iter()
+        .find(|fact| fact.fact_key == "hobbies")
+        .map(dictionary_fact_hobbies)
+        .unwrap_or_default();
+    if !hobbies.is_empty() {
+        lines.push(format!("Hobbies: {}.", hobbies.join(", ")));
+    }
+    if !envelope.relations.is_empty() {
+        let relations = envelope
+            .relations
+            .iter()
+            .take(4)
+            .map(|relation| {
+                format!(
+                    "{} ({})",
+                    relation.other_person_name, relation.relation_type
+                )
+            })
+            .collect::<Vec<_>>();
+        lines.push(format!("Related people: {}.", relations.join(", ")));
+    }
+    if let Some(excerpt) = envelope
+        .document_excerpt
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("Notes: {}", compact_text(excerpt, 180)));
+    }
+    lines.join("\n")
+}
+
+fn format_dictionary_relationship_reply(
+    message: &str,
+    envelope: GroundedDictionaryRelationshipResolutionEnvelope,
+) -> String {
+    if let Some(message) = envelope
+        .message
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return message.to_string();
+    }
+    if envelope.candidates.is_empty() {
+        return format!(
+            "I couldn't find a visible Human Dictionary match for {}.",
+            envelope.reference
+        );
+    }
+
+    let lower = message.to_ascii_lowercase();
+    if (lower.contains("birthday") || lower.contains("born")) && envelope.candidates.len() == 1 {
+        let candidate = &envelope.candidates[0];
+        let reference_label = dictionary_reference_label(&envelope.reference);
+        return match candidate.birthday.as_deref() {
+            Some(birthday) if !birthday.trim().is_empty() => format!(
+                "{} {} has a birthday recorded for {}.",
+                capitalize_dictionary_reference(&reference_label),
+                candidate.display_name,
+                format_dictionary_date(birthday)
+            ),
+            _ => format!(
+                "I don't have a birthday recorded for {} {}.",
+                reference_label, candidate.display_name
+            ),
+        };
+    }
+
+    if (lower.contains("hobbies") || lower.contains("hobby")) && envelope.candidates.len() == 1 {
+        let candidate = &envelope.candidates[0];
+        let reference_label = dictionary_reference_label(&envelope.reference);
+        if candidate.hobbies.is_empty() {
+            return format!(
+                "I don't have any hobbies recorded for {} {}.",
+                reference_label, candidate.display_name
+            );
+        }
+        return format!(
+            "{} {} has these hobbies recorded: {}.",
+            capitalize_dictionary_reference(&reference_label),
+            candidate.display_name,
+            candidate.hobbies.join(", ")
+        );
+    }
+
+    let workspace_suffix = envelope
+        .workspace_title
+        .as_deref()
+        .map(|title| format!(" in {}", title))
+        .unwrap_or_default();
+    let reference_label = dictionary_reference_label(&envelope.reference);
+
+    if envelope.candidates.len() == 1 {
+        let candidate = &envelope.candidates[0];
+        let mut lines = vec![format!(
+            "{}{} is {}.",
+            capitalize_dictionary_reference(&reference_label),
+            workspace_suffix,
+            candidate.display_name
+        )];
+        if let Some(summary) = candidate
+            .summary
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(compact_text(summary, 180));
+        }
+        if let Some(birthday) = candidate
+            .birthday
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(format!("Birthday: {}.", format_dictionary_date(birthday)));
+        }
+        if !candidate.hobbies.is_empty() {
+            lines.push(format!("Hobbies: {}.", candidate.hobbies.join(", ")));
+        }
+        if let Some(excerpt) = candidate
+            .document_excerpt
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(format!("Notes: {}", compact_text(excerpt, 180)));
+        }
+        return lines.join("\n");
+    }
+
+    let mut lines = vec![format!(
+        "I found these matches for {}{}:",
+        reference_label, workspace_suffix
+    )];
+    for candidate in envelope.candidates.iter().take(8) {
+        let mut line = format!("- {}", candidate.display_name);
+        if let Some(summary) = candidate
+            .summary
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            line.push_str(&format!(": {}", compact_text(summary, 100)));
+        }
+        lines.push(line);
+    }
+    if envelope.candidates.len() > 8 {
+        lines.push(format!("... and {} more.", envelope.candidates.len() - 8));
+    }
+    lines.join("\n")
+}
+
+fn dictionary_fact_birthday(fact: &GroundedDictionaryFactSummary) -> Option<String> {
+    if fact.fact_key != "birthday" {
+        return None;
+    }
+    if fact.value_type == "date" {
+        return fact.value_date.clone();
+    }
+    fact.value_text.clone()
+}
+
+fn dictionary_fact_hobbies(fact: &GroundedDictionaryFactSummary) -> Vec<String> {
+    if fact.fact_key != "hobbies" {
+        return Vec::new();
+    }
+    if let Some(Value::Array(values)) = fact.value_json.as_ref() {
+        return values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    fact.value_text
+        .as_deref()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn format_dictionary_date(raw: &str) -> String {
+    parse_ymd(raw)
+        .map(format_with_weekday)
+        .unwrap_or_else(|| raw.to_string())
+}
+
+fn dictionary_reference_label(reference: &str) -> String {
+    let trimmed = reference.trim();
+    if let Some(rest) = trimmed.strip_prefix("my ") {
+        format!("your {}", rest.trim())
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn capitalize_dictionary_reference(reference: &str) -> String {
+    let mut chars = reference.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
 }
 
 fn format_memory_facts_reply(envelope: GroundedMemoryFactsEnvelope) -> String {
@@ -2826,6 +3322,9 @@ pub fn deterministic_multi_step_reply(
                 | AssistantToolOutcomeKind::WeakMatch
         ) {
             if let Some(reply) = deterministic_calendar_reply(message, grounding_blocks) {
+                return Some(reply);
+            }
+            if let Some(reply) = deterministic_dictionary_reply(message, grounding_blocks) {
                 return Some(reply);
             }
             if let Some(reply) = deterministic_downloads_reply(message, grounding_blocks) {
@@ -5100,9 +5599,9 @@ fn extract_quoted_phrase(message: &str) -> Option<String> {
 mod tests {
     use super::{
         deterministic_ai_runtime_reply, deterministic_calendar_reply,
-        deterministic_downloads_reply, deterministic_library_reply, deterministic_memory_reply,
-        deterministic_network_reply, deterministic_system_reply, deterministic_web_reply,
-        grounding_chunks_prompt, rank_and_compress_grounding_chunks,
+        deterministic_dictionary_reply, deterministic_downloads_reply, deterministic_library_reply,
+        deterministic_memory_reply, deterministic_network_reply, deterministic_system_reply,
+        deterministic_web_reply, grounding_chunks_prompt, rank_and_compress_grounding_chunks,
     };
     use crate::ai_assistant::types::{
         AssistantGroundingChunk, AssistantGroundingCitation, AssistantGroundingVisibility,
@@ -5438,6 +5937,127 @@ mod tests {
         assert!(reply.contains("Rachel"));
         assert!(reply.contains("Tuesday, April 7, 2026"));
         assert!(!reply.contains("Sam"));
+    }
+
+    #[test]
+    fn deterministic_dictionary_reply_formats_relationship_birthday() {
+        let reply = deterministic_dictionary_reply(
+            "When is my mother's birthday?",
+            &[AssistantToolContextBlock {
+                tool: "dictionary_resolve_relationship_reference",
+                label: "Human Dictionary relationship reference".to_string(),
+                status: "ok",
+                data: json!({
+                    "reference": "my mother",
+                    "relation_kind": "mother",
+                    "workspace_id": "family-workspace",
+                    "workspace_title": "Family",
+                    "status": "resolved",
+                    "message": null,
+                    "linked_person_id": "person-self",
+                    "linked_person_name": "Iwan",
+                    "candidates": [
+                        {
+                            "person_id": "person-mary",
+                            "display_name": "Mary",
+                            "summary": "Loves gardening and baking.",
+                            "relation_type": "child_of",
+                            "birthday": "1974-06-09",
+                            "hobbies": ["gardening", "baking"],
+                            "document_excerpt": "Prefers lilies and dahlias."
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic dictionary reply");
+
+        assert!(reply.contains("Your mother Mary"));
+        assert!(reply.contains("Sunday, June 9, 1974"));
+    }
+
+    #[test]
+    fn deterministic_dictionary_reply_formats_relationship_hobbies() {
+        let reply = deterministic_dictionary_reply(
+            "What are my brother's hobbies?",
+            &[AssistantToolContextBlock {
+                tool: "dictionary_resolve_relationship_reference",
+                label: "Human Dictionary relationship reference".to_string(),
+                status: "ok",
+                data: json!({
+                    "reference": "my brother",
+                    "relation_kind": "brother",
+                    "workspace_id": "family-workspace",
+                    "workspace_title": "Family",
+                    "status": "resolved",
+                    "message": null,
+                    "linked_person_id": "person-self",
+                    "linked_person_name": "Iwan",
+                    "candidates": [
+                        {
+                            "person_id": "person-john",
+                            "display_name": "John",
+                            "summary": "Always tinkering with bikes.",
+                            "relation_type": "sibling_of",
+                            "birthday": null,
+                            "hobbies": ["cycling", "chess"],
+                            "document_excerpt": null
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic dictionary reply");
+
+        assert!(reply.contains("Your brother John"));
+        assert!(reply.contains("cycling, chess"));
+    }
+
+    #[test]
+    fn deterministic_dictionary_reply_formats_relationship_lists() {
+        let reply = deterministic_dictionary_reply(
+            "Who are my co-workers?",
+            &[AssistantToolContextBlock {
+                tool: "dictionary_resolve_relationship_reference",
+                label: "Human Dictionary relationship reference".to_string(),
+                status: "ok",
+                data: json!({
+                    "reference": "my co-workers",
+                    "relation_kind": "coworker",
+                    "workspace_id": "work-workspace",
+                    "workspace_title": "Work",
+                    "status": "list",
+                    "message": null,
+                    "linked_person_id": "person-self",
+                    "linked_person_name": "Iwan",
+                    "candidates": [
+                        {
+                            "person_id": "person-a",
+                            "display_name": "Alice",
+                            "summary": "Frontend engineer on the payments team.",
+                            "relation_type": "coworker_of",
+                            "birthday": null,
+                            "hobbies": [],
+                            "document_excerpt": null
+                        },
+                        {
+                            "person_id": "person-b",
+                            "display_name": "Brian",
+                            "summary": "Backend engineer focused on infra.",
+                            "relation_type": "coworker_of",
+                            "birthday": null,
+                            "hobbies": [],
+                            "document_excerpt": null
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic dictionary reply");
+
+        assert!(reply.contains("your co-workers in Work"));
+        assert!(reply.contains("Alice"));
+        assert!(reply.contains("Brian"));
     }
 
     #[test]

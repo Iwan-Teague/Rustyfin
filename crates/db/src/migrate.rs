@@ -223,6 +223,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "054_rustyvault_display_name",
         include_str!("../migrations_pg/054_rustyvault_display_name.sql"),
     ),
+    (
+        "055_dictionary_core",
+        include_str!("../migrations_pg/055_dictionary_core.sql"),
+    ),
 ];
 
 const POSTGRES_MIGRATION_LOCK_ID: i64 = 0x7275737466696e;

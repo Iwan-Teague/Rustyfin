@@ -3,6 +3,7 @@ mod ai_runtime;
 mod calendar;
 mod channels;
 mod conversations;
+mod dictionary;
 mod documents;
 mod downloads;
 mod libraries;
@@ -21,6 +22,7 @@ pub use ai_runtime::AiRuntimeToolProvider;
 pub use calendar::CalendarToolProvider;
 pub use channels::ChannelsToolProvider;
 pub use conversations::ConversationsToolProvider;
+pub use dictionary::DictionaryToolProvider;
 pub use documents::DocumentsToolProvider;
 pub use downloads::DownloadsToolProvider;
 pub use libraries::LibrariesToolProvider;
@@ -40,6 +42,7 @@ pub fn default_tool_providers() -> Vec<Arc<dyn ToolProvider>> {
         Arc::new(CalendarToolProvider),
         Arc::new(ChannelsToolProvider),
         Arc::new(ConversationsToolProvider),
+        Arc::new(DictionaryToolProvider),
         Arc::new(DocumentsToolProvider),
         Arc::new(DownloadsToolProvider),
         Arc::new(LibrariesToolProvider),
