@@ -44,13 +44,13 @@ pub async fn effective_models_for_task(
     let answer_model = engine
         .role_routing
         .iter()
-        .find(|decision| decision.role == rustfin_ai_agent::ModelRole::Answer)
+        .find(|decision| decision.role.eq_ignore_ascii_case("answer"))
         .map(|decision| decision.model_name.clone())
         .or_else(|| requested_model.map(str::to_string));
     let planner_model = engine
         .role_routing
         .iter()
-        .find(|decision| decision.role == rustfin_ai_agent::ModelRole::Planner)
+        .find(|decision| decision.role.eq_ignore_ascii_case("planner"))
         .map(|decision| decision.model_name.clone())
         .or_else(|| requested_model.map(str::to_string));
     (answer_model, planner_model)

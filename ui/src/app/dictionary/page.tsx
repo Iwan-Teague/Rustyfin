@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 
 import { useAuth } from '@/lib/auth';
 import {
+  attachExistingDictionaryPerson,
   bootstrapDictionary,
   createDictionaryPerson,
   createDictionaryWorkspace,
@@ -14,18 +15,34 @@ import {
   DictionaryFact,
   DictionaryPerson,
   DictionaryPersonBundle,
-  DictionaryRelationship,
   DictionaryTreeNode,
+  DictionaryWorkspaceMember,
   DictionaryWorkspace,
+  deleteDictionaryWorkspaceMember,
   getDictionaryPersonBundle,
   getDictionaryWorkspaceTree,
   listDictionaryPeople,
+  listDictionaryWorkspaceMembers,
   putMyDictionaryAccountLink,
   saveDictionaryPersonDocument,
   updateDictionaryPerson,
   upsertDictionaryFact,
   upsertDictionaryRelationship,
+  upsertDictionaryWorkspaceMember,
 } from '@/lib/dictionaryApi';
+import {
+  sortDictionaryRelationshipCards,
+  type DictionaryRelationshipCardModel,
+} from '@/lib/dictionaryRelationshipAdapter';
+import {
+  debounceDelayForDictionarySearch,
+  shouldUseBackendDictionarySearch,
+} from '@/lib/dictionarySearchHelpers';
+import {
+  canSubmitWorkspaceMemberDraft,
+  sortedWorkspaceMembers,
+  type WorkspaceMemberDraft,
+} from '@/lib/dictionaryWorkspaceMembers';
 
 type RootKey = 'family' | 'friends' | 'work' | 'custom';
 
@@ -54,6 +71,19 @@ type RelationshipDraft = {
   relationType: string;
   inverseRelationType: string;
   sourceNote: string;
+};
+
+type AttachExistingDraft = {
+  personId: string;
+  parentNodeId: string;
+  nodeTitle: string;
+  asShortcut: boolean;
+};
+
+type AccountLinkDraft = {
+  familyWorkspaceId: string;
+  friendsWorkspaceId: string;
+  workWorkspaceId: string;
 };
 
 const ROOT_ORDER: RootKey[] = ['family', 'friends', 'work', 'custom'];
@@ -168,16 +198,6 @@ function relationshipTone(relation: string) {
   return 'text-white/80';
 }
 
-function personMatchesQuery(person: DictionaryPerson, query: string) {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized) return true;
-  return (
-    person.display_name.toLowerCase().includes(normalized) ||
-    person.canonical_name.toLowerCase().includes(normalized) ||
-    (person.summary ?? '').toLowerCase().includes(normalized)
-  );
-}
-
 function sortNodes(nodes: DictionaryTreeNode[]) {
   return [...nodes].sort((left, right) => {
     if (left.sort_order !== right.sort_order) {
@@ -234,6 +254,8 @@ export default function DictionaryPage() {
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [workspaceTree, setWorkspaceTree] = useState<DictionaryTreeNode[]>([]);
   const [workspacePeople, setWorkspacePeople] = useState<DictionaryPerson[]>([]);
+  const [searchResults, setSearchResults] = useState<DictionaryPerson[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [selectedBundle, setSelectedBundle] = useState<DictionaryPersonBundle | null>(null);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [loadingShell, setLoadingShell] = useState(true);
@@ -272,6 +294,23 @@ export default function DictionaryPage() {
   });
   const [documentDraft, setDocumentDraft] = useState('');
   const [documentTitleDraft, setDocumentTitleDraft] = useState('Profile');
+  const [workspaceMembers, setWorkspaceMembers] = useState<DictionaryWorkspaceMember[] | null>(null);
+  const [memberDraft, setMemberDraft] = useState<WorkspaceMemberDraft>({
+    loginUsername: '',
+    role: 'viewer',
+  });
+  const [accountLinkDraft, setAccountLinkDraft] = useState<AccountLinkDraft>({
+    familyWorkspaceId: '',
+    friendsWorkspaceId: '',
+    workWorkspaceId: '',
+  });
+  const [attachDraft, setAttachDraft] = useState<AttachExistingDraft>({
+    personId: '',
+    parentNodeId: '',
+    nodeTitle: '',
+    asShortcut: false,
+  });
+  const [attachablePeople, setAttachablePeople] = useState<DictionaryPerson[]>([]);
 
   const visibleWorkspaces = workspaceRootsFromBootstrap(bootstrap);
   const selectedWorkspace =
@@ -279,8 +318,11 @@ export default function DictionaryPage() {
   const activeAccountLink = bootstrap?.account_link ?? null;
   const childrenByParent = buildChildrenByParent(workspaceTree);
   const peopleById = new Map(workspacePeople.map((person) => [person.id, person]));
-  const searchMatches = treeSearch.trim()
-    ? workspacePeople.filter((person) => personMatchesQuery(person, treeSearch)).slice(0, 8)
+  const visibleSearchResults = shouldUseBackendDictionarySearch(treeSearch) ? searchResults : [];
+  const relationshipCards = sortDictionaryRelationshipCards(selectedBundle?.relations ?? []);
+  const memberRows = sortedWorkspaceMembers(workspaceMembers ?? []);
+  const accountLinkableWorkspaces = selectedBundle
+    ? visibleWorkspaces.filter((workspace) => workspace.space_id === selectedBundle.person.space_id)
     : [];
 
   useEffect(() => {
@@ -335,6 +377,7 @@ export default function DictionaryPage() {
         if (cancelled) return;
         setWorkspaceTree(treeResponse.nodes);
         setWorkspacePeople(people);
+        setSearchResults([]);
         setExpandedNodes(loadInitialExpanded(treeResponse.nodes));
         if (!people.some((person) => person.id === selectedPersonId)) {
           const firstVisiblePerson = treeResponse.nodes.find((node) => node.node_kind === 'person' && node.person_id);
@@ -357,6 +400,171 @@ export default function DictionaryPage() {
       cancelled = true;
     };
   }, [me, selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId || !me) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+    if (!shouldUseBackendDictionarySearch(treeSearch)) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      setSearchLoading(true);
+      void listDictionaryPeople(selectedWorkspaceId, treeSearch, 12)
+        .then((people) => {
+          if (cancelled) return;
+          setSearchResults(people);
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setNotice(
+            'error',
+            error instanceof Error ? error.message : 'Failed to search Dictionary people.',
+          );
+          setSearchResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setSearchLoading(false);
+          }
+        });
+    }, debounceDelayForDictionarySearch(treeSearch));
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [me, selectedWorkspaceId, treeSearch]);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId || !me) {
+      setWorkspaceMembers(null);
+      return;
+    }
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const members = await listDictionaryWorkspaceMembers(selectedWorkspaceId);
+        if (cancelled) return;
+        setWorkspaceMembers(members);
+      } catch (error) {
+        if (cancelled) return;
+        const message =
+          error instanceof Error ? error.message.toLowerCase() : 'failed to load workspace members';
+        if (
+          message.includes('forbidden') ||
+          message.includes('owner-managed') ||
+          message.includes('403')
+        ) {
+          setWorkspaceMembers(null);
+          return;
+        }
+        setWorkspaceMembers(null);
+        setNotice(
+          'error',
+          error instanceof Error ? error.message : 'Failed to load workspace members.',
+        );
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [me, selectedWorkspaceId]);
+
+  useEffect(() => {
+    if (!selectedWorkspaceId || !bootstrap || !me) {
+      setAttachablePeople([]);
+      return;
+    }
+    const currentWorkspace =
+      bootstrap.workspaces.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
+    if (!currentWorkspace) {
+      setAttachablePeople([]);
+      return;
+    }
+    const candidateWorkspaces = visibleWorkspaces.filter(
+      (workspace) => workspace.space_id === currentWorkspace.space_id,
+    );
+    if (candidateWorkspaces.length === 0) {
+      setAttachablePeople([]);
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const results = await Promise.all(
+          candidateWorkspaces.map((workspace) => listDictionaryPeople(workspace.id, undefined, 200)),
+        );
+        if (cancelled) return;
+        const seen = new Set<string>();
+        const deduped: DictionaryPerson[] = [];
+        for (const people of results) {
+          for (const person of people) {
+            if (seen.has(person.id)) continue;
+            seen.add(person.id);
+            deduped.push(person);
+          }
+        }
+        deduped.sort((left, right) => left.display_name.localeCompare(right.display_name));
+        setAttachablePeople(deduped);
+      } catch {
+        if (!cancelled) {
+          setAttachablePeople([]);
+        }
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [me, selectedWorkspaceId, bootstrap]);
+
+  useEffect(() => {
+    if (!bootstrap) {
+      setAccountLinkDraft({
+        familyWorkspaceId: '',
+        friendsWorkspaceId: '',
+        workWorkspaceId: '',
+      });
+      return;
+    }
+
+    if (!selectedBundle) {
+      setAccountLinkDraft({
+        familyWorkspaceId: bootstrap.seeded.family_workspace.id,
+        friendsWorkspaceId: bootstrap.account_link?.friends_workspace_id ?? '',
+        workWorkspaceId: bootstrap.account_link?.work_workspace_id ?? '',
+      });
+      return;
+    }
+
+    const sameSpaceWorkspaces = bootstrap.workspaces.filter(
+      (workspace) => workspace.space_id === selectedBundle.person.space_id,
+    );
+    const currentLinkMatchesSelected = bootstrap.account_link?.person_id === selectedBundle.person.id;
+    const defaultFamilyWorkspaceId =
+      (currentLinkMatchesSelected ? bootstrap.account_link?.family_workspace_id : undefined) ??
+      sameSpaceWorkspaces.find((workspace) => workspace.workspace_kind === 'family_shared')?.id ??
+      (bootstrap.seeded.family_workspace.space_id === selectedBundle.person.space_id
+        ? bootstrap.seeded.family_workspace.id
+        : sameSpaceWorkspaces[0]?.id ?? '');
+
+    setAccountLinkDraft({
+      familyWorkspaceId: defaultFamilyWorkspaceId,
+      friendsWorkspaceId: currentLinkMatchesSelected
+        ? bootstrap.account_link?.friends_workspace_id ?? ''
+        : '',
+      workWorkspaceId: currentLinkMatchesSelected ? bootstrap.account_link?.work_workspace_id ?? '' : '',
+    });
+  }, [bootstrap, selectedBundle?.person.id, selectedBundle?.person.space_id]);
 
   useEffect(() => {
     if (!selectedWorkspaceId || !selectedPersonId) {
@@ -697,9 +905,9 @@ export default function DictionaryPage() {
     }
   }
 
-  async function handleDeleteRelationship(relation: DictionaryRelationship) {
+  async function handleDeleteRelationship(relation: DictionaryRelationshipCardModel) {
     if (!selectedWorkspaceId || !selectedBundle) return;
-    if (!window.confirm(`Remove the ${relation.relation_type} relationship?`)) {
+    if (!window.confirm(`Remove the ${relation.relationType} relationship?`)) {
       return;
     }
     setSaving(true);
@@ -717,14 +925,18 @@ export default function DictionaryPage() {
 
   async function handleLinkAccount() {
     if (!selectedBundle || !bootstrap) return;
-    const familyWorkspaceId = bootstrap.seeded.family_workspace.id;
+    if (!accountLinkDraft.familyWorkspaceId) {
+      setNotice('error', 'Choose a default family workspace first.');
+      return;
+    }
+
     setSaving(true);
     try {
       const accountLink = await putMyDictionaryAccountLink({
         person_id: selectedBundle.person.id,
-        family_workspace_id: familyWorkspaceId,
-        friends_workspace_id: bootstrap.seeded.friends_workspace.id,
-        work_workspace_id: bootstrap.seeded.work_workspace.id,
+        family_workspace_id: accountLinkDraft.familyWorkspaceId,
+        friends_workspace_id: accountLinkDraft.friendsWorkspaceId || undefined,
+        work_workspace_id: accountLinkDraft.workWorkspaceId || undefined,
       });
       setBootstrap((current) =>
         current
@@ -734,9 +946,98 @@ export default function DictionaryPage() {
             }
           : current,
       );
-      setNotice('success', `${selectedBundle.person.display_name} is now linked to your Rustyfin account.`);
+      setNotice(
+        'success',
+        activeAccountLink?.person_id === selectedBundle.person.id
+          ? 'Linked workspace defaults updated.'
+          : `${selectedBundle.person.display_name} is now linked to your Rustyfin account.`,
+      );
     } catch (error) {
       setNotice('error', error instanceof Error ? error.message : 'Failed to link your account.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAddWorkspaceMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId) return;
+    if (!canSubmitWorkspaceMemberDraft(memberDraft)) {
+      setNotice('error', 'Enter an exact Rustyfin username first.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const members = await upsertDictionaryWorkspaceMember(selectedWorkspaceId, {
+        login_username: memberDraft.loginUsername.trim(),
+        role: memberDraft.role,
+      });
+      setWorkspaceMembers(members);
+      setMemberDraft({ loginUsername: '', role: memberDraft.role });
+      setNotice('success', 'Workspace member updated.');
+    } catch (error) {
+      setNotice(
+        'error',
+        error instanceof Error ? error.message : 'Failed to update workspace member.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRemoveWorkspaceMember(member: DictionaryWorkspaceMember) {
+    if (!selectedWorkspaceId) return;
+    if (!window.confirm(`Remove ${member.display_name} from this workspace?`)) {
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await deleteDictionaryWorkspaceMember(selectedWorkspaceId, member.user_id);
+      const members = await listDictionaryWorkspaceMembers(selectedWorkspaceId);
+      setWorkspaceMembers(members);
+      setNotice('success', 'Workspace member removed.');
+    } catch (error) {
+      setNotice(
+        'error',
+        error instanceof Error ? error.message : 'Failed to remove workspace member.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAttachExistingPerson(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedWorkspaceId) return;
+    if (!attachDraft.personId) {
+      setNotice('error', 'Choose a person to attach first.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const bundle = await attachExistingDictionaryPerson(selectedWorkspaceId, {
+        person_id: attachDraft.personId,
+        parent_node_id: attachDraft.parentNodeId || undefined,
+        node_title: attachDraft.nodeTitle.trim() || undefined,
+        as_shortcut: attachDraft.asShortcut,
+      });
+      await refreshWorkspaceBundle(bundle.person.id);
+      setSelectedBundle(bundle);
+      setAttachDraft({
+        personId: '',
+        parentNodeId: '',
+        nodeTitle: '',
+        asShortcut: false,
+      });
+      setNotice('success', `Attached ${bundle.person.display_name}.`);
+    } catch (error) {
+      setNotice(
+        'error',
+        error instanceof Error ? error.message : 'Failed to attach existing person.',
+      );
     } finally {
       setSaving(false);
     }
@@ -760,8 +1061,7 @@ export default function DictionaryPage() {
 
   const linkedPersonId = activeAccountLink?.person_id ?? null;
   const isSelectedPersonLinked = selectedBundle?.person.id === linkedPersonId;
-  const canLinkSelectedPerson =
-    !!selectedBundle && bootstrap?.seeded.family_workspace.space_id === selectedBundle.person.space_id;
+  const canLinkSelectedPerson = !!selectedBundle && accountLinkableWorkspaces.length > 0;
 
   return (
     <div className="animate-rise rf-flat-page space-y-6">
@@ -856,8 +1156,10 @@ export default function DictionaryPage() {
                 />
                 {treeSearch.trim() ? (
                   <div className="space-y-1 rounded-[1rem] border border-[var(--border-subtle)] bg-white/[0.02] p-2">
-                    {searchMatches.length > 0 ? (
-                      searchMatches.map((person) => (
+                    {searchLoading ? (
+                      <p className="px-3 py-2 text-sm muted">Searching visible people…</p>
+                    ) : visibleSearchResults.length > 0 ? (
+                      visibleSearchResults.map((person) => (
                         <button
                           key={person.id}
                           type="button"
@@ -954,6 +1256,139 @@ export default function DictionaryPage() {
                   Add person
                 </button>
               </form>
+
+              <form
+                className="space-y-3 border-t border-[var(--border-subtle)] pt-4"
+                onSubmit={handleAttachExistingPerson}
+              >
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold text-white/90">Attach existing person</h3>
+                  <p className="text-sm muted">
+                    Reuse a visible person from the same dictionary space instead of creating a duplicate.
+                  </p>
+                </div>
+                <select
+                  value={attachDraft.personId}
+                  onChange={(event) =>
+                    setAttachDraft((current) => ({ ...current, personId: event.target.value }))
+                  }
+                  className="h-11 w-full rounded-[1rem] border border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white outline-none transition focus:border-white/28"
+                >
+                  <option value="">Choose person</option>
+                  {attachablePeople
+                    .filter((person) => person.id !== selectedPersonId)
+                    .map((person) => (
+                      <option key={person.id} value={person.id}>
+                        {person.display_name}
+                      </option>
+                    ))}
+                </select>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <select
+                    value={attachDraft.parentNodeId}
+                    onChange={(event) =>
+                      setAttachDraft((current) => ({ ...current, parentNodeId: event.target.value }))
+                    }
+                    className="h-11 rounded-[1rem] border border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white outline-none transition focus:border-white/28"
+                  >
+                    <option value="">Auto place in first group</option>
+                    {workspaceTree
+                      .filter((node) => node.node_kind === 'group' || node.node_kind === 'root')
+                      .map((node) => (
+                        <option key={node.id} value={node.id}>
+                          {node.title}
+                        </option>
+                      ))}
+                  </select>
+                  <input
+                    value={attachDraft.nodeTitle}
+                    onChange={(event) =>
+                      setAttachDraft((current) => ({ ...current, nodeTitle: event.target.value }))
+                    }
+                    placeholder="Optional node title"
+                    className="h-11 rounded-[1rem] border border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white outline-none transition focus:border-white/28"
+                  />
+                </div>
+                <label className="flex items-center gap-3 text-sm text-white/84">
+                  <input
+                    type="checkbox"
+                    checked={attachDraft.asShortcut}
+                    onChange={(event) =>
+                      setAttachDraft((current) => ({ ...current, asShortcut: event.target.checked }))
+                    }
+                  />
+                  Create a shortcut placement when the person is already visible here
+                </label>
+                <button className="btn-secondary w-full px-5 py-2.5 text-sm disabled:opacity-60" disabled={saving}>
+                  Attach person
+                </button>
+              </form>
+
+              {workspaceMembers ? (
+                <section className="space-y-3 border-t border-[var(--border-subtle)] pt-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-white/90">Workspace members</h3>
+                    <p className="text-sm muted">
+                      Owner-only member management for this workspace.
+                    </p>
+                  </div>
+                  <form className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto]" onSubmit={handleAddWorkspaceMember}>
+                    <input
+                      value={memberDraft.loginUsername}
+                      onChange={(event) =>
+                        setMemberDraft((current) => ({
+                          ...current,
+                          loginUsername: event.target.value,
+                        }))
+                      }
+                      placeholder="Exact Rustyfin username"
+                      className="h-11 rounded-[1rem] border border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white outline-none transition focus:border-white/28"
+                    />
+                    <select
+                      value={memberDraft.role}
+                      onChange={(event) =>
+                        setMemberDraft((current) => ({
+                          ...current,
+                          role: event.target.value as WorkspaceMemberDraft['role'],
+                        }))
+                      }
+                      className="h-11 rounded-[1rem] border border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white outline-none transition focus:border-white/28"
+                    >
+                      <option value="viewer">viewer</option>
+                      <option value="editor">editor</option>
+                      <option value="owner">owner</option>
+                    </select>
+                    <button className="btn-secondary px-4 py-2 text-sm disabled:opacity-60" disabled={saving}>
+                      Save
+                    </button>
+                  </form>
+                  <div className="space-y-2">
+                    {memberRows.map((member) => (
+                      <div
+                        key={member.user_id}
+                        className="flex items-center justify-between gap-3 rounded-[1rem] border border-white/8 bg-white/[0.02] px-4 py-3"
+                      >
+                        <div className="space-y-1">
+                          <p className="text-sm text-white/90">{member.display_name}</p>
+                          <p className="text-xs muted">@{member.login_username}</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="rounded-full border border-white/10 px-3 py-1 text-[0.7rem] uppercase tracking-[0.14em] text-white/68">
+                            {member.role}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => void handleRemoveWorkspaceMember(member)}
+                            className="text-xs text-rose-200/90 transition hover:text-rose-100"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
             </section>
 
             <section className="space-y-5 border-t border-[var(--border-subtle)] pt-4">
@@ -977,15 +1412,10 @@ export default function DictionaryPage() {
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      {canLinkSelectedPerson ? (
-                        <button
-                          type="button"
-                          onClick={() => void handleLinkAccount()}
-                          className="btn-secondary px-4 py-2 text-sm"
-                          disabled={saving || isSelectedPersonLinked}
-                        >
-                          {isSelectedPersonLinked ? 'Linked to my account' : 'Link my account'}
-                        </button>
+                      {isSelectedPersonLinked ? (
+                        <span className="rounded-full border border-white/10 px-4 py-2 text-sm text-white/72">
+                          Linked to my account
+                        </span>
                       ) : null}
                       <button
                         type="button"
@@ -1299,20 +1729,20 @@ export default function DictionaryPage() {
                         </form>
 
                         <div className="space-y-2">
-                          {selectedBundle.relations.length > 0 ? (
-                            selectedBundle.relations.map((relation) => (
+                          {relationshipCards.length > 0 ? (
+                            relationshipCards.map((relation) => (
                               <div
                                 key={relation.id}
                                 className="rounded-[1rem] border border-white/8 bg-white/[0.02] px-4 py-3"
                               >
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="space-y-1">
-                                    <p className={`text-sm font-medium ${relationshipTone(relation.relation_type)}`}>
-                                      {relation.relation_type}
+                                    <p className={`text-sm font-medium ${relationshipTone(relation.relationType)}`}>
+                                      {relation.relationType}
                                     </p>
-                                    <p className="text-sm text-white/88">{relation.target_person_name}</p>
-                                    {relation.target_summary ? (
-                                      <p className="text-xs muted">{relation.target_summary}</p>
+                                    <p className="text-sm text-white/88">{relation.targetPersonName}</p>
+                                    {relation.targetSummary ? (
+                                      <p className="text-xs muted">{relation.targetSummary}</p>
                                     ) : null}
                                   </div>
                                   <button
@@ -1335,6 +1765,93 @@ export default function DictionaryPage() {
 
                       <section className="space-y-3 border-t border-[var(--border-subtle)] pt-4">
                         <h3 className="text-sm font-semibold text-white/90">Access + timing</h3>
+                        {canLinkSelectedPerson ? (
+                          <div className="space-y-3 rounded-[1rem] border border-white/8 bg-white/[0.02] p-4">
+                            <div className="space-y-1">
+                              <p className="text-sm text-white/90">Account link defaults</p>
+                              <p className="text-sm muted">
+                                Choose only workspaces where this person is already visible. Family is required;
+                                friends and work can stay empty until the person is attached there.
+                              </p>
+                            </div>
+                            <div className="grid gap-3">
+                              <label className="space-y-2 text-sm text-white/86">
+                                <span className="block text-xs uppercase tracking-[0.14em] text-white/45">
+                                  Family workspace
+                                </span>
+                                <select
+                                  value={accountLinkDraft.familyWorkspaceId}
+                                  onChange={(event) =>
+                                    setAccountLinkDraft((current) => ({
+                                      ...current,
+                                      familyWorkspaceId: event.target.value,
+                                    }))
+                                  }
+                                  className="h-11 w-full rounded-[1rem] border border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white outline-none transition focus:border-white/28"
+                                >
+                                  <option value="">Choose workspace</option>
+                                  {accountLinkableWorkspaces.map((workspace) => (
+                                    <option key={`family:${workspace.id}`} value={workspace.id}>
+                                      {workspace.title}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="space-y-2 text-sm text-white/86">
+                                <span className="block text-xs uppercase tracking-[0.14em] text-white/45">
+                                  Friends workspace
+                                </span>
+                                <select
+                                  value={accountLinkDraft.friendsWorkspaceId}
+                                  onChange={(event) =>
+                                    setAccountLinkDraft((current) => ({
+                                      ...current,
+                                      friendsWorkspaceId: event.target.value,
+                                    }))
+                                  }
+                                  className="h-11 w-full rounded-[1rem] border border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white outline-none transition focus:border-white/28"
+                                >
+                                  <option value="">No friends default</option>
+                                  {accountLinkableWorkspaces.map((workspace) => (
+                                    <option key={`friends:${workspace.id}`} value={workspace.id}>
+                                      {workspace.title}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="space-y-2 text-sm text-white/86">
+                                <span className="block text-xs uppercase tracking-[0.14em] text-white/45">
+                                  Work workspace
+                                </span>
+                                <select
+                                  value={accountLinkDraft.workWorkspaceId}
+                                  onChange={(event) =>
+                                    setAccountLinkDraft((current) => ({
+                                      ...current,
+                                      workWorkspaceId: event.target.value,
+                                    }))
+                                  }
+                                  className="h-11 w-full rounded-[1rem] border border-[var(--border-subtle)] bg-transparent px-4 text-sm text-white outline-none transition focus:border-white/28"
+                                >
+                                  <option value="">No work default</option>
+                                  {accountLinkableWorkspaces.map((workspace) => (
+                                    <option key={`work:${workspace.id}`} value={workspace.id}>
+                                      {workspace.title}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleLinkAccount()}
+                              className="btn-secondary w-full px-4 py-2 text-sm disabled:opacity-60"
+                              disabled={saving || !accountLinkDraft.familyWorkspaceId}
+                            >
+                              {isSelectedPersonLinked ? 'Update linked defaults' : 'Link my account'}
+                            </button>
+                          </div>
+                        ) : null}
                         <div className="space-y-2 text-sm text-white/80">
                           <div className="flex items-center justify-between gap-3">
                             <span className="muted">Linked account</span>

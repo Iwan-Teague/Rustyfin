@@ -157,8 +157,7 @@ async fn test_app() -> TestServer {
     TestServer::new(app).unwrap()
 }
 
-#[cfg(feature = "ai")]
-async fn test_app_with_state() -> (TestServer, AppState) {
+async fn test_app_with_db_state() -> (TestServer, AppState) {
     let pool = create_test_pool().await;
 
     rustfin_db::repo::settings::insert_defaults(&pool)
@@ -198,6 +197,11 @@ async fn test_app_with_state() -> (TestServer, AppState) {
 
     let app = build_router(state.clone());
     (TestServer::new(app).unwrap(), state)
+}
+
+#[cfg(feature = "ai")]
+async fn test_app_with_state() -> (TestServer, AppState) {
+    test_app_with_db_state().await
 }
 
 async fn test_app_http() -> TestServer {
@@ -976,6 +980,354 @@ fn auth_hdr(token: &str) -> (axum::http::HeaderName, axum::http::HeaderValue) {
             .parse::<axum::http::HeaderValue>()
             .unwrap(),
     )
+}
+
+async fn dictionary_bootstrap(
+    server: &TestServer,
+    auth_hdr: &(axum::http::HeaderName, axum::http::HeaderValue),
+) -> Value {
+    let resp = server
+        .post("/api/v1/dictionary/bootstrap")
+        .add_header(auth_hdr.0.clone(), auth_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    resp.json()
+}
+
+fn dictionary_seeded_workspace_id(bootstrap: &Value, key: &str) -> String {
+    bootstrap["seeded"][key]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing seeded workspace id for {key}"))
+        .to_string()
+}
+
+async fn dictionary_create_person(
+    server: &TestServer,
+    auth_hdr: &(axum::http::HeaderName, axum::http::HeaderValue),
+    workspace_id: &str,
+    display_name: &str,
+) -> Value {
+    let resp = server
+        .post(&format!(
+            "/api/v1/dictionary/workspaces/{workspace_id}/people"
+        ))
+        .add_header(auth_hdr.0.clone(), auth_hdr.1.clone())
+        .json(&json!({
+            "display_name": display_name,
+        }))
+        .await;
+    resp.assert_status_ok();
+    resp.json()
+}
+
+async fn dictionary_attach_person(
+    server: &TestServer,
+    auth_hdr: &(axum::http::HeaderName, axum::http::HeaderValue),
+    workspace_id: &str,
+    person_id: &str,
+    as_shortcut: bool,
+) -> Value {
+    let resp = server
+        .post(&format!(
+            "/api/v1/dictionary/workspaces/{workspace_id}/people/attach"
+        ))
+        .add_header(auth_hdr.0.clone(), auth_hdr.1.clone())
+        .json(&json!({
+            "person_id": person_id,
+            "as_shortcut": as_shortcut,
+        }))
+        .await;
+    resp.assert_status_ok();
+    resp.json()
+}
+
+// ---------------------------------------------------------------------------
+// Dictionary tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dictionary_workspace_membership_routes_enforce_owner_management_and_last_owner_guard() {
+    let (server, state) = test_app_with_db_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+    let admin_user = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist");
+
+    let _viewer_user_id =
+        create_user_as_admin(&server, &admin_token, "dict_viewer", "dict_viewer_pass_123").await;
+    let viewer_token = login(&server, "dict_viewer", "dict_viewer_pass_123").await;
+    let viewer_hdr = auth_hdr(&viewer_token);
+
+    let bootstrap = dictionary_bootstrap(&server, &admin_hdr).await;
+    let family_workspace_id = dictionary_seeded_workspace_id(&bootstrap, "family_workspace");
+
+    let upsert_resp = server
+        .post(&format!(
+            "/api/v1/dictionary/workspaces/{family_workspace_id}/members"
+        ))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "login_username": "dict_viewer",
+            "role": "viewer",
+        }))
+        .await;
+    upsert_resp.assert_status_ok();
+    let members: Value = upsert_resp.json();
+    let members = members.as_array().expect("members should be an array");
+    assert!(
+        members.iter().any(|member| {
+            member["login_username"] == "dict_viewer" && member["role"] == "viewer"
+        })
+    );
+
+    let viewer_list_resp = server
+        .get(&format!(
+            "/api/v1/dictionary/workspaces/{family_workspace_id}/members"
+        ))
+        .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
+        .await;
+    viewer_list_resp.assert_status(axum::http::StatusCode::FORBIDDEN);
+
+    let viewer_upsert_resp = server
+        .post(&format!(
+            "/api/v1/dictionary/workspaces/{family_workspace_id}/members"
+        ))
+        .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
+        .json(&json!({
+            "login_username": "dict_viewer",
+            "role": "editor",
+        }))
+        .await;
+    viewer_upsert_resp.assert_status(axum::http::StatusCode::FORBIDDEN);
+
+    let remove_last_owner_resp = server
+        .delete(&format!(
+            "/api/v1/dictionary/workspaces/{family_workspace_id}/members/{}",
+            admin_user.id
+        ))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    remove_last_owner_resp.assert_status(axum::http::StatusCode::CONFLICT);
+    let body: Value = remove_last_owner_resp.json();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("last workspace owner")
+    );
+}
+
+#[tokio::test]
+async fn dictionary_account_link_route_validates_visibility_and_cross_space_workspaces() {
+    let (server, state) = test_app_with_db_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+    let admin_user = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist");
+
+    let bootstrap = dictionary_bootstrap(&server, &admin_hdr).await;
+    let family_workspace_id = dictionary_seeded_workspace_id(&bootstrap, "family_workspace");
+    let friends_workspace_id = dictionary_seeded_workspace_id(&bootstrap, "friends_workspace");
+
+    let created_person =
+        dictionary_create_person(&server, &admin_hdr, &family_workspace_id, "Rachel Example").await;
+    let person_id = created_person["person"]["id"]
+        .as_str()
+        .expect("person id should be present")
+        .to_string();
+
+    let missing_visibility_resp = server
+        .put("/api/v1/dictionary/account-link/me")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "person_id": person_id,
+            "family_workspace_id": family_workspace_id,
+            "friends_workspace_id": friends_workspace_id,
+        }))
+        .await;
+    missing_visibility_resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let missing_visibility_body: Value = missing_visibility_resp.json();
+    assert!(
+        missing_visibility_body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("linked person must be visible in friends_workspace_id")
+    );
+
+    let _ = dictionary_attach_person(
+        &server,
+        &admin_hdr,
+        &friends_workspace_id,
+        &person_id,
+        false,
+    )
+    .await;
+
+    let outsider_user_id = create_user_as_admin(
+        &server,
+        &admin_token,
+        "dict_outsider",
+        "dict_outsider_pass_123",
+    )
+    .await;
+    let outsider_space =
+        rustfin_db::repo::dictionary::ensure_default_household_space(&state.db, &outsider_user_id)
+            .await
+            .unwrap();
+    let outsider_workspace = rustfin_db::repo::dictionary::create_workspace(
+        &state.db,
+        &rustfin_db::repo::dictionary::CreateWorkspaceInput {
+            space_id: outsider_space.id.clone(),
+            slug: "outsider-shared".to_string(),
+            title: "Outsider Shared".to_string(),
+            workspace_kind: rustfin_db::repo::dictionary::WorkspaceKind::Custom,
+            owner_user_id: Some(outsider_user_id.clone()),
+            is_system_seeded: false,
+        },
+    )
+    .await
+    .unwrap();
+    rustfin_db::repo::dictionary::ensure_workspace_member(
+        &state.db,
+        &outsider_workspace.id,
+        &admin_user.id,
+        rustfin_db::repo::dictionary::WorkspaceRole::Viewer,
+        Some(&outsider_user_id),
+    )
+    .await
+    .unwrap();
+
+    let cross_space_resp = server
+        .put("/api/v1/dictionary/account-link/me")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "person_id": person_id,
+            "family_workspace_id": family_workspace_id,
+            "friends_workspace_id": friends_workspace_id,
+            "work_workspace_id": outsider_workspace.id,
+        }))
+        .await;
+    cross_space_resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let cross_space_body: Value = cross_space_resp.json();
+    assert!(
+        cross_space_body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("same dictionary space")
+    );
+
+    let success_resp = server
+        .put("/api/v1/dictionary/account-link/me")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "person_id": person_id,
+            "family_workspace_id": family_workspace_id,
+            "friends_workspace_id": friends_workspace_id,
+        }))
+        .await;
+    success_resp.assert_status_ok();
+    let success_body: Value = success_resp.json();
+    assert_eq!(success_body["person_id"], person_id);
+    assert_eq!(success_body["family_workspace_id"], family_workspace_id);
+    assert_eq!(success_body["friends_workspace_id"], friends_workspace_id);
+}
+
+#[tokio::test]
+async fn dictionary_attach_existing_person_route_reuses_people_and_rejects_cross_space_attach() {
+    let (server, state) = test_app_with_db_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let bootstrap = dictionary_bootstrap(&server, &admin_hdr).await;
+    let family_workspace_id = dictionary_seeded_workspace_id(&bootstrap, "family_workspace");
+    let friends_workspace_id = dictionary_seeded_workspace_id(&bootstrap, "friends_workspace");
+
+    let created_person =
+        dictionary_create_person(&server, &admin_hdr, &family_workspace_id, "Jordan Example").await;
+    let person_id = created_person["person"]["id"]
+        .as_str()
+        .expect("person id should be present")
+        .to_string();
+
+    let first_attach = dictionary_attach_person(
+        &server,
+        &admin_hdr,
+        &friends_workspace_id,
+        &person_id,
+        false,
+    )
+    .await;
+    assert_eq!(first_attach["person"]["id"], person_id);
+    let first_nodes = first_attach["nodes"]
+        .as_array()
+        .expect("nodes should be an array");
+    assert_eq!(first_nodes.len(), 1);
+    assert!(first_nodes.iter().any(|node| node["node_kind"] == "person"));
+
+    let second_attach =
+        dictionary_attach_person(&server, &admin_hdr, &friends_workspace_id, &person_id, true)
+            .await;
+    assert_eq!(second_attach["person"]["id"], person_id);
+    let second_nodes = second_attach["nodes"]
+        .as_array()
+        .expect("nodes should be an array");
+    assert_eq!(second_nodes.len(), 2);
+    assert!(
+        second_nodes
+            .iter()
+            .any(|node| node["node_kind"] == "person")
+    );
+    assert!(
+        second_nodes
+            .iter()
+            .any(|node| node["node_kind"] == "shortcut")
+    );
+
+    let outsider_user_id = create_user_as_admin(
+        &server,
+        &admin_token,
+        "dict_foreign",
+        "dict_foreign_pass_123",
+    )
+    .await;
+    let outsider_space =
+        rustfin_db::repo::dictionary::ensure_default_household_space(&state.db, &outsider_user_id)
+            .await
+            .unwrap();
+    let foreign_person = rustfin_db::repo::dictionary::create_person(
+        &state.db,
+        &rustfin_db::repo::dictionary::CreatePersonInput {
+            space_id: outsider_space.id,
+            canonical_name: "Foreign Person".to_string(),
+            display_name: "Foreign Person".to_string(),
+            summary: None,
+            created_by_user_id: outsider_user_id,
+        },
+    )
+    .await
+    .unwrap();
+
+    let cross_space_resp = server
+        .post(&format!(
+            "/api/v1/dictionary/workspaces/{friends_workspace_id}/people/attach"
+        ))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "person_id": foreign_person.id,
+        }))
+        .await;
+    cross_space_resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let cross_space_body: Value = cross_space_resp.json();
+    assert!(
+        cross_space_body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("same dictionary space")
+    );
 }
 
 async fn create_library_and_first_item(

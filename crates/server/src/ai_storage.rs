@@ -6,6 +6,7 @@ use rustfin_core::error::ApiError;
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 
+use crate::ai_role_routing::AiRoleRoutingDecision;
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -133,7 +134,7 @@ pub struct AiModelDirectoryState {
     pub scheduler: AiSchedulerState,
     pub model_benchmarks: Vec<AiModelBenchmarkSummary>,
     pub model_profiles: Vec<AiModelProfileSummary>,
-    pub role_routing: Vec<crate::ai_model_routing::RoleRoutingDecision>,
+    pub role_routing: Vec<AiRoleRoutingDecision>,
 }
 
 #[derive(Debug, Clone)]

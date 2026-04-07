@@ -20,6 +20,8 @@ impl ToolProvider for NetworkToolProvider {
         registry.register_tool(self, AssistantToolName::NetworkGetDefaultRoute);
         registry.register_tool(self, AssistantToolName::NetworkGetHostnameAliases);
         registry.register_tool(self, AssistantToolName::NetworkGetDnsServers);
+        registry.register_tool(self, AssistantToolName::NetworkGetRouteToDestination);
+        registry.register_tool(self, AssistantToolName::NetworkGetActiveConnectionDetail);
         registry.register_tool(self, AssistantToolName::NetworkGetRouteTable);
         registry.register_tool(self, AssistantToolName::NetworkGetActiveConnections);
         registry.register_tool(self, AssistantToolName::NetworkGetInterfaceCounters);

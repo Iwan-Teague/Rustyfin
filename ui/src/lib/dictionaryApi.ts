@@ -36,8 +36,11 @@ export type DictionaryPerson = {
   canonical_name: string;
   display_name: string;
   summary: string | null;
-  status: string;
-  created_by_user_id: string | null;
+  primary_photo_path: string | null;
+  primary_photo_content_type: string | null;
+  search_text: string;
+  created_by_user_id: string;
+  archived_ts: number | null;
   created_ts: number;
   updated_ts: number;
 };
@@ -87,32 +90,34 @@ export type DictionaryDocument = {
   updated_ts: number;
 };
 
-export type DictionaryRelationship = {
-  id: string;
-  workspace_id: string;
+export type DictionaryResolvedRelationship = {
+  relation_id: string;
   relation_group_key: string;
   relation_type: string;
   direction: string;
-  source_person_id: string;
-  source_person_name: string;
-  target_person_id: string;
-  target_person_name: string;
-  target_summary: string | null;
-  created_ts: number;
-  updated_ts: number;
+  other_person: DictionaryPerson;
 };
 
 export type DictionaryAccountLink = {
-  id: string;
   user_id: string;
   space_id: string;
   person_id: string;
   family_workspace_id: string | null;
   friends_workspace_id: string | null;
   work_workspace_id: string | null;
-  created_by_user_id: string | null;
+  created_by_user_id: string;
   created_ts: number;
   updated_ts: number;
+};
+
+export type DictionaryWorkspaceMember = {
+  workspace_id: string;
+  user_id: string;
+  login_username: string;
+  display_name: string;
+  role: 'owner' | 'editor' | 'viewer' | string;
+  added_by_user_id: string | null;
+  created_ts: number;
 };
 
 export type DictionaryBootstrapResponse = {
@@ -136,7 +141,7 @@ export type DictionaryPersonBundle = {
   aliases: DictionaryPersonAlias[];
   nodes: DictionaryTreeNode[];
   facts: DictionaryFact[];
-  relations: DictionaryRelationship[];
+  relations: DictionaryResolvedRelationship[];
   document: DictionaryDocument | null;
 };
 
@@ -189,9 +194,21 @@ export type UpsertDictionaryRelationshipInput = {
 
 export type PutDictionaryAccountLinkInput = {
   person_id: string;
-  family_workspace_id?: string;
+  family_workspace_id: string;
   friends_workspace_id?: string;
   work_workspace_id?: string;
+};
+
+export type UpsertDictionaryWorkspaceMemberInput = {
+  login_username: string;
+  role: 'owner' | 'editor' | 'viewer';
+};
+
+export type AttachExistingDictionaryPersonInput = {
+  person_id: string;
+  parent_node_id?: string;
+  node_title?: string;
+  as_shortcut?: boolean;
 };
 
 export async function bootstrapDictionary() {
@@ -233,15 +250,31 @@ export async function getDictionaryWorkspaceTree(workspaceId: string) {
   );
 }
 
-export async function listDictionaryPeople(workspaceId: string, query?: string) {
+export async function listDictionaryPeople(workspaceId: string, query?: string, limit?: number) {
   const params = new URLSearchParams();
   if (query && query.trim()) {
     params.set('q', query.trim());
+  }
+  if (typeof limit === 'number') {
+    params.set('limit', String(limit));
   }
   return apiJson<DictionaryPerson[]>(
     `/dictionary/workspaces/${encodeURIComponent(workspaceId)}/people${
       params.size ? `?${params.toString()}` : ''
     }`,
+  );
+}
+
+export async function attachExistingDictionaryPerson(
+  workspaceId: string,
+  input: AttachExistingDictionaryPersonInput,
+) {
+  return apiJson<DictionaryPersonBundle>(
+    `/dictionary/workspaces/${encodeURIComponent(workspaceId)}/people/attach`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
   );
 }
 
@@ -324,7 +357,7 @@ export async function saveDictionaryPersonDocument(
 
 export async function listDictionaryRelationships(workspaceId: string, personId: string) {
   const query = new URLSearchParams({ person_id: personId });
-  return apiJson<DictionaryRelationship[]>(
+  return apiJson<DictionaryResolvedRelationship[]>(
     `/dictionary/workspaces/${encodeURIComponent(workspaceId)}/relationships?${query.toString()}`,
   );
 }
@@ -333,7 +366,7 @@ export async function upsertDictionaryRelationship(
   workspaceId: string,
   input: UpsertDictionaryRelationshipInput,
 ) {
-  return apiJson<DictionaryRelationship[]>(
+  return apiJson<DictionaryResolvedRelationship[]>(
     `/dictionary/workspaces/${encodeURIComponent(workspaceId)}/relationships`,
     {
       method: 'POST',
@@ -347,7 +380,7 @@ export async function updateDictionaryRelationship(
   relationId: string,
   input: UpsertDictionaryRelationshipInput,
 ) {
-  return apiJson<DictionaryRelationship[]>(
+  return apiJson<DictionaryResolvedRelationship[]>(
     `/dictionary/workspaces/${encodeURIComponent(workspaceId)}/relationships/${encodeURIComponent(relationId)}`,
     {
       method: 'PATCH',
@@ -374,4 +407,32 @@ export async function putMyDictionaryAccountLink(input: PutDictionaryAccountLink
     method: 'PUT',
     body: JSON.stringify(input),
   });
+}
+
+export async function listDictionaryWorkspaceMembers(workspaceId: string) {
+  return apiJson<DictionaryWorkspaceMember[]>(
+    `/dictionary/workspaces/${encodeURIComponent(workspaceId)}/members`,
+  );
+}
+
+export async function upsertDictionaryWorkspaceMember(
+  workspaceId: string,
+  input: UpsertDictionaryWorkspaceMemberInput,
+) {
+  return apiJson<DictionaryWorkspaceMember[]>(
+    `/dictionary/workspaces/${encodeURIComponent(workspaceId)}/members`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function deleteDictionaryWorkspaceMember(workspaceId: string, userId: string) {
+  return apiJson<{ deleted: boolean }>(
+    `/dictionary/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }

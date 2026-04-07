@@ -10,6 +10,8 @@ use super::types::{
 pub enum AssistantToolName {
     AccountGetProfileSummary,
     DictionaryGetAccountIdentity,
+    DictionaryListVisibleWorkspaces,
+    DictionaryBrowseWorkspacePeople,
     DictionarySearchPeople,
     DictionaryGetPersonBundle,
     DictionaryResolveRelationshipReference,
@@ -24,6 +26,9 @@ pub enum AssistantToolName {
     MemoryListConflictingFacts,
     MemoryGetEntityProvenance,
     MemoryGetPersonSummary,
+    MemoryGetPersonTimeline,
+    MemoryGetSourceCitation,
+    MemoryGetConflictExplanations,
     CalendarListEvents,
     CalendarGetNextEvent,
     CalendarListDateConflicts,
@@ -53,6 +58,9 @@ pub enum AssistantToolName {
     DownloadsGetArtifactChecksum,
     DownloadsGetArtifactInstallSteps,
     DownloadsGetArtifactCompatibility,
+    DownloadsGetLatestForPlatform,
+    DownloadsGetArtifactPlatformMatrix,
+    DownloadsGetArtifactSigningInfo,
     DownloadsGetArtifactSource,
     DownloadsGetReleaseNotes,
     NetworkGetTopologySummary,
@@ -61,6 +69,8 @@ pub enum AssistantToolName {
     NetworkGetDefaultRoute,
     NetworkGetHostnameAliases,
     NetworkGetDnsServers,
+    NetworkGetRouteToDestination,
+    NetworkGetActiveConnectionDetail,
     NetworkGetRouteTable,
     NetworkGetActiveConnections,
     NetworkGetInterfaceCounters,
@@ -72,6 +82,8 @@ pub enum AssistantToolName {
     LibraryGetItemSummary,
     LibraryGetItemMediaDetails,
     LibraryGetItemSourcePaths,
+    LibraryGetItemExternalIds,
+    LibraryGetItemPlayHistory,
     LibrariesGetRecentlyAdded,
     LibrariesFindDuplicateTitles,
     LibrariesListMissingMetadata,
@@ -85,6 +97,7 @@ pub enum AssistantToolName {
     WebListCuratedSources,
     WebSearchPublicWeb,
     WebFetchPublicPageSummary,
+    WebFetchSourceWithCitation,
     RoomsListActive,
     RoomsListJoinable,
     RoomsGetRoomSummary,
@@ -94,6 +107,8 @@ pub enum AssistantToolName {
     SystemGetBackupSummary,
     SystemGetServiceHealth,
     SystemGetServiceDetail,
+    SystemGetServiceLogs,
+    SystemGetServiceDependencies,
     SystemGetTranscodeSummary,
     SystemGetStorageSummary,
     SystemGetStoragePathDetail,
@@ -116,6 +131,8 @@ pub enum AssistantToolName {
     SystemGetPortConflictDetail,
     SystemGetFailedUnits,
     SystemGetFailedUnitDetail,
+    SystemGetFailedServiceLogs,
+    SystemGetProcessTreeDetail,
     AiListBackgroundJobs,
     AiGetJobStatus,
     AiGetToolRegistry,
@@ -130,6 +147,8 @@ impl AssistantToolName {
         &[
             Self::AccountGetProfileSummary,
             Self::DictionaryGetAccountIdentity,
+            Self::DictionaryListVisibleWorkspaces,
+            Self::DictionaryBrowseWorkspacePeople,
             Self::DictionarySearchPeople,
             Self::DictionaryGetPersonBundle,
             Self::DictionaryResolveRelationshipReference,
@@ -144,6 +163,9 @@ impl AssistantToolName {
             Self::MemoryListConflictingFacts,
             Self::MemoryGetEntityProvenance,
             Self::MemoryGetPersonSummary,
+            Self::MemoryGetPersonTimeline,
+            Self::MemoryGetSourceCitation,
+            Self::MemoryGetConflictExplanations,
             Self::CalendarListEvents,
             Self::CalendarGetNextEvent,
             Self::CalendarListDateConflicts,
@@ -173,6 +195,9 @@ impl AssistantToolName {
             Self::DownloadsGetArtifactChecksum,
             Self::DownloadsGetArtifactInstallSteps,
             Self::DownloadsGetArtifactCompatibility,
+            Self::DownloadsGetLatestForPlatform,
+            Self::DownloadsGetArtifactPlatformMatrix,
+            Self::DownloadsGetArtifactSigningInfo,
             Self::DownloadsGetArtifactSource,
             Self::DownloadsGetReleaseNotes,
             Self::NetworkGetTopologySummary,
@@ -181,6 +206,8 @@ impl AssistantToolName {
             Self::NetworkGetDefaultRoute,
             Self::NetworkGetHostnameAliases,
             Self::NetworkGetDnsServers,
+            Self::NetworkGetRouteToDestination,
+            Self::NetworkGetActiveConnectionDetail,
             Self::NetworkGetRouteTable,
             Self::NetworkGetActiveConnections,
             Self::NetworkGetInterfaceCounters,
@@ -192,6 +219,8 @@ impl AssistantToolName {
             Self::LibraryGetItemSummary,
             Self::LibraryGetItemMediaDetails,
             Self::LibraryGetItemSourcePaths,
+            Self::LibraryGetItemExternalIds,
+            Self::LibraryGetItemPlayHistory,
             Self::LibrariesGetRecentlyAdded,
             Self::LibrariesFindDuplicateTitles,
             Self::LibrariesListMissingMetadata,
@@ -205,6 +234,7 @@ impl AssistantToolName {
             Self::WebListCuratedSources,
             Self::WebSearchPublicWeb,
             Self::WebFetchPublicPageSummary,
+            Self::WebFetchSourceWithCitation,
             Self::RoomsListActive,
             Self::RoomsListJoinable,
             Self::RoomsGetRoomSummary,
@@ -214,6 +244,8 @@ impl AssistantToolName {
             Self::SystemGetBackupSummary,
             Self::SystemGetServiceHealth,
             Self::SystemGetServiceDetail,
+            Self::SystemGetServiceLogs,
+            Self::SystemGetServiceDependencies,
             Self::SystemGetTranscodeSummary,
             Self::SystemGetStorageSummary,
             Self::SystemGetStoragePathDetail,
@@ -236,6 +268,8 @@ impl AssistantToolName {
             Self::SystemGetPortConflictDetail,
             Self::SystemGetFailedUnits,
             Self::SystemGetFailedUnitDetail,
+            Self::SystemGetFailedServiceLogs,
+            Self::SystemGetProcessTreeDetail,
             Self::AiListBackgroundJobs,
             Self::AiGetJobStatus,
             Self::AiGetToolRegistry,
@@ -250,6 +284,8 @@ impl AssistantToolName {
         match value {
             "account_get_profile_summary" => Some(Self::AccountGetProfileSummary),
             "dictionary_get_account_identity" => Some(Self::DictionaryGetAccountIdentity),
+            "dictionary_list_visible_workspaces" => Some(Self::DictionaryListVisibleWorkspaces),
+            "dictionary_browse_workspace_people" => Some(Self::DictionaryBrowseWorkspacePeople),
             "dictionary_search_people" => Some(Self::DictionarySearchPeople),
             "dictionary_get_person_bundle" => Some(Self::DictionaryGetPersonBundle),
             "dictionary_resolve_relationship_reference" => {
@@ -266,6 +302,9 @@ impl AssistantToolName {
             "memory_list_conflicting_facts" => Some(Self::MemoryListConflictingFacts),
             "memory_get_entity_provenance" => Some(Self::MemoryGetEntityProvenance),
             "memory_get_person_summary" => Some(Self::MemoryGetPersonSummary),
+            "memory_get_person_timeline" => Some(Self::MemoryGetPersonTimeline),
+            "memory_get_source_citation" => Some(Self::MemoryGetSourceCitation),
+            "memory_get_conflict_explanations" => Some(Self::MemoryGetConflictExplanations),
             "calendar_list_events" => Some(Self::CalendarListEvents),
             "calendar_get_next_event" => Some(Self::CalendarGetNextEvent),
             "calendar_list_date_conflicts" => Some(Self::CalendarListDateConflicts),
@@ -299,6 +338,11 @@ impl AssistantToolName {
             "downloads_get_artifact_checksum" => Some(Self::DownloadsGetArtifactChecksum),
             "downloads_get_artifact_install_steps" => Some(Self::DownloadsGetArtifactInstallSteps),
             "downloads_get_artifact_compatibility" => Some(Self::DownloadsGetArtifactCompatibility),
+            "downloads_get_latest_for_platform" => Some(Self::DownloadsGetLatestForPlatform),
+            "downloads_get_artifact_platform_matrix" => {
+                Some(Self::DownloadsGetArtifactPlatformMatrix)
+            }
+            "downloads_get_artifact_signing_info" => Some(Self::DownloadsGetArtifactSigningInfo),
             "downloads_get_artifact_source" => Some(Self::DownloadsGetArtifactSource),
             "downloads_get_release_notes" => Some(Self::DownloadsGetReleaseNotes),
             "network_get_topology_summary" => Some(Self::NetworkGetTopologySummary),
@@ -307,6 +351,8 @@ impl AssistantToolName {
             "network_get_default_route" => Some(Self::NetworkGetDefaultRoute),
             "network_get_hostname_aliases" => Some(Self::NetworkGetHostnameAliases),
             "network_get_dns_servers" => Some(Self::NetworkGetDnsServers),
+            "network_get_route_to_destination" => Some(Self::NetworkGetRouteToDestination),
+            "network_get_active_connection_detail" => Some(Self::NetworkGetActiveConnectionDetail),
             "network_get_route_table" => Some(Self::NetworkGetRouteTable),
             "network_get_active_connections" => Some(Self::NetworkGetActiveConnections),
             "network_get_interface_counters" => Some(Self::NetworkGetInterfaceCounters),
@@ -318,6 +364,8 @@ impl AssistantToolName {
             "library_get_item_summary" => Some(Self::LibraryGetItemSummary),
             "library_get_item_media_details" => Some(Self::LibraryGetItemMediaDetails),
             "library_get_item_source_paths" => Some(Self::LibraryGetItemSourcePaths),
+            "library_get_item_external_ids" => Some(Self::LibraryGetItemExternalIds),
+            "library_get_item_play_history" => Some(Self::LibraryGetItemPlayHistory),
             "libraries_get_recently_added" => Some(Self::LibrariesGetRecentlyAdded),
             "libraries_find_duplicate_titles" => Some(Self::LibrariesFindDuplicateTitles),
             "libraries_list_missing_metadata" => Some(Self::LibrariesListMissingMetadata),
@@ -331,6 +379,7 @@ impl AssistantToolName {
             "web_list_curated_sources" => Some(Self::WebListCuratedSources),
             "web_search_public_web" => Some(Self::WebSearchPublicWeb),
             "web_fetch_public_page_summary" => Some(Self::WebFetchPublicPageSummary),
+            "web_fetch_source_with_citation" => Some(Self::WebFetchSourceWithCitation),
             "rooms_list_active" => Some(Self::RoomsListActive),
             "rooms_list_joinable" => Some(Self::RoomsListJoinable),
             "rooms_get_room_summary" => Some(Self::RoomsGetRoomSummary),
@@ -340,6 +389,8 @@ impl AssistantToolName {
             "system_get_backup_summary" => Some(Self::SystemGetBackupSummary),
             "system_get_service_health" => Some(Self::SystemGetServiceHealth),
             "system_get_service_detail" => Some(Self::SystemGetServiceDetail),
+            "system_get_service_logs" => Some(Self::SystemGetServiceLogs),
+            "system_get_service_dependencies" => Some(Self::SystemGetServiceDependencies),
             "system_get_transcode_summary" => Some(Self::SystemGetTranscodeSummary),
             "system_get_storage_summary" => Some(Self::SystemGetStorageSummary),
             "system_get_storage_path_detail" => Some(Self::SystemGetStoragePathDetail),
@@ -362,6 +413,8 @@ impl AssistantToolName {
             "system_get_port_conflict_detail" => Some(Self::SystemGetPortConflictDetail),
             "system_get_failed_units" => Some(Self::SystemGetFailedUnits),
             "system_get_failed_unit_detail" => Some(Self::SystemGetFailedUnitDetail),
+            "system_get_failed_service_logs" => Some(Self::SystemGetFailedServiceLogs),
+            "system_get_process_tree_detail" => Some(Self::SystemGetProcessTreeDetail),
             "ai_list_background_jobs" => Some(Self::AiListBackgroundJobs),
             "ai_get_job_status" => Some(Self::AiGetJobStatus),
             "ai_get_tool_registry" => Some(Self::AiGetToolRegistry),
@@ -377,6 +430,8 @@ impl AssistantToolName {
         match self {
             Self::AccountGetProfileSummary => "account_get_profile_summary",
             Self::DictionaryGetAccountIdentity => "dictionary_get_account_identity",
+            Self::DictionaryListVisibleWorkspaces => "dictionary_list_visible_workspaces",
+            Self::DictionaryBrowseWorkspacePeople => "dictionary_browse_workspace_people",
             Self::DictionarySearchPeople => "dictionary_search_people",
             Self::DictionaryGetPersonBundle => "dictionary_get_person_bundle",
             Self::DictionaryResolveRelationshipReference => {
@@ -393,6 +448,9 @@ impl AssistantToolName {
             Self::MemoryListConflictingFacts => "memory_list_conflicting_facts",
             Self::MemoryGetEntityProvenance => "memory_get_entity_provenance",
             Self::MemoryGetPersonSummary => "memory_get_person_summary",
+            Self::MemoryGetPersonTimeline => "memory_get_person_timeline",
+            Self::MemoryGetSourceCitation => "memory_get_source_citation",
+            Self::MemoryGetConflictExplanations => "memory_get_conflict_explanations",
             Self::CalendarListEvents => "calendar_list_events",
             Self::CalendarGetNextEvent => "calendar_get_next_event",
             Self::CalendarListDateConflicts => "calendar_list_date_conflicts",
@@ -424,6 +482,9 @@ impl AssistantToolName {
             Self::DownloadsGetArtifactChecksum => "downloads_get_artifact_checksum",
             Self::DownloadsGetArtifactInstallSteps => "downloads_get_artifact_install_steps",
             Self::DownloadsGetArtifactCompatibility => "downloads_get_artifact_compatibility",
+            Self::DownloadsGetLatestForPlatform => "downloads_get_latest_for_platform",
+            Self::DownloadsGetArtifactPlatformMatrix => "downloads_get_artifact_platform_matrix",
+            Self::DownloadsGetArtifactSigningInfo => "downloads_get_artifact_signing_info",
             Self::DownloadsGetArtifactSource => "downloads_get_artifact_source",
             Self::DownloadsGetReleaseNotes => "downloads_get_release_notes",
             Self::NetworkGetTopologySummary => "network_get_topology_summary",
@@ -432,6 +493,8 @@ impl AssistantToolName {
             Self::NetworkGetDefaultRoute => "network_get_default_route",
             Self::NetworkGetHostnameAliases => "network_get_hostname_aliases",
             Self::NetworkGetDnsServers => "network_get_dns_servers",
+            Self::NetworkGetRouteToDestination => "network_get_route_to_destination",
+            Self::NetworkGetActiveConnectionDetail => "network_get_active_connection_detail",
             Self::NetworkGetRouteTable => "network_get_route_table",
             Self::NetworkGetActiveConnections => "network_get_active_connections",
             Self::NetworkGetInterfaceCounters => "network_get_interface_counters",
@@ -443,6 +506,8 @@ impl AssistantToolName {
             Self::LibraryGetItemSummary => "library_get_item_summary",
             Self::LibraryGetItemMediaDetails => "library_get_item_media_details",
             Self::LibraryGetItemSourcePaths => "library_get_item_source_paths",
+            Self::LibraryGetItemExternalIds => "library_get_item_external_ids",
+            Self::LibraryGetItemPlayHistory => "library_get_item_play_history",
             Self::LibrariesGetRecentlyAdded => "libraries_get_recently_added",
             Self::LibrariesFindDuplicateTitles => "libraries_find_duplicate_titles",
             Self::LibrariesListMissingMetadata => "libraries_list_missing_metadata",
@@ -456,6 +521,7 @@ impl AssistantToolName {
             Self::WebListCuratedSources => "web_list_curated_sources",
             Self::WebSearchPublicWeb => "web_search_public_web",
             Self::WebFetchPublicPageSummary => "web_fetch_public_page_summary",
+            Self::WebFetchSourceWithCitation => "web_fetch_source_with_citation",
             Self::RoomsListActive => "rooms_list_active",
             Self::RoomsListJoinable => "rooms_list_joinable",
             Self::RoomsGetRoomSummary => "rooms_get_room_summary",
@@ -465,6 +531,8 @@ impl AssistantToolName {
             Self::SystemGetBackupSummary => "system_get_backup_summary",
             Self::SystemGetServiceHealth => "system_get_service_health",
             Self::SystemGetServiceDetail => "system_get_service_detail",
+            Self::SystemGetServiceLogs => "system_get_service_logs",
+            Self::SystemGetServiceDependencies => "system_get_service_dependencies",
             Self::SystemGetTranscodeSummary => "system_get_transcode_summary",
             Self::SystemGetStorageSummary => "system_get_storage_summary",
             Self::SystemGetStoragePathDetail => "system_get_storage_path_detail",
@@ -487,6 +555,8 @@ impl AssistantToolName {
             Self::SystemGetPortConflictDetail => "system_get_port_conflict_detail",
             Self::SystemGetFailedUnits => "system_get_failed_units",
             Self::SystemGetFailedUnitDetail => "system_get_failed_unit_detail",
+            Self::SystemGetFailedServiceLogs => "system_get_failed_service_logs",
+            Self::SystemGetProcessTreeDetail => "system_get_process_tree_detail",
             Self::AiListBackgroundJobs => "ai_list_background_jobs",
             Self::AiGetJobStatus => "ai_get_job_status",
             Self::AiGetToolRegistry => "ai_get_tool_registry",
@@ -518,6 +588,26 @@ impl AssistantToolName {
                 confirmation: ToolConfirmationPolicy::None,
                 timeout_ms: 3_000,
                 max_result_bytes: 8 * 1024,
+            },
+            Self::DictionaryListVisibleWorkspaces => AssistantToolSpec {
+                name: "dictionary_list_visible_workspaces",
+                summary: "List the signed-in user's visible Human Dictionary workspaces.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 3_000,
+                max_result_bytes: 8 * 1024,
+            },
+            Self::DictionaryBrowseWorkspacePeople => AssistantToolSpec {
+                name: "dictionary_browse_workspace_people",
+                summary: "Browse or search visible Human Dictionary people inside one accessible workspace.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 12 * 1024,
             },
             Self::DictionarySearchPeople => AssistantToolSpec {
                 name: "dictionary_search_people",
@@ -608,6 +698,36 @@ impl AssistantToolName {
                 confirmation: ToolConfirmationPolicy::None,
                 timeout_ms: 4_000,
                 max_result_bytes: 10 * 1024,
+            },
+            Self::MemoryGetPersonTimeline => AssistantToolSpec {
+                name: "memory_get_person_timeline",
+                summary: "Load a bounded chronological timeline for one stored person or profile entity.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 12 * 1024,
+            },
+            Self::MemoryGetSourceCitation => AssistantToolSpec {
+                name: "memory_get_source_citation",
+                summary: "Resolve one stored entity or source chunk and show its recorded citation.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 12 * 1024,
+            },
+            Self::MemoryGetConflictExplanations => AssistantToolSpec {
+                name: "memory_get_conflict_explanations",
+                summary: "Explain conflicting stored memory facts with their competing values and timestamps.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 12 * 1024,
             },
             Self::MemoryListRecentFacts => AssistantToolSpec {
                 name: "memory_list_recent_facts",
@@ -1019,6 +1139,36 @@ impl AssistantToolName {
                 timeout_ms: 3_000,
                 max_result_bytes: 8 * 1024,
             },
+            Self::DownloadsGetLatestForPlatform => AssistantToolSpec {
+                name: "downloads_get_latest_for_platform",
+                summary: "Return the most recent available download artifact for a platform or platform query.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 3_000,
+                max_result_bytes: 8 * 1024,
+            },
+            Self::DownloadsGetArtifactPlatformMatrix => AssistantToolSpec {
+                name: "downloads_get_artifact_platform_matrix",
+                summary: "Summarize available download artifact platform and architecture coverage.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 3_000,
+                max_result_bytes: 10 * 1024,
+            },
+            Self::DownloadsGetArtifactSigningInfo => AssistantToolSpec {
+                name: "downloads_get_artifact_signing_info",
+                summary: "Return checksum and signature details for one authenticated host-published download artifact.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 3_000,
+                max_result_bytes: 8 * 1024,
+            },
             Self::NetworkGetTopologySummary => AssistantToolSpec {
                 name: "network_get_topology_summary",
                 summary: "Summarize host-visible network topology, interface IP addresses, remote-access state, and saved Rustyfin network settings.",
@@ -1078,6 +1228,26 @@ impl AssistantToolName {
                 confirmation: ToolConfirmationPolicy::None,
                 timeout_ms: 4_000,
                 max_result_bytes: 8 * 1024,
+            },
+            Self::NetworkGetRouteToDestination => AssistantToolSpec {
+                name: "network_get_route_to_destination",
+                summary: "Resolve the host route used for one exact destination address or hostname.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 8 * 1024,
+            },
+            Self::NetworkGetActiveConnectionDetail => AssistantToolSpec {
+                name: "network_get_active_connection_detail",
+                summary: "Load a bounded detail view for one active host connection or listener.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AdminOnly,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 5_000,
+                max_result_bytes: 12 * 1024,
             },
             Self::NetworkGetRouteTable => AssistantToolSpec {
                 name: "network_get_route_table",
@@ -1188,6 +1358,26 @@ impl AssistantToolName {
                 confirmation: ToolConfirmationPolicy::None,
                 timeout_ms: 4_000,
                 max_result_bytes: 10 * 1024,
+            },
+            Self::LibraryGetItemExternalIds => AssistantToolSpec {
+                name: "library_get_item_external_ids",
+                summary: "Resolve one accessible library item and return external provider identifiers.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 8 * 1024,
+            },
+            Self::LibraryGetItemPlayHistory => AssistantToolSpec {
+                name: "library_get_item_play_history",
+                summary: "Resolve one accessible library item and return the current user's playback state.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 8 * 1024,
             },
             Self::LibrariesGetRecentlyAdded => AssistantToolSpec {
                 name: "libraries_get_recently_added",
@@ -1319,6 +1509,16 @@ impl AssistantToolName {
                 timeout_ms: 6_000,
                 max_result_bytes: 8 * 1024,
             },
+            Self::WebFetchSourceWithCitation => AssistantToolSpec {
+                name: "web_fetch_source_with_citation",
+                summary: "Fetch and summarize one constrained public web page with a compact source citation.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AdminOnly,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 6_000,
+                max_result_bytes: 8 * 1024,
+            },
             Self::RoomsListActive => AssistantToolSpec {
                 name: "rooms_list_active",
                 summary: "List currently active public rooms that the user can see.",
@@ -1408,6 +1608,26 @@ impl AssistantToolName {
                 confirmation: ToolConfirmationPolicy::None,
                 timeout_ms: 4_000,
                 max_result_bytes: 8 * 1024,
+            },
+            Self::SystemGetServiceLogs => AssistantToolSpec {
+                name: "system_get_service_logs",
+                summary: "Load recent logs for one Rustyfin service or systemd unit.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AdminOnly,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 5_000,
+                max_result_bytes: 12 * 1024,
+            },
+            Self::SystemGetServiceDependencies => AssistantToolSpec {
+                name: "system_get_service_dependencies",
+                summary: "Load the dependency tree for one Rustyfin service or systemd unit.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AdminOnly,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 5_000,
+                max_result_bytes: 12 * 1024,
             },
             Self::SystemGetTranscodeSummary => AssistantToolSpec {
                 name: "system_get_transcode_summary",
@@ -1629,6 +1849,26 @@ impl AssistantToolName {
                 timeout_ms: 6_000,
                 max_result_bytes: 12 * 1024,
             },
+            Self::SystemGetFailedServiceLogs => AssistantToolSpec {
+                name: "system_get_failed_service_logs",
+                summary: "Load recent logs for one failed service or systemd unit.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AdminOnly,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 6_000,
+                max_result_bytes: 12 * 1024,
+            },
+            Self::SystemGetProcessTreeDetail => AssistantToolSpec {
+                name: "system_get_process_tree_detail",
+                summary: "Load a bounded process tree for one process, pid, or command line.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AdminOnly,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 5_000,
+                max_result_bytes: 12 * 1024,
+            },
             Self::ServersListMinecraftStatus => AssistantToolSpec {
                 name: "servers_list_minecraft_status",
                 summary: "List accessible Minecraft server status summaries.",
@@ -1656,6 +1896,8 @@ impl AssistantToolName {
         match self {
             Self::AccountGetProfileSummary => AssistantDomainFamily::Account,
             Self::DictionaryGetAccountIdentity
+            | Self::DictionaryListVisibleWorkspaces
+            | Self::DictionaryBrowseWorkspacePeople
             | Self::DictionarySearchPeople
             | Self::DictionaryGetPersonBundle
             | Self::DictionaryResolveRelationshipReference => AssistantDomainFamily::Dictionary,
@@ -1669,7 +1911,10 @@ impl AssistantToolName {
             | Self::MemoryGetEntityRelations
             | Self::MemoryListRecentChanges
             | Self::MemoryListConflictingFacts
-            | Self::MemoryGetEntityProvenance => AssistantDomainFamily::Memory,
+            | Self::MemoryGetEntityProvenance
+            | Self::MemoryGetPersonTimeline
+            | Self::MemoryGetSourceCitation
+            | Self::MemoryGetConflictExplanations => AssistantDomainFamily::Memory,
             Self::CalendarListEvents
             | Self::CalendarGetNextEvent
             | Self::CalendarListDateConflicts
@@ -1700,13 +1945,18 @@ impl AssistantToolName {
             | Self::DownloadsGetReleaseNotes
             | Self::DownloadsGetArtifactChecksum
             | Self::DownloadsGetArtifactInstallSteps
-            | Self::DownloadsGetArtifactCompatibility => AssistantDomainFamily::Downloads,
+            | Self::DownloadsGetArtifactCompatibility
+            | Self::DownloadsGetLatestForPlatform
+            | Self::DownloadsGetArtifactPlatformMatrix
+            | Self::DownloadsGetArtifactSigningInfo => AssistantDomainFamily::Downloads,
             Self::NetworkGetTopologySummary
             | Self::NetworkGetInterfaceDetails
             | Self::NetworkGetInterfaceByIp
             | Self::NetworkGetDefaultRoute
             | Self::NetworkGetHostnameAliases
             | Self::NetworkGetDnsServers
+            | Self::NetworkGetRouteToDestination
+            | Self::NetworkGetActiveConnectionDetail
             | Self::NetworkGetRouteTable
             | Self::NetworkGetActiveConnections
             | Self::NetworkGetInterfaceCounters
@@ -1718,6 +1968,8 @@ impl AssistantToolName {
             | Self::LibraryGetItemSummary
             | Self::LibraryGetItemMediaDetails
             | Self::LibraryGetItemSourcePaths
+            | Self::LibraryGetItemExternalIds
+            | Self::LibraryGetItemPlayHistory
             | Self::LibrariesGetRecentlyAdded
             | Self::LibrariesFindDuplicateTitles
             | Self::LibrariesListMissingMetadata => AssistantDomainFamily::Library,
@@ -1730,7 +1982,8 @@ impl AssistantToolName {
             | Self::WeatherGetRecentHistoryForDate => AssistantDomainFamily::Weather,
             Self::WebListCuratedSources
             | Self::WebSearchPublicWeb
-            | Self::WebFetchPublicPageSummary => AssistantDomainFamily::Web,
+            | Self::WebFetchPublicPageSummary
+            | Self::WebFetchSourceWithCitation => AssistantDomainFamily::Web,
             Self::RoomsListActive | Self::RoomsListJoinable | Self::RoomsGetRoomSummary => {
                 AssistantDomainFamily::Rooms
             }
@@ -1739,6 +1992,8 @@ impl AssistantToolName {
             | Self::SystemGetBackupSummary
             | Self::SystemGetServiceHealth
             | Self::SystemGetServiceDetail
+            | Self::SystemGetServiceLogs
+            | Self::SystemGetServiceDependencies
             | Self::SystemGetTranscodeSummary
             | Self::SystemGetStorageSummary
             | Self::SystemGetStoragePathDetail
@@ -1760,7 +2015,9 @@ impl AssistantToolName {
             | Self::SystemGetPortConflicts
             | Self::SystemGetPortConflictDetail
             | Self::SystemGetFailedUnits
-            | Self::SystemGetFailedUnitDetail => AssistantDomainFamily::System,
+            | Self::SystemGetFailedUnitDetail
+            | Self::SystemGetFailedServiceLogs
+            | Self::SystemGetProcessTreeDetail => AssistantDomainFamily::System,
             Self::SystemGetAiRuntimeSummary
             | Self::AiListBackgroundJobs
             | Self::AiGetJobStatus
@@ -1785,6 +2042,8 @@ impl AssistantToolName {
         matches!(
             self,
             Self::CalendarListEvents
+                | Self::DictionaryListVisibleWorkspaces
+                | Self::DictionaryBrowseWorkspacePeople
                 | Self::DictionarySearchPeople
                 | Self::DictionaryGetPersonBundle
                 | Self::DictionaryResolveRelationshipReference
@@ -1857,6 +2116,8 @@ impl AssistantToolName {
         matches!(
             self,
             Self::CalendarListEvents
+                | Self::DictionaryListVisibleWorkspaces
+                | Self::DictionaryBrowseWorkspacePeople
                 | Self::DictionarySearchPeople
                 | Self::DictionaryGetPersonBundle
                 | Self::DictionaryResolveRelationshipReference
@@ -1873,10 +2134,6 @@ impl AssistantToolName {
                 | Self::CalendarCountEvents
                 | Self::CalendarListBusyDays
                 | Self::CalendarListOverlappingEvents
-                | Self::CalendarGetEventByExactDateAndTitle
-                | Self::CalendarGetEventSeriesSummary
-                | Self::CalendarGetNextFreeSlot
-                | Self::CalendarListBusySlots
                 | Self::ChannelsGetTranscriptSummary
                 | Self::DownloadsGetArtifactDetails
                 | Self::DownloadsGetArtifactSource
@@ -1931,9 +2188,6 @@ impl AssistantToolName {
                 | Self::SystemGetUsbDevices
                 | Self::SystemGetBootLogSummary
                 | Self::SystemGetJournalSummary
-                | Self::SystemGetProcessDetail
-                | Self::SystemGetListenerDetail
-                | Self::SystemGetDiskUsageDetail
                 | Self::ServersGetMinecraftServerSummary
         )
     }

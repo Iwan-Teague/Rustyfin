@@ -50,7 +50,7 @@ use crate::ai_audit::{
     AiAssistantAuditResponseKind, persist_chat_audit_event, persist_chat_audit_event_with_planner,
 };
 use crate::ai_conversations::ConversationMessageRequest;
-use crate::ai_model_routing::RoleRoutingDecision;
+use crate::ai_role_routing::AiRoleRoutingDecision;
 use crate::ai_storage::{
     AiModelSummary, current_model_dir, list_models_with_storage_status, model_file_path,
 };
@@ -65,7 +65,7 @@ pub struct EngineState {
     pub loaded_model: Option<String>,
     pub engine: Option<rustfin_ai_agent::LlamaEngine>,
     pub role_models: HashMap<rustfin_ai_agent::ModelRole, LoadedRoleModel>,
-    pub role_routing: Vec<RoleRoutingDecision>,
+    pub role_routing: Vec<AiRoleRoutingDecision>,
     pub last_prompt_debug: Option<ConversationPromptDebug>,
     pub last_execution_trace: Option<AssistantExecutionTrace>,
     pub active_phase: AssistantRuntimePhase,
@@ -1032,7 +1032,10 @@ fn stream_chat_response(
         model_name = answer_route.selection.model_name.clone();
         {
             let mut guard = state.engine.lock().await;
-            guard.role_routing = role_routing.iter().map(|route| route.decision.clone()).collect();
+            guard.role_routing = role_routing
+                .iter()
+                .map(|route| AiRoleRoutingDecision::from(&route.decision))
+                .collect();
         }
         let gguf_path = match model_file_path(&model_dir, &model_name) {
             Ok(path) => path,
@@ -1270,7 +1273,10 @@ fn stream_chat_response(
             guard.loaded_model = Some(model_name.clone());
             guard.engine = Some(engine.clone());
             guard.role_models = loaded_role_models;
-            guard.role_routing = role_routing.iter().map(|route| route.decision.clone()).collect();
+            guard.role_routing = role_routing
+                .iter()
+                .map(|route| AiRoleRoutingDecision::from(&route.decision))
+                .collect();
             guard.active_phase = AssistantRuntimePhase::Planning;
         }
 
@@ -4279,9 +4285,29 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
                 query.as_deref().unwrap_or("*")
             )
         }
+        AssistantToolInput::NetworkRouteDestination { destination } => {
+            format!("network_route_destination:{destination}")
+        }
+        AssistantToolInput::NetworkActiveConnection { query } => {
+            format!("network_active_connection:query={query}")
+        }
         AssistantToolInput::DictionaryGetAccountIdentity => {
             "dictionary_account_identity".to_string()
         }
+        AssistantToolInput::DictionaryListVisibleWorkspaces => {
+            "dictionary_list_visible_workspaces".to_string()
+        }
+        AssistantToolInput::DictionaryBrowseWorkspacePeople {
+            workspace_id,
+            query,
+            limit,
+        } => format!(
+            "dictionary_browse_workspace_people:workspace_id={workspace_id}:query={}:limit={}",
+            query.as_deref().unwrap_or("*"),
+            limit
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "*".to_string())
+        ),
         AssistantToolInput::DictionarySearchPeople {
             workspace_id,
             query,
@@ -4363,6 +4389,7 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
             query.as_deref().unwrap_or("*"),
             availability.as_deref().unwrap_or("*")
         ),
+        other => format!("tool_input:{other:?}"),
     }
 }
 

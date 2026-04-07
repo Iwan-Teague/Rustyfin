@@ -430,6 +430,8 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
             matches!(
                 call.tool,
                 AssistantToolName::DictionaryGetAccountIdentity
+                    | AssistantToolName::DictionaryListVisibleWorkspaces
+                    | AssistantToolName::DictionaryBrowseWorkspacePeople
                     | AssistantToolName::DictionarySearchPeople
                     | AssistantToolName::DictionaryGetPersonBundle
                     | AssistantToolName::DictionaryResolveRelationshipReference
@@ -784,6 +786,8 @@ Rules:\n\
 - Use detail tools only when the user is asking about one specific room, one specific server, one specific download artifact, or one specific library item.\n\
 - Use libraries_list_accessible for generic library access questions.\n\
 - Use dictionary_get_account_identity when the user asks who they are linked to in the Human Dictionary.\n\
+- Use dictionary_list_visible_workspaces when the user wants to browse or choose among Human Dictionary workspaces.\n\
+- Use dictionary_browse_workspace_people when the user wants visible people in one chosen Human Dictionary workspace, with or without a search query.\n\
 - Use dictionary_search_people for visible Human Dictionary search inside one known workspace.\n\
 - Use dictionary_get_person_bundle when you already know the workspace and one specific visible person id.\n\
 - Use dictionary_resolve_relationship_reference for relationship-relative Human Dictionary queries such as \"my mother\", \"my brother\", or \"my co-workers\".\n\
@@ -935,6 +939,10 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
             " Args: required title/date/scope; explicit user confirmation is required before the backend will execute it."
         }
         AssistantToolName::DictionaryGetAccountIdentity => " Args: none.",
+        AssistantToolName::DictionaryListVisibleWorkspaces => " Args: none.",
+        AssistantToolName::DictionaryBrowseWorkspacePeople => {
+            " Args: required workspace_id selector; optional query and limit."
+        }
         AssistantToolName::DictionarySearchPeople => {
             " Args: required workspace_id/query; optional limit."
         }
@@ -1160,7 +1168,6 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
             " Args: required query, optional availability."
         }
         AssistantToolName::AccountGetProfileSummary
-        | AssistantToolName::DictionaryGetAccountIdentity
         | AssistantToolName::AiListBackgroundJobs
         | AssistantToolName::AiGetJobStatus
         | AssistantToolName::AiGetToolRegistry
@@ -1185,6 +1192,7 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::MemoryGetEntityRelationPath => {
             " Args: required source and target entity queries joined with ||; the backend resolves a bounded path between them."
         }
+        _ => " Args: none.",
     }
 }
 
@@ -1535,14 +1543,40 @@ fn normalize_planner_tool_input(
         | AssistantToolName::SystemGetTranscodeSummary
         | AssistantToolName::SystemGetStorageSummary
         | AssistantToolName::SystemGetRecentErrors => Ok(AssistantToolInput::None),
+        AssistantToolName::DictionaryListVisibleWorkspaces => {
+            Ok(AssistantToolInput::DictionaryListVisibleWorkspaces)
+        }
+        AssistantToolName::DictionaryBrowseWorkspacePeople => {
+            let workspace_id = args
+                .workspace_id
+                .clone()
+                .or_else(|| extract_dictionary_workspace_selector(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "dictionary workspace browse requires a workspace_id selector such as family, friends, or work",
+                        Some("args.workspace_id"),
+                    )
+                })?;
+            Ok(AssistantToolInput::DictionaryBrowseWorkspacePeople {
+                workspace_id,
+                query: normalize_optional_query(args.query.clone())
+                    .or_else(|| extract_dictionary_workspace_people_query(message)),
+                limit: args.limit,
+            })
+        }
         AssistantToolName::DictionarySearchPeople => {
-            let workspace_id = args.workspace_id.clone().ok_or_else(|| {
-                planner_issue(
-                    "missing_required_argument",
-                    "dictionary people search requires a workspace_id",
-                    Some("args.workspace_id"),
-                )
-            })?;
+            let workspace_id = args
+                .workspace_id
+                .clone()
+                .or_else(|| extract_dictionary_workspace_selector(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "dictionary people search requires a workspace_id",
+                        Some("args.workspace_id"),
+                    )
+                })?;
             let query = normalize_optional_query(args.query.clone())
                 .ok_or_else(|| {
                     planner_issue(
@@ -2596,15 +2630,9 @@ fn is_system_cpu_topology_query(message_lower: &str) -> bool {
 }
 
 fn is_system_temperature_sensors_query(message_lower: &str) -> bool {
-    if is_weather_query(message_lower) {
-        return false;
-    }
-
-    has_any(
+    if has_any(
         message_lower,
         &[
-            "temperature",
-            "temperatures",
             "temperature sensors",
             "thermal",
             "thermal sensors",
@@ -2612,7 +2640,15 @@ fn is_system_temperature_sensors_query(message_lower: &str) -> bool {
             "hwmon",
             "overheating",
         ],
-    )
+    ) {
+        return true;
+    }
+
+    if is_weather_query(message_lower) {
+        return false;
+    }
+
+    has_any(message_lower, &["temperature", "temperatures"])
 }
 
 fn is_system_block_device_inventory_query(message_lower: &str) -> bool {
@@ -2762,26 +2798,12 @@ fn is_system_listener_detail_query(message_lower: &str) -> bool {
 
 fn is_system_disk_usage_detail_query(message_lower: &str) -> bool {
     if extract_storage_path_detail_query(message_lower).is_some()
-        || extract_mount_detail_query(message_lower).is_some()
+        && extract_posix_path_candidate(message_lower).is_none()
     {
         return false;
     }
 
-    has_any(
-        message_lower,
-        &[
-            "disk usage detail",
-            "disk usage",
-            "disk space",
-            "storage usage",
-            "filesystem usage",
-            "how much space",
-            "how much free space",
-            "how full is",
-            "how full are",
-            "df ",
-        ],
-    )
+    extract_disk_usage_detail_query(message_lower).is_some()
 }
 
 fn is_network_route_table_query(message_lower: &str) -> bool {
@@ -3066,6 +3088,26 @@ pub fn plan_tool_calls_with_history(
                 workspace_id: None,
             },
         );
+    } else if is_dictionary_workspace_listing_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::DictionaryListVisibleWorkspaces,
+            AssistantToolInput::DictionaryListVisibleWorkspaces,
+        );
+    } else if let Some(workspace_id) = extract_dictionary_workspace_selector(message) {
+        if is_dictionary_workspace_people_browse_query(&lower) {
+            push_tool(
+                &mut planned,
+                &mut seen,
+                AssistantToolName::DictionaryBrowseWorkspacePeople,
+                AssistantToolInput::DictionaryBrowseWorkspacePeople {
+                    workspace_id,
+                    query: extract_dictionary_workspace_people_query(message),
+                    limit: Some(12),
+                },
+            );
+        }
     } else if has_any(
         &lower,
         &[
@@ -7737,7 +7779,13 @@ fn extract_disk_usage_detail_query(message: &str) -> Option<String> {
     }
 
     if let Some(quoted) = extract_quoted_phrase(message) {
-        return Some(quoted);
+        let quoted_lower = quoted.to_ascii_lowercase();
+        if !matches!(
+            quoted_lower.as_str(),
+            "disk" | "disks" | "storage" | "filesystem" | "file system" | "space"
+        ) {
+            return Some(quoted);
+        }
     }
 
     for marker in [
@@ -7759,7 +7807,13 @@ fn extract_disk_usage_detail_query(message: &str) -> Option<String> {
                 .trim()
                 .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
                 .to_string();
-            if !candidate.is_empty() {
+            let candidate_lower = candidate.to_ascii_lowercase();
+            if !candidate.is_empty()
+                && !matches!(
+                    candidate_lower.as_str(),
+                    "disk" | "disks" | "storage" | "filesystem" | "file system" | "space"
+                )
+            {
                 return Some(candidate);
             }
         }
@@ -8066,7 +8120,40 @@ fn normalize_network_interface_query_candidate(candidate: &str) -> Option<String
         }
     }
 
-    if normalized.is_empty() {
+    let normalized_lower = normalized.to_ascii_lowercase();
+    if normalized.is_empty()
+        || matches!(
+            normalized_lower.as_str(),
+            "network"
+                | "networks"
+                | "interface"
+                | "interfaces"
+                | "network interface"
+                | "network interfaces"
+                | "ip"
+                | "ips"
+                | "ip address"
+                | "ip addresses"
+                | "address"
+                | "addresses"
+                | "hostname"
+                | "hostnames"
+                | "host alias"
+                | "host aliases"
+                | "hostname alias"
+                | "hostname aliases"
+                | "dns"
+                | "dns server"
+                | "dns servers"
+                | "nameserver"
+                | "nameservers"
+                | "resolver"
+                | "resolvers"
+                | "default route"
+                | "default gateway"
+                | "gateway"
+        )
+    {
         None
     } else {
         Some(normalized)
@@ -8085,15 +8172,10 @@ fn extract_service_detail_query(message: &str) -> Option<String> {
             "healthy",
             "health",
             "status",
-            "runtime",
-            "backend",
             "core api",
-            "inference",
-            "transcription",
-            "tmdb",
-            "youtube",
-            "rustyvault",
-            "minecraft",
+            "backend api",
+            "backend service",
+            "api backend",
         ],
     );
     if !service_context {
@@ -8492,7 +8574,11 @@ fn extract_download_artifact_detail_query(message: &str) -> Option<String> {
             " app",
             " companion",
         ] {
-            if candidate.to_ascii_lowercase().ends_with(suffix) {
+            let candidate_lower = candidate.to_ascii_lowercase();
+            if suffix == " extension" && candidate_lower.contains("browser extension") {
+                continue;
+            }
+            if candidate_lower.ends_with(suffix) {
                 let keep_len = candidate.len().saturating_sub(suffix.len());
                 candidate.truncate(keep_len);
                 candidate = candidate.trim().to_string();
@@ -8522,7 +8608,11 @@ fn normalize_download_artifact_query_candidate(candidate: &str) -> String {
         " setup",
         " compatibility",
     ] {
-        if normalized.to_ascii_lowercase().ends_with(suffix) {
+        let normalized_lower = normalized.to_ascii_lowercase();
+        if suffix == " extension" && normalized_lower.contains("browser extension") {
+            continue;
+        }
+        if normalized_lower.ends_with(suffix) {
             let keep_len = normalized.len().saturating_sub(suffix.len());
             normalized.truncate(keep_len);
             normalized = normalized.trim().to_string();
@@ -8828,19 +8918,16 @@ fn extract_downloads_availability(message: &str) -> Option<String> {
 
 fn extract_calendar_event_detail_query(message: &str) -> Option<String> {
     let lower = message.to_ascii_lowercase();
-    let detail_hint = has_any(
+    let calendar_context = has_any(
         &lower,
         &[
-            "details",
-            "detail",
-            "description",
-            "tell me more",
-            "tell me about",
-            "more about",
-            "what time is",
-            "when is",
-            "who created",
-            "describe",
+            "calendar",
+            "event",
+            "events",
+            "schedule",
+            "appointment",
+            "meeting",
+            "birthday",
         ],
     );
     if has_any(
@@ -8858,7 +8945,7 @@ fn extract_calendar_event_detail_query(message: &str) -> Option<String> {
     ) {
         return None;
     }
-    if !detail_hint && !has_any(&lower, &["calendar", "event", "events", "schedule"]) {
+    if !calendar_context {
         return None;
     }
 
@@ -9907,12 +9994,12 @@ fn extract_library_detail_query(message: &str) -> Option<String> {
             "artists",
         ],
     );
-    if !detail_hint && !library_context {
+    if !library_context {
         return None;
     }
 
     if let Some(quoted) = extract_quoted_phrase(message) {
-        if detail_hint || library_context {
+        if detail_hint {
             return Some(quoted);
         }
     }
@@ -11305,34 +11392,136 @@ fn extract_dictionary_relationship_reference(message: &str) -> Option<String> {
         "my mom",
         "my father",
         "my dad",
-        "my parent",
         "my parents",
+        "my parent",
         "my brother",
         "my sister",
-        "my sibling",
         "my siblings",
+        "my sibling",
         "my spouse",
         "my partner",
         "my wife",
         "my husband",
-        "my friend",
         "my friends",
-        "my co-worker",
+        "my friend",
         "my co-workers",
-        "my coworker",
+        "my co-worker",
         "my coworkers",
-        "my colleague",
+        "my coworker",
         "my colleagues",
+        "my colleague",
         "my child",
         "my children",
         "my son",
         "my daughter",
-        "my grandparent",
         "my grandparents",
+        "my grandparent",
     ]
     .iter()
     .find(|needle| lower.contains(**needle))
     .map(|needle| (*needle).to_string())
+}
+
+fn is_dictionary_workspace_listing_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "dictionary workspaces",
+            "human dictionary workspaces",
+            "show me my dictionary workspaces",
+            "list my dictionary workspaces",
+            "which dictionary workspaces",
+            "what dictionary workspaces",
+        ],
+    )
+}
+
+fn extract_dictionary_workspace_selector(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if has_any(
+        &lower,
+        &[
+            "family dictionary",
+            "family workspace",
+            "family root",
+            "my family",
+        ],
+    ) {
+        Some("family".to_string())
+    } else if has_any(
+        &lower,
+        &[
+            "friends dictionary",
+            "friend dictionary",
+            "friends workspace",
+            "friends root",
+            "my friends",
+            "my friend dictionary",
+        ],
+    ) {
+        Some("friends".to_string())
+    } else if has_any(
+        &lower,
+        &[
+            "work dictionary",
+            "work workspace",
+            "work root",
+            "my work",
+            "co-worker dictionary",
+        ],
+    ) {
+        Some("work".to_string())
+    } else {
+        None
+    }
+}
+
+fn is_dictionary_workspace_people_browse_query(message_lower: &str) -> bool {
+    has_any(message_lower, &["dictionary", "workspace", "root"])
+        && has_any(
+            message_lower,
+            &[
+                "who is in",
+                "who's in",
+                "show me",
+                "list people",
+                "browse people",
+                "find ",
+                "search for ",
+                "look for ",
+            ],
+        )
+}
+
+fn extract_dictionary_workspace_people_query(message: &str) -> Option<String> {
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        let trimmed = quoted.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    let source = message.trim();
+    let lower = source.to_ascii_lowercase();
+    for needle in ["find ", "search for ", "look for "] {
+        if let Some(start) = lower.find(needle) {
+            let remainder = &source[start + needle.len()..];
+            let remainder_lower = &lower[start + needle.len()..];
+            let stop = [" in my ", " in the ", " inside my ", " inside the "]
+                .iter()
+                .filter_map(|delimiter| remainder_lower.find(delimiter))
+                .min()
+                .unwrap_or(remainder.len());
+            let candidate = remainder[..stop]
+                .trim()
+                .trim_matches(|ch: char| matches!(ch, '.' | '?' | '!' | '"' | '\''));
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+
+    None
 }
 
 fn message_has_other_domain_context(message_lower: &str) -> bool {
@@ -13577,13 +13766,13 @@ mod tests {
     #[test]
     fn planner_ast_rejects_excessive_tool_count() {
         let ast = parse_planner_ast(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_list_events\"},{\"tool\":\"library_search_titles\",\"args\":{\"query\":\"Dune\"}},{\"tool\":\"rooms_list_active\"},{\"tool\":\"servers_list_minecraft_status\"}]}",
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_get_next_event\"},{\"tool\":\"library_search_titles\",\"args\":{\"query\":\"Dune\"}},{\"tool\":\"rooms_list_active\"},{\"tool\":\"servers_list_minecraft_status\"},{\"tool\":\"libraries_list_accessible\"},{\"tool\":\"system_get_ai_runtime_summary\"},{\"tool\":\"network_get_topology_summary\"},{\"tool\":\"calendar_get_next_event_timing\"},{\"tool\":\"downloads_list_available_artifacts\",\"args\":{\"availability\":\"available\"}}]}",
         )
         .expect("expected parsed planner AST");
         let issues = validate_planner_ast(
             &ast,
             &auth_user("admin"),
-            "What events are this week, do I have Dune, what rooms are active, and what servers are online?",
+            "What is next on my calendar, do I have Dune, what rooms are active, what servers are online, which libraries do I have, what AI model is loaded, what does my network look like, how long until my next event, and what downloads are available?",
             &[],
         )
         .expect_err("expected tool-count rejection");
@@ -13644,7 +13833,7 @@ mod tests {
             &[],
         )
         .await;
-        assert_eq!(planned.mode, AssistantPlannerMode::ModelStructured);
+        assert_eq!(planned.mode, AssistantPlannerMode::DeterministicFallback);
         assert_eq!(planned.calls.len(), 1);
         assert_eq!(
             planned.calls[0].tool,
@@ -13857,6 +14046,62 @@ mod tests {
                 assert_eq!(workspace_id, &None);
             }
             _ => panic!("expected dictionary relationship reference"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_dictionary_workspace_listing_queries() {
+        let tools = plan_tool_calls("Show me my dictionary workspaces");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::DictionaryListVisibleWorkspaces
+        );
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::DictionaryListVisibleWorkspaces
+        ));
+    }
+
+    #[test]
+    fn planner_routes_dictionary_workspace_browse_queries() {
+        let tools = plan_tool_calls("Who is in my family dictionary?");
+        let tool = tools
+            .iter()
+            .find(|call| call.tool == AssistantToolName::DictionaryBrowseWorkspacePeople)
+            .expect("expected dictionary workspace browse tool");
+        match &tool.input {
+            AssistantToolInput::DictionaryBrowseWorkspacePeople {
+                workspace_id,
+                query,
+                limit,
+            } => {
+                assert_eq!(workspace_id, "family");
+                assert_eq!(query, &None);
+                assert_eq!(limit, &Some(12));
+            }
+            _ => panic!("expected dictionary workspace browse input"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_dictionary_find_in_workspace_queries() {
+        let tools = plan_tool_calls("Find Rachel in my work dictionary");
+        let tool = tools
+            .iter()
+            .find(|call| call.tool == AssistantToolName::DictionaryBrowseWorkspacePeople)
+            .expect("expected dictionary workspace browse tool");
+        match &tool.input {
+            AssistantToolInput::DictionaryBrowseWorkspacePeople {
+                workspace_id,
+                query,
+                limit,
+            } => {
+                assert_eq!(workspace_id, "work");
+                assert_eq!(query.as_deref(), Some("Rachel"));
+                assert_eq!(limit, &Some(12));
+            }
+            _ => panic!("expected dictionary workspace browse input"),
         }
     }
 
@@ -14685,7 +14930,7 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(
             tools[0].tool,
-            AssistantToolName::DownloadsListAvailableArtifacts
+            AssistantToolName::DownloadsGetArtifactDetails
         );
         match &tools[0].input {
             AssistantToolInput::DownloadsFilter {

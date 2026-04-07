@@ -20,6 +20,8 @@ impl ToolProvider for LibrariesToolProvider {
         registry.register_tool(self, AssistantToolName::LibraryGetItemSummary);
         registry.register_tool(self, AssistantToolName::LibraryGetItemMediaDetails);
         registry.register_tool(self, AssistantToolName::LibraryGetItemSourcePaths);
+        registry.register_tool(self, AssistantToolName::LibraryGetItemExternalIds);
+        registry.register_tool(self, AssistantToolName::LibraryGetItemPlayHistory);
         registry.register_tool(self, AssistantToolName::LibrariesGetRecentlyAdded);
         registry.register_tool(self, AssistantToolName::LibrariesFindDuplicateTitles);
         registry.register_tool(self, AssistantToolName::LibrariesListMissingMetadata);

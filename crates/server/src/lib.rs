@@ -24,12 +24,12 @@ pub mod ai_eval_harness;
 pub mod ai_generated_artifacts;
 #[cfg(feature = "ai")]
 pub mod ai_model_routing;
+pub mod ai_role_routing;
 #[cfg(feature = "ai")]
 pub mod ai_runtime;
 pub mod ai_storage;
 #[cfg(feature = "ai")]
 pub mod ai_tasks;
-#[cfg(feature = "ai")]
 pub mod ai_transcribe;
 #[cfg(feature = "ai")]
 pub mod ai_turn_journal;
@@ -39,6 +39,7 @@ pub mod auth;
 pub mod backups;
 pub mod channels;
 pub mod dictionary;
+pub mod dictionary_hardening_helpers;
 pub mod downloads;
 pub mod error;
 pub mod host_directories;

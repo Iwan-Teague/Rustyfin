@@ -14,14 +14,16 @@ use tracing::warn;
 
 use crate::ai_audit::{AiAssistantAuditEventResponse, parse_audit_event_row};
 use crate::ai_storage::{
-    AI_MODEL_DIR_SETTING_KEY, AiModelBenchmarkSummary, AiModelDirectoryState,
-    AiModelProfileSummary, AiRemoteBackendState, AiSchedulerState, ModelPullChunk,
+    AI_MODEL_DIR_SETTING_KEY, AiModelDirectoryState, AiSchedulerState, ModelPullChunk,
     current_model_dir, delete_model_file, download_model_from_url, list_models_with_storage_status,
     resolve_model_dir, resolve_runtime_model_dir, set_model_dir, validate_model_dir,
 };
 use crate::auth::AdminUser;
 use crate::error::AppError;
 use crate::state::AppState;
+
+#[cfg(feature = "ai")]
+use crate::ai_storage::{AiModelBenchmarkSummary, AiModelProfileSummary, AiRemoteBackendState};
 
 pub const AI_REMOTE_BACKEND_SETTING_KEY: &str = "ai_remote_backend_config";
 
@@ -731,6 +733,7 @@ fn empty_scheduler_state() -> AiSchedulerState {
     }
 }
 
+#[cfg(feature = "ai")]
 pub(crate) fn host_fingerprint() -> String {
     use sha2::{Digest, Sha256};
 

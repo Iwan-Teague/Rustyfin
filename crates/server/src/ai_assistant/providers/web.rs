@@ -17,6 +17,7 @@ impl ToolProvider for WebToolProvider {
         registry.register_tool(self, AssistantToolName::WebListCuratedSources);
         registry.register_tool(self, AssistantToolName::WebSearchPublicWeb);
         registry.register_tool(self, AssistantToolName::WebFetchPublicPageSummary);
+        registry.register_tool(self, AssistantToolName::WebFetchSourceWithCitation);
     }
 
     fn execute<'a>(

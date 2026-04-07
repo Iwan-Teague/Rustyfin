@@ -52,6 +52,20 @@ struct DictionaryAccountIdentityEnvelope {
 }
 
 #[derive(Debug, Serialize)]
+struct DictionaryWorkspaceSummary {
+    workspace_id: String,
+    title: String,
+    workspace_kind: String,
+    owner_user_id: Option<String>,
+    is_system_seeded: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryVisibleWorkspacesEnvelope {
+    workspaces: Vec<DictionaryWorkspaceSummary>,
+}
+
+#[derive(Debug, Serialize)]
 struct DictionaryPersonSummary {
     id: String,
     display_name: String,
@@ -89,6 +103,14 @@ struct DictionaryPersonBundleEnvelope {
     relations: Vec<DictionaryRelationSummary>,
     document_title: Option<String>,
     document_excerpt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DictionaryWorkspacePeopleEnvelope {
+    workspace_id: String,
+    workspace_title: String,
+    query: Option<String>,
+    people: Vec<DictionaryPersonSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1321,6 +1343,12 @@ pub(crate) async fn execute_dictionary_provider_tool(
         AssistantToolName::DictionaryGetAccountIdentity => {
             dictionary_get_account_identity(state, context).await
         }
+        AssistantToolName::DictionaryListVisibleWorkspaces => {
+            dictionary_list_visible_workspaces(state, context).await
+        }
+        AssistantToolName::DictionaryBrowseWorkspacePeople => {
+            dictionary_browse_workspace_people(state, context, call).await
+        }
         AssistantToolName::DictionarySearchPeople => {
             dictionary_search_people(state, context, call).await
         }
@@ -2236,6 +2264,68 @@ fn dictionary_workspace_id_for_kind(
     }
 }
 
+fn dictionary_workspace_selector_matches(
+    workspace: &dictionary_repo::DictionaryWorkspaceRow,
+    selector: &str,
+) -> bool {
+    if workspace.id == selector {
+        return true;
+    }
+
+    let normalized_selector = selector.trim().to_ascii_lowercase();
+    if normalized_selector.is_empty() {
+        return false;
+    }
+
+    if workspace.slug.eq_ignore_ascii_case(&normalized_selector)
+        || workspace.title.to_ascii_lowercase() == normalized_selector
+    {
+        return true;
+    }
+
+    matches!(
+        (
+            workspace.workspace_kind.as_str(),
+            normalized_selector.as_str()
+        ),
+        (
+            "family_shared",
+            "family" | "family_shared" | "family-shared" | "family shared"
+        ) | (
+            "friends_private",
+            "friends" | "friend" | "friends_private" | "friends-private" | "friends private"
+        ) | (
+            "work_private",
+            "work" | "work_private" | "work-private" | "work private"
+        )
+    )
+}
+
+async fn resolve_visible_dictionary_workspace(
+    state: &AppState,
+    user_id: &str,
+    workspace_selector: &str,
+) -> Result<dictionary_repo::DictionaryWorkspaceRow, String> {
+    if let Some(workspace) = dictionary_repo::find_workspace_by_id(&state.db, workspace_selector)
+        .await
+        .map_err(|e| format!("failed to load dictionary workspace: {e}"))?
+    {
+        let visible = dictionary_repo::user_can_access_workspace(&state.db, &workspace.id, user_id)
+            .await
+            .map_err(|e| format!("failed to validate dictionary workspace access: {e}"))?;
+        if visible {
+            return Ok(workspace);
+        }
+    }
+
+    dictionary_repo::list_visible_workspaces(&state.db, user_id)
+        .await
+        .map_err(|e| format!("failed to list visible dictionary workspaces: {e}"))?
+        .into_iter()
+        .find(|workspace| dictionary_workspace_selector_matches(workspace, workspace_selector))
+        .ok_or_else(|| "dictionary workspace access denied".to_string())
+}
+
 fn dictionary_relation_matches_kind(
     kind: DictionaryReferenceKind,
     relation: &dictionary_repo::DictionaryResolvedRelationRow,
@@ -2328,6 +2418,91 @@ async fn dictionary_get_account_identity(
     ))
 }
 
+async fn dictionary_list_visible_workspaces(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, Value), String> {
+    let rows = dictionary_repo::list_visible_workspaces(&state.db, &context.user_id)
+        .await
+        .map_err(|e| format!("failed to list visible dictionary workspaces: {e}"))?;
+
+    let envelope = DictionaryVisibleWorkspacesEnvelope {
+        workspaces: rows
+            .into_iter()
+            .map(|row| DictionaryWorkspaceSummary {
+                workspace_id: row.id,
+                title: row.title,
+                workspace_kind: row.workspace_kind,
+                owner_user_id: row.owner_user_id,
+                is_system_seeded: row.is_system_seeded,
+            })
+            .collect(),
+    };
+
+    Ok((
+        "Visible Human Dictionary workspaces".to_string(),
+        serde_json::to_value(envelope).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn dictionary_browse_workspace_people(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, Value), String> {
+    let (workspace_id, query, limit) = match &call.input {
+        AssistantToolInput::DictionaryBrowseWorkspacePeople {
+            workspace_id,
+            query,
+            limit,
+        } => (workspace_id, query.clone(), limit.unwrap_or(20)),
+        _ => {
+            return Err(
+                "dictionary_browse_workspace_people requires a workspace_id and optional query"
+                    .to_string(),
+            );
+        }
+    };
+
+    let workspace =
+        resolve_visible_dictionary_workspace(state, &context.user_id, workspace_id).await?;
+
+    let rows = match query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(normalized_query) => dictionary_repo::search_visible_people(
+            &state.db,
+            &dictionary_repo::SearchVisiblePeopleParams {
+                workspace_id: workspace.id.clone(),
+                query: normalized_query.to_string(),
+                limit,
+            },
+        )
+        .await
+        .map_err(|e| format!("failed to search dictionary people: {e}"))?,
+        None => dictionary_repo::list_visible_people(&state.db, &workspace.id, limit)
+            .await
+            .map_err(|e| format!("failed to browse dictionary people: {e}"))?,
+    };
+
+    let envelope = DictionaryWorkspacePeopleEnvelope {
+        workspace_id: workspace.id,
+        workspace_title: workspace.title,
+        query,
+        people: rows
+            .iter()
+            .map(dictionary_person_summary_from_row)
+            .collect(),
+    };
+
+    Ok((
+        "Visible Human Dictionary people in workspace".to_string(),
+        serde_json::to_value(envelope).unwrap_or_else(|_| json!({})),
+    ))
+}
+
 async fn dictionary_search_people(
     state: &AppState,
     context: &AssistantContext,
@@ -2344,18 +2519,13 @@ async fn dictionary_search_people(
         }
     };
 
-    let visible =
-        dictionary_repo::user_can_access_workspace(&state.db, workspace_id, &context.user_id)
-            .await
-            .map_err(|e| format!("failed to validate dictionary workspace access: {e}"))?;
-    if !visible {
-        return Err("dictionary workspace access denied".to_string());
-    }
+    let workspace =
+        resolve_visible_dictionary_workspace(state, &context.user_id, workspace_id).await?;
 
     let rows = dictionary_repo::search_visible_people(
         &state.db,
         &dictionary_repo::SearchVisiblePeopleParams {
-            workspace_id: workspace_id.clone(),
+            workspace_id: workspace.id.clone(),
             query: query.clone(),
             limit,
         },
@@ -2371,7 +2541,7 @@ async fn dictionary_search_people(
     Ok((
         "Visible Human Dictionary people".to_string(),
         json!({
-            "workspace_id": workspace_id,
+            "workspace_id": workspace.id,
             "query": query,
             "people": people,
         }),
@@ -2395,15 +2565,10 @@ async fn dictionary_get_person_bundle(
         }
     };
 
-    let visible =
-        dictionary_repo::user_can_access_workspace(&state.db, workspace_id, &context.user_id)
-            .await
-            .map_err(|e| format!("failed to validate dictionary workspace access: {e}"))?;
-    if !visible {
-        return Err("dictionary workspace access denied".to_string());
-    }
+    let workspace =
+        resolve_visible_dictionary_workspace(state, &context.user_id, workspace_id).await?;
 
-    let nodes = dictionary_repo::list_tree_nodes_for_person(&state.db, workspace_id, person_id)
+    let nodes = dictionary_repo::list_tree_nodes_for_person(&state.db, &workspace.id, person_id)
         .await
         .map_err(|e| format!("failed to validate dictionary person visibility: {e}"))?;
     if nodes.is_empty() {
@@ -2416,19 +2581,19 @@ async fn dictionary_get_person_bundle(
         .ok_or_else(|| "dictionary person not found".to_string())?;
     let facts = dictionary_repo::list_facts_for_subject(
         &state.db,
-        workspace_id,
+        &workspace.id,
         SubjectKind::Person,
         person_id,
     )
     .await
     .map_err(|e| format!("failed to load dictionary facts: {e}"))?;
     let relations =
-        dictionary_repo::list_resolved_relations_for_person(&state.db, workspace_id, person_id)
+        dictionary_repo::list_resolved_relations_for_person(&state.db, &workspace.id, person_id)
             .await
             .map_err(|e| format!("failed to load dictionary relations: {e}"))?;
     let document = dictionary_repo::get_document_for_subject(
         &state.db,
-        workspace_id,
+        &workspace.id,
         SubjectKind::Person,
         person_id,
     )
@@ -2436,7 +2601,7 @@ async fn dictionary_get_person_bundle(
     .map_err(|e| format!("failed to load dictionary document: {e}"))?;
 
     let envelope = DictionaryPersonBundleEnvelope {
-        workspace_id: workspace_id.clone(),
+        workspace_id: workspace.id,
         person: dictionary_person_summary_from_row(&person),
         facts: facts.iter().map(dictionary_fact_summary_from_row).collect(),
         relations: relations
@@ -2540,42 +2705,48 @@ async fn dictionary_resolve_relationship_reference(
         .filter(|relation| relation.relation_type == "child_of")
         .count();
 
+    let candidate_ids = relations
+        .iter()
+        .map(|relation| relation.other_person.id.clone())
+        .collect::<Vec<_>>();
+    let facts_by_person =
+        dictionary_repo::list_facts_for_people(&state.db, &workspace_id, &candidate_ids)
+            .await
+            .map_err(|e| format!("failed to load candidate dictionary facts: {e}"))?;
+    let documents_by_person =
+        dictionary_repo::list_documents_for_people(&state.db, &workspace_id, &candidate_ids)
+            .await
+            .map_err(|e| format!("failed to load candidate dictionary document: {e}"))?;
+
     let mut candidates = Vec::new();
     for relation in relations {
-        let facts = dictionary_repo::list_facts_for_subject(
-            &state.db,
-            &workspace_id,
-            SubjectKind::Person,
-            &relation.other_person.id,
-        )
-        .await
-        .map_err(|e| format!("failed to load candidate dictionary facts: {e}"))?;
+        let facts = facts_by_person
+            .get(&relation.other_person.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         if !dictionary_relation_matches_kind(
             relation_kind,
             &relation,
-            &facts,
+            facts,
             sibling_pool_len,
             parent_pool_len,
         ) {
             continue;
         }
-        let document = dictionary_repo::get_document_for_subject(
-            &state.db,
-            &workspace_id,
-            SubjectKind::Person,
-            &relation.other_person.id,
-        )
-        .await
-        .map_err(|e| format!("failed to load candidate dictionary document: {e}"))?;
+
+        let document_excerpt = documents_by_person
+            .get(&relation.other_person.id)
+            .map(|row| compact_text(&row.markdown_body, 220))
+            .filter(|value| !value.trim().is_empty());
 
         candidates.push(DictionaryResolvedCandidate {
             person_id: relation.other_person.id.clone(),
             display_name: relation.other_person.display_name.clone(),
             summary: relation.other_person.summary.clone(),
             relation_type: relation.relation_type.clone(),
-            birthday: dictionary_birthday_from_facts(&facts),
-            hobbies: dictionary_hobbies_from_facts(&facts),
-            document_excerpt: dictionary_document_excerpt(&document),
+            birthday: dictionary_birthday_from_facts(facts),
+            hobbies: dictionary_hobbies_from_facts(facts),
+            document_excerpt,
         });
     }
 
@@ -7946,6 +8117,8 @@ fn calendar_window_for_call(
         | AssistantToolInput::NetworkDefaultRoute { .. }
         | AssistantToolInput::NetworkHostnameAliases { .. }
         | AssistantToolInput::NetworkDnsServers { .. }
+        | AssistantToolInput::NetworkRouteDestination { .. }
+        | AssistantToolInput::NetworkActiveConnection { .. }
         | AssistantToolInput::LibrarySearch { .. }
         | AssistantToolInput::LibraryRecent { .. }
         | AssistantToolInput::Weather { .. }
@@ -7963,9 +8136,20 @@ fn calendar_window_for_call(
         | AssistantToolInput::SystemFailedUnits { .. }
         | AssistantToolInput::ServerFilter { .. }
         | AssistantToolInput::DictionaryGetAccountIdentity
+        | AssistantToolInput::DictionaryListVisibleWorkspaces
+        | AssistantToolInput::DictionaryBrowseWorkspacePeople { .. }
         | AssistantToolInput::DictionarySearchPeople { .. }
         | AssistantToolInput::DictionaryGetPersonBundle { .. }
         | AssistantToolInput::DictionaryResolveRelationshipReference { .. } => {
+            let from = assistant_local_today();
+            let to = from + Duration::days(fallback_days);
+            (
+                from.format("%F").to_string(),
+                to.format("%F").to_string(),
+                format!("the next {fallback_days} days"),
+            )
+        }
+        _ => {
             let from = assistant_local_today();
             let to = from + Duration::days(fallback_days);
             (
@@ -9911,6 +10095,8 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
         | AssistantToolInput::NetworkDefaultRoute { .. }
         | AssistantToolInput::NetworkHostnameAliases { .. }
         | AssistantToolInput::NetworkDnsServers { .. }
+        | AssistantToolInput::NetworkRouteDestination { .. }
+        | AssistantToolInput::NetworkActiveConnection { .. }
         | AssistantToolInput::SystemService { .. }
         | AssistantToolInput::SystemPortConflicts { .. }
         | AssistantToolInput::SystemFailedUnits { .. } => AssistantFollowUpInputHint::default(),
@@ -9969,6 +10155,8 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             ..AssistantFollowUpInputHint::default()
         },
         AssistantToolInput::DictionaryGetAccountIdentity
+        | AssistantToolInput::DictionaryListVisibleWorkspaces
+        | AssistantToolInput::DictionaryBrowseWorkspacePeople { .. }
         | AssistantToolInput::DictionarySearchPeople { .. }
         | AssistantToolInput::DictionaryGetPersonBundle { .. }
         | AssistantToolInput::DictionaryResolveRelationshipReference { .. } => {
@@ -9982,6 +10170,7 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             server_availability: availability.clone(),
             ..AssistantFollowUpInputHint::default()
         },
+        _ => AssistantFollowUpInputHint::default(),
     }
 }
 
@@ -11616,10 +11805,7 @@ fn follow_up_entities(
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetTranscodeSummary
-        | AssistantToolName::SystemGetRecentErrors
-        | AssistantToolName::SystemGetProcessDetail
-        | AssistantToolName::SystemGetListenerDetail
-        | AssistantToolName::SystemGetDiskUsageDetail => Vec::new(),
+        | AssistantToolName::SystemGetRecentErrors => Vec::new(),
         _ => Vec::new(),
     }
 }
