@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type Hls from 'hls.js';
 import type { ErrorData, LevelDetails, LevelLoadedData, LevelUpdatedData } from 'hls.js';
 import { useParams } from 'next/navigation';
@@ -8,6 +8,8 @@ import VideoPlayerSurface, {
   filterPlaybackQualityOptions,
   normalizePlaybackQualitySelection,
   resolveAutoPlaybackTargetHeight,
+  type VideoSubtitleOption,
+  type VideoSubtitleTrack,
 } from '@/app/components/VideoPlayerSurface';
 import { apiFetch, apiJson } from '@/lib/api';
 import { readBrowserToken } from '@/lib/browserAuth';
@@ -48,6 +50,23 @@ type PlayState = {
   progress_ms: number;
   last_played_ts?: number | null;
   favorite: boolean;
+};
+
+type SubtitleInfo = {
+  type: 'sidecar' | 'embedded' | string;
+  format: string;
+  language?: string | null;
+  title?: string | null;
+  forced: boolean;
+  sdh: boolean;
+  source: string;
+};
+
+type PlayerSubtitleOption = VideoSubtitleOption & {
+  format: string;
+  srcLang?: string;
+  kind: 'subtitles' | 'captions';
+  source: { type: 'remote'; url: string } | { type: 'inline'; text: string };
 };
 
 type ItemSummary = {
@@ -334,6 +353,79 @@ function extractDownloadFilename(header: string | null, fallback: string): strin
   return fallback;
 }
 
+function normalizeSubtitleFormat(format: string | null | undefined): string {
+  return (format ?? '').trim().toLowerCase();
+}
+
+function isBrowserLoadableSubtitleFormat(format: string | null | undefined): boolean {
+  const normalized = normalizeSubtitleFormat(format);
+  return (
+    normalized === 'vtt' ||
+    normalized === 'webvtt' ||
+    normalized === 'srt' ||
+    normalized === 'subrip'
+  );
+}
+
+function normalizeSubtitleLanguage(language: string | null | undefined): string | undefined {
+  const trimmed = language?.trim();
+  if (!trimmed) return undefined;
+  const normalized = trimmed.replace(/_/g, '-').toLowerCase();
+  if (/^[a-z]{2,3}(-[a-z0-9]{2,8})*$/.test(normalized)) {
+    return normalized;
+  }
+  return undefined;
+}
+
+function formatSubtitleLabel(subtitle: Pick<SubtitleInfo, 'title' | 'language' | 'forced' | 'sdh' | 'format'>): string {
+  const segments: string[] = [];
+  if (subtitle.title?.trim()) {
+    segments.push(subtitle.title.trim());
+  } else if (subtitle.language?.trim()) {
+    segments.push(subtitle.language.trim().toUpperCase());
+  } else {
+    segments.push('Subtitle');
+  }
+  if (subtitle.forced) segments.push('Forced');
+  if (subtitle.sdh) segments.push('SDH');
+  const format = normalizeSubtitleFormat(subtitle.format);
+  if (format) {
+    segments.push(format.toUpperCase());
+  }
+  return segments.join(' · ');
+}
+
+function subtitleKindFromInfo(subtitle: Pick<SubtitleInfo, 'sdh'>): 'subtitles' | 'captions' {
+  return subtitle.sdh ? 'captions' : 'subtitles';
+}
+
+function extractSubtitleFormatFromFileName(fileName: string): string {
+  const match = fileName.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match?.[1] ?? '';
+}
+
+function convertSubtitleTextToVtt(text: string, format: string): string {
+  const normalized = text.replace(/\uFEFF/g, '').replace(/\r\n?/g, '\n').trim();
+  const subtitleFormat = normalizeSubtitleFormat(format);
+  if (subtitleFormat === 'vtt' || subtitleFormat === 'webvtt') {
+    return normalized.startsWith('WEBVTT') ? normalized : `WEBVTT\n\n${normalized}`;
+  }
+
+  const withVttTimestamps = normalized
+    .replace(
+      /(^|\s)(\d{1,2}:\d{2}:\d{2}),(\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}),(\d{3})/gm,
+      (_match, prefix, startTime, startMillis, endTime, endMillis) =>
+        `${prefix}${startTime}.${startMillis} --> ${endTime}.${endMillis}`,
+    )
+    .replace(
+      /(^|\s)(\d{1,2}:\d{2}),(\d{3})\s*-->\s*(\d{1,2}:\d{2}),(\d{3})/gm,
+      (_match, prefix, startTime, startMillis, endTime, endMillis) =>
+        `${prefix}${startTime}.${startMillis} --> ${endTime}.${endMillis}`,
+    );
+
+  return `WEBVTT\n\n${withVttTimestamps}`;
+}
+
 export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
@@ -341,6 +433,8 @@ export default function PlayerPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const subtitleFileInputRef = useRef<HTMLInputElement>(null);
+  const activeSubtitleObjectUrlRef = useRef<string | null>(null);
 
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
@@ -355,6 +449,11 @@ export default function PlayerPage() {
   const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
   const [hlsSessionStartOffsetSecs, setHlsSessionStartOffsetSecs] = useState(0);
   const [hlsAvailableWindowDurationSecs, setHlsAvailableWindowDurationSecs] = useState(0);
+  const [subtitleOptions, setSubtitleOptions] = useState<PlayerSubtitleOption[]>([]);
+  const [selectedSubtitleId, setSelectedSubtitleId] = useState<string | null>(null);
+  const [activeSubtitleTrack, setActiveSubtitleTrack] = useState<VideoSubtitleTrack | null>(null);
+  const [subtitleLoading, setSubtitleLoading] = useState(false);
+  const [subtitleError, setSubtitleError] = useState('');
   const autoStartedRef = useRef(false);
   const requestedPlaybackRef = useRef(false);
 
@@ -362,6 +461,16 @@ export default function PlayerPage() {
   const sourceVideoHeight = mediaInfo?.video?.height && mediaInfo.video.height > 0 ? mediaInfo.video.height : null;
   const qualityOptions = filterPlaybackQualityOptions(sourceVideoHeight);
   const selectedQualityValue: 'auto' | number = hlsTargetHeight ?? 'auto';
+  const subtitleMenuOptions = useMemo<VideoSubtitleOption[]>(
+    () => subtitleOptions.map(({ id: optionId, label }) => ({ id: optionId, label })),
+    [subtitleOptions],
+  );
+
+  const revokeActiveSubtitleObjectUrl = useCallback(() => {
+    if (!activeSubtitleObjectUrlRef.current) return;
+    URL.revokeObjectURL(activeSubtitleObjectUrlRef.current);
+    activeSubtitleObjectUrlRef.current = null;
+  }, []);
 
   const stopSession = useCallback(async (sid: string) => {
     await apiFetch(`/playback/sessions/${sid}/stop`, { method: 'POST' }).catch(() => {});
@@ -754,8 +863,14 @@ export default function PlayerPage() {
     setSeriesTitle(null);
     sessionIdRef.current = null;
     setError('');
+    setSubtitleError('');
     setHlsSessionStartOffsetSecs(0);
     setHlsAvailableWindowDurationSecs(0);
+    setSubtitleOptions([]);
+    setSelectedSubtitleId(null);
+    setActiveSubtitleTrack(null);
+    setSubtitleLoading(false);
+    revokeActiveSubtitleObjectUrl();
 
     apiJson<ItemSummary>(`/items/${id}`)
       .then(async (data) => {
@@ -818,6 +933,29 @@ export default function PlayerPage() {
         if (!cancelled) setLoadingDescriptor(false);
       });
 
+    apiJson<SubtitleInfo[]>(`/items/${id}/subtitles`)
+      .then((data) => {
+        if (cancelled) return;
+        setSubtitleOptions(
+          data
+            .filter(
+              (subtitle) =>
+                subtitle.type === 'sidecar' && isBrowserLoadableSubtitleFormat(subtitle.format),
+            )
+            .map((subtitle) => ({
+              id: `sidecar:${subtitle.source}`,
+              label: formatSubtitleLabel(subtitle),
+              format: subtitle.format,
+              srcLang: normalizeSubtitleLanguage(subtitle.language),
+              kind: subtitleKindFromInfo(subtitle),
+              source: { type: 'remote', url: subtitle.source },
+            })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setSubtitleOptions([]);
+      });
+
     apiJson<PlayState>(`/playback/state/${id}`)
       .then((data) => {
         if (!cancelled) setPlayState(data);
@@ -832,7 +970,7 @@ export default function PlayerPage() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, revokeActiveSubtitleObjectUrl]);
 
   useEffect(() => {
     if (!loadingDescriptor && !loadingPlayState && canStartPlayback && !autoStartedRef.current) {
@@ -870,13 +1008,14 @@ export default function PlayerPage() {
 
   useEffect(() => {
     return () => {
+      revokeActiveSubtitleObjectUrl();
       destroyHls();
       if (sessionIdRef.current) {
         void stopSession(sessionIdRef.current);
         sessionIdRef.current = null;
       }
     };
-  }, [destroyHls, stopSession]);
+  }, [destroyHls, revokeActiveSubtitleObjectUrl, stopSession]);
 
   useEffect(() => {
     const hls = hlsRef.current as { __stopKnownDurationEnforcer?: () => void } | null;
@@ -951,6 +1090,108 @@ export default function PlayerPage() {
     };
   }, [sendProgressSnapshot]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSelectedSubtitle = async () => {
+      if (!selectedSubtitleId) {
+        revokeActiveSubtitleObjectUrl();
+        setActiveSubtitleTrack(null);
+        setSubtitleLoading(false);
+        return;
+      }
+
+      const selectedOption = subtitleOptions.find((option) => option.id === selectedSubtitleId);
+      if (!selectedOption) {
+        setSelectedSubtitleId(null);
+        return;
+      }
+
+      setSubtitleLoading(true);
+      setSubtitleError('');
+
+      try {
+        const rawText =
+          selectedOption.source.type === 'inline'
+            ? selectedOption.source.text
+            : await fetch(selectedOption.source.url).then(async (response) => {
+                if (!response.ok) {
+                  throw new Error(`Subtitle request failed: ${response.status}`);
+                }
+                return response.text();
+              });
+        const vttText = convertSubtitleTextToVtt(rawText, selectedOption.format);
+        const objectUrl = URL.createObjectURL(new Blob([vttText], { type: 'text/vtt' }));
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        revokeActiveSubtitleObjectUrl();
+        activeSubtitleObjectUrlRef.current = objectUrl;
+        setActiveSubtitleTrack({
+          id: selectedOption.id,
+          label: selectedOption.label,
+          src: objectUrl,
+          srcLang: selectedOption.srcLang,
+          kind: selectedOption.kind,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setActiveSubtitleTrack(null);
+        setSubtitleError(clientErrorMessage(err, 'Failed to load subtitles.'));
+      } finally {
+        if (!cancelled) {
+          setSubtitleLoading(false);
+        }
+      }
+    };
+
+    void loadSelectedSubtitle();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [revokeActiveSubtitleObjectUrl, selectedSubtitleId, subtitleOptions]);
+
+  const handleSubtitleFileRequest = useCallback(() => {
+    subtitleFileInputRef.current?.click();
+  }, []);
+
+  const handleSubtitleFileSelection = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+
+      const format = extractSubtitleFormatFromFileName(file.name);
+      if (!isBrowserLoadableSubtitleFormat(format)) {
+        setSubtitleError('Only .srt and .vtt subtitle files are currently supported in the browser.');
+        return;
+      }
+
+      try {
+        const text = await file.text();
+        const nextOption: PlayerSubtitleOption = {
+          id: `upload:${Date.now()}:${file.name}`,
+          label: `Loaded file · ${file.name}`,
+          format,
+          srcLang: undefined,
+          kind: 'subtitles',
+          source: { type: 'inline', text },
+        };
+        setSubtitleError('');
+        setSubtitleOptions((current) => [
+          ...current.filter((option) => option.source.type !== 'inline'),
+          nextOption,
+        ]);
+        setSelectedSubtitleId(nextOption.id);
+      } catch (err) {
+        setSubtitleError(clientErrorMessage(err, 'Failed to read subtitle file.'));
+      }
+    },
+    [],
+  );
+
   const knownDurationSecs = Math.max(
     descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
     mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
@@ -967,6 +1208,9 @@ export default function PlayerPage() {
       </header>
 
       {error && <p className="notice-error shrink-0 rounded-xl px-4 py-2 text-sm">{error}</p>}
+      {subtitleError && (
+        <p className="notice-error shrink-0 rounded-xl px-4 py-2 text-sm">{subtitleError}</p>
+      )}
       {loadingDescriptor && (
         <p className="rf-flat-empty shrink-0 px-4 py-2 text-sm muted">Preparing playback descriptor…</p>
       )}
@@ -994,6 +1238,12 @@ export default function PlayerPage() {
           qualityValue={selectedQualityValue}
           qualityOptions={qualityOptions}
           qualityDisabled={startingHls}
+          subtitleOptions={subtitleMenuOptions}
+          selectedSubtitleId={selectedSubtitleId}
+          activeSubtitleTrack={activeSubtitleTrack}
+          subtitleLoading={subtitleLoading}
+          onSubtitleChange={setSelectedSubtitleId}
+          onSubtitleFileRequest={handleSubtitleFileRequest}
           onPlaybackToggleRequest={handlePlaybackToggleRequest}
           onQualityChange={(value) => {
             const nextTargetHeight = value === 'auto' ? null : value;
@@ -1023,6 +1273,15 @@ export default function PlayerPage() {
             onError: () => {
               setError('HLS playback failed. Refresh the page and retry.');
             },
+          }}
+        />
+        <input
+          ref={subtitleFileInputRef}
+          type="file"
+          accept=".srt,.vtt,.webvtt"
+          className="sr-only"
+          onChange={(event) => {
+            void handleSubtitleFileSelection(event);
           }}
         />
       </div>

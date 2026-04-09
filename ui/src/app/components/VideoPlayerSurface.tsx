@@ -13,6 +13,19 @@ import {
 
 export type VideoQualityOption = { value: 'auto' | number; label: string };
 
+export type VideoSubtitleOption = {
+  id: string;
+  label: string;
+};
+
+export type VideoSubtitleTrack = {
+  id: string;
+  label: string;
+  src: string;
+  srcLang?: string;
+  kind?: 'subtitles' | 'captions';
+};
+
 export const VIDEO_QUALITY_OPTIONS: VideoQualityOption[] = [
   { value: 'auto', label: 'Auto (Best for display)' },
   { value: 2160, label: '2160p (4K)' },
@@ -46,6 +59,12 @@ type VideoPlayerSurfaceProps = {
   qualityOptions: VideoQualityOption[];
   qualityDisabled?: boolean;
   onQualityChange: (value: 'auto' | number) => void;
+  subtitleOptions?: VideoSubtitleOption[];
+  selectedSubtitleId?: string | null;
+  activeSubtitleTrack?: VideoSubtitleTrack | null;
+  subtitleLoading?: boolean;
+  onSubtitleChange?: (id: string | null) => void;
+  onSubtitleFileRequest?: () => void;
   onSeekRequest: (targetSeconds: number) => void | Promise<void>;
   onPlaybackToggleRequest?: () => void | Promise<void>;
   onDownload?: () => void | Promise<void>;
@@ -286,6 +305,12 @@ export default function VideoPlayerSurface({
   qualityOptions,
   qualityDisabled = false,
   onQualityChange,
+  subtitleOptions = [],
+  selectedSubtitleId = null,
+  activeSubtitleTrack = null,
+  subtitleLoading = false,
+  onSubtitleChange,
+  onSubtitleFileRequest,
   onSeekRequest,
   onPlaybackToggleRequest,
   onDownload,
@@ -315,6 +340,8 @@ export default function VideoPlayerSurface({
   const [pendingSeekSecs, setPendingSeekSecs] = useState<number | null>(null);
   const [hasEverPlayed, setHasEverPlayed] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(false);
+  const controlButtonClass =
+    'inline-flex h-10 w-10 items-center justify-center rounded-full border-0 bg-white/8 p-0 text-sm text-white/90 shadow-none backdrop-blur-sm transition hover:bg-white/14 hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50';
 
   const syncFromVideo = useCallback(() => {
     const video = videoRef.current;
@@ -397,6 +424,18 @@ export default function VideoPlayerSurface({
       setShowSettings(false);
     }
   }, [controlsVisible, showSettings]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const textTracks = video.textTracks;
+    for (let index = 0; index < textTracks.length; index += 1) {
+      textTracks[index].mode = 'disabled';
+    }
+    if (activeSubtitleTrack && textTracks.length > 0) {
+      textTracks[textTracks.length - 1].mode = 'showing';
+    }
+  }, [activeSubtitleTrack, videoRef]);
 
   useEffect(() => {
     return () => {
@@ -635,7 +674,18 @@ export default function VideoPlayerSurface({
                   : `w-full cursor-pointer ${maxViewportHeightClassName}`
             } ${(videoElementProps?.className ?? '').trim()}`.trim()
           }
-        />
+        >
+          {activeSubtitleTrack ? (
+            <track
+              key={activeSubtitleTrack.id}
+              src={activeSubtitleTrack.src}
+              label={activeSubtitleTrack.label}
+              srcLang={activeSubtitleTrack.srcLang}
+              kind={activeSubtitleTrack.kind ?? 'subtitles'}
+              default
+            />
+          ) : null}
+        </video>
         {showArtworkOverlay ? (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
             <img
@@ -669,7 +719,7 @@ export default function VideoPlayerSurface({
             disabled={!canStartPlayback || !playbackEnabled}
             aria-label={isPlaying ? 'Pause playback' : 'Play playback'}
             title={playbackDisabledReason ?? (isPlaying ? 'Pause playback' : 'Play playback')}
-            className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            className={controlButtonClass}
           >
             {isPlaying ? <PauseIcon /> : <PlayIcon />}
           </button>
@@ -681,7 +731,7 @@ export default function VideoPlayerSurface({
               disabled={!canStartPlayback}
               aria-label={isMuted ? 'Unmute audio' : 'Mute audio'}
               title={isMuted ? 'Unmute audio' : 'Mute audio'}
-              className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              className={controlButtonClass}
             >
               {isMuted ? <VolumeXIcon /> : <Volume2Icon />}
             </button>
@@ -735,7 +785,7 @@ export default function VideoPlayerSurface({
                 disabled={downloadDisabled || downloading || !canStartPlayback}
                 aria-label="Download current quality"
                 title="Download current quality"
-                className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                className={controlButtonClass}
               >
                 <DownloadIcon />
               </button>
@@ -744,7 +794,7 @@ export default function VideoPlayerSurface({
               <button
                 type="button"
                 onClick={() => setShowSettings((current) => !current)}
-                className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm"
+                className={controlButtonClass}
                 aria-label="Playback settings"
                 title="Playback settings"
               >
@@ -789,13 +839,51 @@ export default function VideoPlayerSurface({
                         : 'Current stream: Detecting…'}
                     </span>
                   </label>
+                  {onSubtitleChange || onSubtitleFileRequest ? (
+                    <div className="mt-3 flex flex-col gap-2 text-xs muted">
+                      <span>Subtitles</span>
+                      <select
+                        className="select px-2 py-2 text-sm"
+                        value={selectedSubtitleId ?? 'off'}
+                        onChange={(event) =>
+                          onSubtitleChange?.(
+                            event.target.value === 'off' ? null : event.target.value,
+                          )
+                        }
+                        disabled={subtitleLoading}
+                      >
+                        <option value="off">Off</option>
+                        {subtitleOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      {onSubtitleFileRequest ? (
+                        <button
+                          type="button"
+                          onClick={onSubtitleFileRequest}
+                          className="btn-secondary justify-start px-3 py-2 text-sm"
+                        >
+                          Load subtitle file
+                        </button>
+                      ) : null}
+                      <span className="text-[11px]">
+                        {subtitleLoading
+                          ? 'Loading subtitle track…'
+                          : subtitleOptions.length > 0
+                            ? 'Choose an available subtitle track or load an SRT/VTT file.'
+                            : 'Load an SRT or VTT subtitle file for this video.'}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>
             <button
               type="button"
               onClick={() => void toggleFullscreen()}
-              className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm"
+              className={controlButtonClass}
               aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
               title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             >
