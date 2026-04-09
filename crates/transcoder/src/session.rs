@@ -26,13 +26,18 @@ pub struct TranscodeSession {
     pub output_dir: PathBuf,
     pub started_at: Instant,
     pub last_ping: Instant,
-    _permit: OwnedSemaphorePermit,
+    _permit: Option<OwnedSemaphorePermit>,
     child: Option<Child>,
 }
 
 impl TranscodeSession {
     pub fn ping(&mut self) {
         self.last_ping = Instant::now();
+    }
+
+    fn mark_finished(&mut self) {
+        self.child = None;
+        self._permit = None;
     }
 
     /// Check if master.m3u8 exists (ffmpeg started writing).
@@ -173,7 +178,7 @@ impl SessionManager {
             output_dir,
             started_at: Instant::now(),
             last_ping: Instant::now(),
-            _permit: permit,
+            _permit: Some(permit),
             child: Some(child),
         };
 
@@ -290,14 +295,17 @@ impl SessionManager {
 
         for (id, session) in sessions.iter_mut() {
             let Some(child) = session.child.as_mut() else {
-                ids_to_remove.push(id.clone());
                 continue;
             };
 
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    info!(session_id = %id, ?status, "reaping finished HLS session");
-                    ids_to_remove.push(id.clone());
+                    session.mark_finished();
+                    info!(
+                        session_id = %id,
+                        ?status,
+                        "HLS session transcoder finished; retaining output until idle cleanup"
+                    );
                 }
                 Ok(None) => {
                     // Still running.
@@ -800,7 +808,132 @@ async fn spawn_ffmpeg(options: SpawnFfmpegOptions<'_>) -> Result<Child, Transcod
 
 #[cfg(test)]
 mod tests {
-    use super::recommended_hw_video_bitrate_kbps;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::{SessionManager, TranscoderConfig, recommended_hw_video_bitrate_kbps};
+
+    fn create_fake_ffmpeg_script(exit_delay_secs: u64) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "rf_transcoder_fake_ffmpeg_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        #[cfg(unix)]
+        {
+            let script = dir.join("fake_ffmpeg.sh");
+            let content = format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+
+out="${{@: -1}}"
+seg_pattern=""
+for ((i=1; i<=$#; i++)); do
+  arg="${{!i}}"
+  if [[ "$arg" == "-hls_segment_filename" ]]; then
+    j=$((i+1))
+    seg_pattern="${{!j}}"
+  fi
+done
+
+mkdir -p "$(dirname "$out")"
+cat > "$out" <<'EOF'
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:4
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:4.0,
+seg_00000.ts
+EOF
+
+if [[ -n "$seg_pattern" ]]; then
+  seg="${{seg_pattern//%05d/00000}}"
+  mkdir -p "$(dirname "$seg")"
+  printf 'FAKE_TS' > "$seg"
+fi
+
+sleep {exit_delay_secs}
+"#
+            );
+            std::fs::write(&script, content).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+            script
+        }
+
+        #[cfg(windows)]
+        {
+            let ps_script = dir.join("fake_ffmpeg.ps1");
+            let ps_content = format!(
+                r#"
+$args_list = $args
+$out = $args_list[$args_list.Count - 1]
+$seg_pattern = ""
+for ($i = 0; $i -lt $args_list.Count; $i++) {{
+    if ($args_list[$i] -eq "-hls_segment_filename" -and ($i + 1) -lt $args_list.Count) {{
+        $seg_pattern = $args_list[$i + 1]
+    }}
+}}
+
+$out_dir = Split-Path -Parent $out
+if ($out_dir -and !(Test-Path $out_dir)) {{
+    New-Item -ItemType Directory -Path $out_dir -Force | Out-Null
+}}
+
+$playlist = @"
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:4
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:4.0,
+seg_00000.ts
+"@
+Set-Content -Path $out -Value $playlist -NoNewline
+
+if ($seg_pattern -ne "") {{
+    $seg = $seg_pattern -replace "%05d", "00000"
+    $seg_dir = Split-Path -Parent $seg
+    if ($seg_dir -and !(Test-Path $seg_dir)) {{
+        New-Item -ItemType Directory -Path $seg_dir -Force | Out-Null
+    }}
+    Set-Content -Path $seg -Value "FAKE_TS" -NoNewline
+}}
+
+Start-Sleep -Seconds {exit_delay_secs}
+"#
+            );
+            std::fs::write(&ps_script, ps_content).unwrap();
+
+            let cmd_script = dir.join("fake_ffmpeg.cmd");
+            let cmd_content = format!(
+                "@echo off\r\npowershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\" %*\r\n",
+                ps_script.to_string_lossy()
+            );
+            std::fs::write(&cmd_script, cmd_content).unwrap();
+            cmd_script
+        }
+    }
+
+    fn test_config(
+        exit_delay_secs: u64,
+        idle_timeout_secs: u64,
+        max_concurrent: usize,
+    ) -> TranscoderConfig {
+        TranscoderConfig {
+            ffmpeg_path: create_fake_ffmpeg_script(exit_delay_secs),
+            ffprobe_path: PathBuf::from("ffprobe"),
+            transcode_dir: std::env::temp_dir().join(format!(
+                "rf_transcoder_test_output_{}",
+                uuid::Uuid::new_v4()
+            )),
+            max_concurrent,
+            idle_timeout_secs,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn hw_bitrate_ladder_defaults_to_1080_profile_for_auto() {
@@ -817,5 +950,85 @@ mod tests {
             recommended_hw_video_bitrate_kbps(Some(2160)),
             (18000, 27000, 36000)
         );
+    }
+
+    #[tokio::test]
+    async fn completed_sessions_keep_artifacts_until_idle_cleanup_and_release_slots() {
+        let manager = SessionManager::new(test_config(1, 60, 1));
+
+        let first_id = manager
+            .create_session(
+                PathBuf::from("movie-a.mkv"),
+                None,
+                None,
+                None,
+                "user-1".to_string(),
+                "file-a".to_string(),
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        manager.cleanup_idle().await;
+
+        let first_segment = manager
+            .get_file_path(&first_id, "seg_00000.ts")
+            .await
+            .unwrap();
+        assert!(
+            first_segment.exists(),
+            "finished session segment should remain readable"
+        );
+        assert_eq!(manager.active_count().await, 1);
+
+        let second_id = manager
+            .create_session(
+                PathBuf::from("movie-b.mkv"),
+                None,
+                None,
+                None,
+                "user-1".to_string(),
+                "file-b".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(first_id, second_id);
+    }
+
+    #[tokio::test]
+    async fn completed_sessions_are_removed_after_idle_timeout() {
+        let manager = SessionManager::new(test_config(1, 1, 1));
+
+        let session_id = manager
+            .create_session(
+                PathBuf::from("movie-a.mkv"),
+                None,
+                None,
+                None,
+                "user-1".to_string(),
+                "file-a".to_string(),
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(manager.ping(&session_id).await);
+        manager.cleanup_idle().await;
+        assert!(
+            manager
+                .get_file_path(&session_id, "seg_00000.ts")
+                .await
+                .is_ok()
+        );
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        manager.cleanup_idle().await;
+        assert!(
+            manager
+                .get_file_path(&session_id, "seg_00000.ts")
+                .await
+                .is_err()
+        );
+        assert_eq!(manager.active_count().await, 0);
     }
 }
