@@ -47,6 +47,8 @@ The supported native Linux install flow for Rustyfin is **Debian 12, Debian 13, 
   - completed execution report for `/ai` phases 0 to 2
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-04-01-ai-assistant-delta-phase3-5-execution-report.md`
   - completed execution report for `/ai` phases 3 to 5, deployment, and live verification
+- `/Users/iwan/Desktop/Rustyfin/docs/plans/2026-04-07-ai-judge-improvement-plan.md`
+  - umbrella AI judge plan and five-phase implementation pack for the eval harness
 - `/Users/iwanteague/Desktop/Rustyfin/docs/plans/2026-04-02-ai-memory-human-dictionary-knowledge-plan.md`
   - proposed implementation-grade delta plan for AI personal memory, people and group memory, account-to-person linking, and knowledge collections
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-04-07-human-dictionary-implementation-summary.md`

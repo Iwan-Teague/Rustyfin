@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "required": ["name", "task_type", "required_artifact_substrings", "allowed_runtime_budget_ms"],
+  "additionalProperties": true,
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "task_type": {
+      "type": "string",
+      "enum": ["deep_research_report", "grounded_document_generation", "ai_eval_run"]
+    },
+    "objective": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "prompt": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "format": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "suite": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "max_workers": { "type": "integer" },
+    "expected_worker_profiles": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
+    "required_artifact_substrings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "allowed_runtime_budget_ms": { "type": "integer" }
+  }
+}

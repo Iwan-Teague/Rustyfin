@@ -18,10 +18,12 @@ SKIP_RUNTIME=false
 SKIP_UI=false
 SKIP_CLIPPY=false
 SKIP_TESTS=false
+SKIP_JUDGE=false
 SKIP_BROWSER_SMOKE=false
 ALLOW_NON_DEBIAN=false
 REPORT_PATH=""
 CARGO_GATE_JOBS="${RUSTFIN_GATE_CARGO_JOBS:-1}"
+JUDGE_MODE="${RUSTFIN_JUDGE_GATE_MODE:-smoke}"
 
 usage() {
   cat <<'EOF'
@@ -37,6 +39,8 @@ Options:
   --skip-ui             Skip UI lint/typecheck/build gates.
   --skip-clippy         Skip strict clippy gates.
   --skip-tests          Skip Rust test gates.
+  --skip-judge          Skip the AI judge smoke/release gate.
+  --judge-mode MODE     AI judge gate mode: smoke or release. Default: smoke.
   --skip-browser-smoke  Skip the isolated Playwright browser smoke suite.
   --allow-non-debian    Run outside supported Debian hosts (runtime confidence is reduced).
   --report PATH         Write the Markdown report to PATH.
@@ -53,6 +57,12 @@ while [[ $# -gt 0 ]]; do
     --skip-ui) SKIP_UI=true; shift ;;
     --skip-clippy) SKIP_CLIPPY=true; shift ;;
     --skip-tests) SKIP_TESTS=true; shift ;;
+    --skip-judge) SKIP_JUDGE=true; shift ;;
+    --judge-mode)
+      [[ $# -ge 2 ]] || die "--judge-mode requires smoke or release"
+      JUDGE_MODE="$2"
+      shift 2
+      ;;
     --skip-browser-smoke) SKIP_BROWSER_SMOKE=true; shift ;;
     --allow-non-debian) ALLOW_NON_DEBIAN=true; shift ;;
     --report)
@@ -69,6 +79,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "$JUDGE_MODE" in
+  smoke|release) ;;
+  *) die "Unsupported --judge-mode value: $JUDGE_MODE" ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -234,7 +249,14 @@ check_native_script_syntax() {
     "$REPO_ROOT/scripts/stop-native.sh" \
     "$REPO_ROOT/scripts/deploy-native.sh" \
     "$REPO_ROOT/scripts/install_native_debian.sh" \
+    "$REPO_ROOT/scripts/ci/judge_gates.sh" \
     "$REPO_ROOT/scripts/ci/debian_native_gates.sh"
+}
+
+check_ai_judge_gate() {
+  "$REPO_ROOT/scripts/ci/judge_gates.sh" \
+    --mode "$JUDGE_MODE" \
+    --artifacts-dir "$LOG_DIR/judge"
 }
 
 check_ui_dependencies_present() {
@@ -508,6 +530,12 @@ else
   run_cargo_gate "Rust transcoder tests" cargo test -p rustfin-transcoder --lib
   run_cargo_gate "Rust calendar tests" cargo test -p rustfin-calendar --bin rustfin-calendar
   run_cargo_gate "Rust servers-host tests" cargo test -p rustfin-servers-host
+fi
+
+if [[ "$SKIP_JUDGE" == "true" ]]; then
+  warn "Skipping AI judge gate by request."
+else
+  run_gate "AI judge gate ($JUDGE_MODE)" check_ai_judge_gate
 fi
 
 if [[ "$SKIP_UI" == "true" ]]; then

@@ -1,0 +1,60 @@
+{
+  "type": "object",
+  "required": [
+    "name",
+    "message",
+    "response_mode",
+    "initial_calls",
+    "steps",
+    "expected_stop_reason",
+    "expected_final_outcome_kind",
+    "expected_attempt_count",
+    "expected_attempted_tools"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "user_role": { "type": "string", "enum": ["user", "admin"] },
+    "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "response_mode": { "type": "string", "enum": ["instant", "thinking", "extended"] },
+    "initial_calls": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": ["tool", "input"],
+        "additionalProperties": true,
+        "properties": {
+          "tool": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "input": { "type": "object" }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": ["tool", "label", "status", "data"],
+        "additionalProperties": false,
+        "properties": {
+          "tool": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "status": { "type": "string", "enum": ["ok", "error"] },
+          "data": { "type": "object" }
+        }
+      }
+    },
+    "expected_stop_reason": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "expected_final_outcome_kind": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "expected_attempt_count": { "type": "integer" },
+    "expected_attempted_tools": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    }
+  }
+}

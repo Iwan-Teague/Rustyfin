@@ -90,6 +90,7 @@ Rustyfin is a native-Debian-first local media platform with:
   - long-running `/ai` conversations must compact older history before planner/answer prompt assembly and should retry once with a more aggressive compacted prompt before surfacing a context-window failure to the user
   - AI runtime optimization work should stay local-first by default: benchmark recommendations must come from evidence on the host, the warm-model pool must respect host memory limits, queueing and overload behavior must stay visible, and remote backends remain optional provider abstractions rather than hardwired orchestration assumptions
   - grounded turns also persist compact grounding chunks, typed memory items, and entity-graph rows; keep that retrieval path ACL-safe, CPU-friendly, and compact instead of injecting raw tool payloads
+  - `crates/server/src/ai_eval_harness` is now a layered judge harness: deterministic hard gates stay authoritative, rubric verdicts remain structured/soft and human-reviewable, judge/rubric versions plus fixture/schema/tool digests must stay pinned in the report artifacts, pairwise comparison experiments must stay in the separate comparison-mode artifacts rather than the default pointwise report path, and production-trace imports must keep raw archive JSON separate from curated redacted trace-derived corpus rows with explicit review/calibration metadata
   - in `Thinking` and `Extended`, grounded birthday lookups may take one bounded server-side recovery pass when the first birthday search is empty but the backend can derive a better birthday window or self/name query from the prompt; keep that retry deterministic and observable
   - grounded `/api/v1/ai/chat` now runs through a bounded multi-step executor with typed tool outcomes, explicit stop reasons, duplicate-signature protection, compact evidence retention, and mode-specific retry budgets; preserve that executor layer rather than reverting to one-shot tool execution
   - runtime and admin AI diagnostics should keep exposing bounded execution telemetry such as stop reason, attempt count, tool steps, alternates, recovery steps, and outcome distributions without surfacing hidden reasoning text
@@ -228,6 +229,7 @@ Run before finalizing substantial changes:
 - Rust format: `cargo fmt --all`
 - Rust checks: `cargo check`
 - Rust tests when relevant: `cargo test`
+- AI judge smoke/release gate when touching the eval harness or CI contract: `./scripts/ci/judge_gates.sh --mode smoke|release`
 - DB-backed server integration suite when PostgreSQL is available:
   `cargo test -p rustfin-server --test integration --features db-integration-tests`
   with `RUSTFIN_TEST_DATABASE_URL` or `RUSTFIN_DATABASE_URL`

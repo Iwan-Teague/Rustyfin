@@ -1,5 +1,5 @@
 use rustfin_core::error::ApiError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ai_assistant::types::{
     AssistantArtifactVerificationDebug, AssistantPlannerDebug, AssistantTurnStats,
@@ -44,7 +44,7 @@ pub struct TurnJournalHandle {
     pub response_mode: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiTurnJournalSummary {
     pub id: String,
     pub user_id: String,
