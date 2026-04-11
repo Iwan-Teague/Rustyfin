@@ -10087,7 +10087,18 @@ fn extract_library_search_query(message: &str) -> Option<String> {
     if let Some(quoted) = extract_quoted_phrase(message) {
         if has_any(
             &lower,
-            &["do i have", "find", "search", "look for", "is there"],
+            &[
+                "do i have",
+                "find",
+                "search",
+                "search my library",
+                "search my libraries",
+                "search the library",
+                "search the libraries",
+                "look for",
+                "look up",
+                "is there",
+            ],
         ) || mentions_library_context
         {
             return Some(quoted);
@@ -10098,7 +10109,14 @@ fn extract_library_search_query(message: &str) -> Option<String> {
         "do i have ",
         "find ",
         "search for ",
+        "search my library for ",
+        "search my libraries for ",
+        "search the library for ",
+        "search the libraries for ",
+        "search library for ",
+        "search libraries for ",
         "look for ",
+        "look up ",
         "is there ",
     ];
 
