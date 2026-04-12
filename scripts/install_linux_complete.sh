@@ -18,7 +18,7 @@ Usage:
   ./scripts/install_linux_complete.sh [rustfin-installer args...]
 
 This wrapper prepares a supported Debian/Ubuntu host for Rustyfin, then runs:
-  cargo run --locked -p rustfin-installer -- install --skip-prereqs [args...]
+  cargo run --release --locked -p rustfin-installer -- install --skip-prereqs [args...]
 
 Supported hosts:
   - Debian 12
@@ -381,7 +381,7 @@ ensure_optional_cuda() {
 
 run_rustfin_installer() {
   info "Running rustfin-installer with --skip-prereqs..."
-  local installer_cmd='source "$HOME/.cargo/env" && cargo run --locked -p rustfin-installer -- install --skip-prereqs'
+  local installer_cmd='source "$HOME/.cargo/env" && RUSTFIN_RUST_BUILD_PROFILE=release cargo run --release --locked -p rustfin-installer -- install --skip-prereqs'
   local arg
   for arg in "$@"; do
     installer_cmd+=" $(printf '%q' "$arg")"

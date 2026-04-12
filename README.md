@@ -207,7 +207,7 @@ Preferred one-shot Linux installer:
 ./scripts/install_linux.sh
 ```
 
-This bootstraps the host for Rustyfin, including sudo preflight, Ubuntu repository components, official Caddy setup, and Node.js 20 bootstrap where needed, then hands off to `cargo run --locked -p rustfin-installer -- install --skip-prereqs`.
+This bootstraps the host for Rustyfin, including sudo preflight, Ubuntu repository components, official Caddy setup, and Node.js 20 bootstrap where needed, then hands off to `cargo run --release --locked -p rustfin-installer -- install --skip-prereqs`.
 The current full native install flow is implemented for Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 24.04.
 The native runtime defaults to the `release` build profile; set `RUSTFIN_RUST_BUILD_PROFILE=dev` only when you intentionally want debug artifacts.
 The Rust installer now owns native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, first-install starter AI model trio seeding into the active AI model directory during setup, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, install-manifest output, and post-install `systemd` runtime validation with captured diagnostics if startup fails.
