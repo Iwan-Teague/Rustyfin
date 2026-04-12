@@ -3,7 +3,7 @@ use chrono::Utc;
 use rand::RngCore;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -38,6 +38,10 @@ const MANAGED_JAVA_CURRENT: &str = "/opt/rustyfin/java/current";
 const MANAGED_JAVA_INSTALL_DIR: &str = "/opt/rustyfin/java/temurin-21";
 const DEFAULT_AI_MODEL_DIR: &str = "/var/lib/rustyfin/ai/models";
 const DEFAULT_BOOTSTRAP_AI_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf";
+const DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL: &str =
+    "https://huggingface.co/gguf-org/gemma-4-e2b-it-gguf/resolve/main/gemma-4-e2b-it-Q4_0.gguf";
+const DEFAULT_BOOTSTRAP_GEMMA_4_E4B_MODEL_URL: &str =
+    "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q3_K_M.gguf";
 const AI_BOOTSTRAP_MODEL_ENV: &str = "RUSTFIN_AI_BOOTSTRAP_MODEL";
 const AI_BOOTSTRAP_MODEL_URL_ENV: &str = "RUSTFIN_AI_BOOTSTRAP_MODEL_URL";
 const AI_BOOTSTRAP_MODEL_FILE_ENV: &str = "RUSTFIN_AI_BOOTSTRAP_MODEL_FILE";
@@ -972,7 +976,7 @@ fn install(
 
     println!("[rustfin-installer] Writing native runtime defaults...");
     write_native_runtime_defaults(repo_root, host, user_context)?;
-    println!("[rustfin-installer] Ensuring starter AI model...");
+    println!("[rustfin-installer] Ensuring starter AI models...");
     ensure_starter_ai_model(repo_root, host, user_context)?;
 
     if options.skip_systemd {
@@ -1318,48 +1322,101 @@ fn ensure_starter_ai_model(
     let resolved_ai_backend = resolve_ai_gpu_backend(host, &requested_ai_backend)?;
     if resolved_ai_backend == "disabled" {
         println!(
-            "[rustfin-installer] Skipping starter AI model because AI inference is disabled for this host/build."
+            "[rustfin-installer] AI inference is disabled for this host/build, but starter AI models will still be seeded during setup."
         );
-        return Ok(());
     }
 
     let model_dir = ensure_installer_ai_model_dir_ready(user_context)?;
-    if ai_model_dir_contains_gguf(&model_dir)? {
+    let bootstrap_models = resolve_bootstrap_ai_model_configs()?;
+    if ai_model_dir_contains_gguf(&model_dir)?
+        && !ai_model_dir_contains_bootstrap_seed(&model_dir, &bootstrap_models)
+    {
         println!(
-            "[rustfin-installer] Existing GGUF model detected in {}; skipping starter model download.",
+            "[rustfin-installer] Existing non-starter GGUF model detected in {}; skipping starter model seeding.",
             model_dir.display()
         );
         return Ok(());
     }
 
-    let bootstrap = resolve_bootstrap_ai_model_config()?;
     println!(
-        "[rustfin-installer] Downloading starter AI model {} into {}...",
-        bootstrap.file_name,
+        "[rustfin-installer] Downloading starter AI models into {}...",
         model_dir.display()
     );
-    match download_starter_ai_model(repo_root, user_context, &model_dir, &bootstrap) {
-        Ok(downloaded_path) => {
+
+    let total_bootstrap_models = bootstrap_models.len();
+    let mut downloaded_models = 0usize;
+    let mut failed_models = 0usize;
+    for (index, bootstrap) in bootstrap_models.iter().enumerate() {
+        let final_path = model_dir.join(&bootstrap.file_name);
+        if final_path.exists() {
             println!(
-                "[rustfin-installer] Starter AI model ready at {}",
-                downloaded_path.display()
+                "[rustfin-installer] Starter AI model already present at {}; skipping.",
+                final_path.display()
             );
-            Ok(())
+            continue;
         }
-        Err(error) if !bootstrap.strict => {
-            eprintln!(
-                "[rustfin-installer] Warning: failed to download the default starter AI model from {}: {error}. Rustyfin will continue installing without a bundled model. Set {}=0 to skip this step or {} to override the source.",
-                bootstrap.url, AI_BOOTSTRAP_MODEL_ENV, AI_BOOTSTRAP_MODEL_URL_ENV
-            );
-            Ok(())
+
+        println!(
+            "[rustfin-installer] Downloading starter AI model {}/{}: {} into {}...",
+            index + 1,
+            total_bootstrap_models,
+            bootstrap.file_name,
+            model_dir.display()
+        );
+        match download_starter_ai_model(repo_root, user_context, &model_dir, bootstrap) {
+            Ok(downloaded_path) => {
+                downloaded_models += 1;
+                println!(
+                    "[rustfin-installer] Starter AI model ready at {}",
+                    downloaded_path.display()
+                );
+            }
+            Err(error) if !bootstrap.strict => {
+                failed_models += 1;
+                eprintln!(
+                    "[rustfin-installer] Warning: failed to download the starter AI model from {}: {error}. Rustyfin will continue installing without that bundled model. Set {}=0 to skip this step or {} to override the primary starter source.",
+                    bootstrap.url, AI_BOOTSTRAP_MODEL_ENV, AI_BOOTSTRAP_MODEL_URL_ENV
+                );
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to provision the configured starter AI model from {}",
+                        bootstrap.url
+                    )
+                });
+            }
         }
-        Err(error) => Err(error).with_context(|| {
-            format!(
-                "failed to provision the configured starter AI model from {}",
-                bootstrap.url
-            )
-        }),
     }
+
+    match (downloaded_models, failed_models) {
+        (0, 0) => {
+            println!(
+                "[rustfin-installer] Starter AI models were already present in {}; nothing to download.",
+                model_dir.display()
+            );
+        }
+        (_, 0) => {
+            println!(
+                "[rustfin-installer] Starter AI model seeding completed with {} downloaded model(s).",
+                downloaded_models
+            );
+        }
+        (0, failed) => {
+            println!(
+                "[rustfin-installer] Starter AI model seeding completed with no downloads and {} failed download(s).",
+                failed
+            );
+        }
+        (_, failed) => {
+            println!(
+                "[rustfin-installer] Starter AI model seeding completed with {} downloaded model(s) and {} failed download(s).",
+                downloaded_models, failed
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn ai_bootstrap_model_enabled() -> bool {
@@ -1382,6 +1439,37 @@ fn resolve_bootstrap_ai_model_config() -> anyhow::Result<BootstrapAiModelConfig>
         env::var(AI_BOOTSTRAP_MODEL_URL_ENV).ok().as_deref(),
         env::var(AI_BOOTSTRAP_MODEL_FILE_ENV).ok().as_deref(),
     )
+}
+
+fn resolve_bootstrap_ai_model_configs() -> anyhow::Result<Vec<BootstrapAiModelConfig>> {
+    let primary = resolve_bootstrap_ai_model_config()?;
+    resolve_bootstrap_ai_model_configs_with_primary(primary)
+}
+
+fn resolve_bootstrap_ai_model_configs_with_overrides(
+    url_override: Option<&str>,
+    file_override: Option<&str>,
+) -> anyhow::Result<Vec<BootstrapAiModelConfig>> {
+    let primary = resolve_bootstrap_ai_model_config_with_overrides(url_override, file_override)?;
+    resolve_bootstrap_ai_model_configs_with_primary(primary)
+}
+
+fn resolve_bootstrap_ai_model_configs_with_primary(
+    primary: BootstrapAiModelConfig,
+) -> anyhow::Result<Vec<BootstrapAiModelConfig>> {
+    let mut configs = Vec::with_capacity(3);
+    configs.push(primary);
+    configs.push(BootstrapAiModelConfig {
+        url: DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL.to_string(),
+        file_name: derive_gguf_file_name_from_url(DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL)?,
+        strict: false,
+    });
+    configs.push(BootstrapAiModelConfig {
+        url: DEFAULT_BOOTSTRAP_GEMMA_4_E4B_MODEL_URL.to_string(),
+        file_name: derive_gguf_file_name_from_url(DEFAULT_BOOTSTRAP_GEMMA_4_E4B_MODEL_URL)?,
+        strict: false,
+    });
+    Ok(deduplicate_bootstrap_ai_model_configs(configs))
 }
 
 fn resolve_bootstrap_ai_model_config_with_overrides(
@@ -1410,6 +1498,19 @@ fn resolve_bootstrap_ai_model_config_with_overrides(
         file_name,
         strict,
     })
+}
+
+fn deduplicate_bootstrap_ai_model_configs(
+    configs: Vec<BootstrapAiModelConfig>,
+) -> Vec<BootstrapAiModelConfig> {
+    let mut seen_file_names = HashSet::new();
+    let mut deduplicated = Vec::with_capacity(configs.len());
+    for config in configs {
+        if seen_file_names.insert(config.file_name.clone()) {
+            deduplicated.push(config);
+        }
+    }
+    deduplicated
 }
 
 fn validate_bootstrap_model_file_name(file_name: &str) -> anyhow::Result<String> {
@@ -1495,6 +1596,15 @@ fn ai_model_dir_contains_gguf(model_dir: &Path) -> anyhow::Result<bool> {
         }
     }
     Ok(false)
+}
+
+fn ai_model_dir_contains_bootstrap_seed(
+    model_dir: &Path,
+    bootstrap_models: &[BootstrapAiModelConfig],
+) -> bool {
+    bootstrap_models
+        .iter()
+        .any(|bootstrap| model_dir.join(&bootstrap.file_name).is_file())
 }
 
 fn download_starter_ai_model(
@@ -2427,7 +2537,7 @@ fn launch_native_runtime(
     }
 
     let build_profile =
-        env::var("RUSTFIN_RUST_BUILD_PROFILE").unwrap_or_else(|_| "dev".to_string());
+        env::var("RUSTFIN_RUST_BUILD_PROFILE").unwrap_or_else(|_| "release".to_string());
     let native_target = env::var("RUSTFIN_NATIVE_TARGET")
         .or_else(|_| env::var("RUSTFIN_NATIVE_LINUX_TARGET"))
         .unwrap_or_else(|_| "x86_64-unknown-linux-gnu".to_string());
@@ -3732,12 +3842,14 @@ fn resolve_clean_database_url(repo_root: &Path) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BootstrapAiModelConfig, EdgeTlsMode, build_edge_health_resolve, build_edge_site_address,
-        build_public_browser_origin, build_ws_allowed_origins, cmdline_matches_pidfile_name,
-        derive_gguf_file_name_from_url, format_http_origin, merge_search_paths_into_rustflags,
-        normalize_browser_backend_origin, normalize_ws_allowed_origins,
-        parse_ai_bootstrap_model_enabled, parse_http_origin,
-        resolve_bootstrap_ai_model_config_with_overrides, resolve_installer_ai_model_dir_from_env,
+        BootstrapAiModelConfig, DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL,
+        DEFAULT_BOOTSTRAP_GEMMA_4_E4B_MODEL_URL, EdgeTlsMode, build_edge_health_resolve,
+        build_edge_site_address, build_public_browser_origin, build_ws_allowed_origins,
+        cmdline_matches_pidfile_name, derive_gguf_file_name_from_url, format_http_origin,
+        merge_search_paths_into_rustflags, normalize_browser_backend_origin,
+        normalize_ws_allowed_origins, parse_ai_bootstrap_model_enabled, parse_http_origin,
+        resolve_bootstrap_ai_model_config_with_overrides,
+        resolve_bootstrap_ai_model_configs_with_overrides, resolve_installer_ai_model_dir_from_env,
     };
     use std::path::PathBuf;
 
@@ -3823,6 +3935,37 @@ mod tests {
             BootstrapAiModelConfig {
                 url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf".to_string(),
                 file_name: "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf".to_string(),
+                strict: false,
+            }
+        );
+    }
+
+    #[test]
+    fn bootstrap_ai_model_configs_default_to_qwen_plus_two_gemma_starters() {
+        let configs = resolve_bootstrap_ai_model_configs_with_overrides(None, None)
+            .expect("default bootstrap configs");
+        assert_eq!(configs.len(), 3);
+        assert_eq!(
+            configs[0],
+            BootstrapAiModelConfig {
+                url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf".to_string(),
+                file_name: "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf".to_string(),
+                strict: false,
+            }
+        );
+        assert_eq!(
+            configs[1],
+            BootstrapAiModelConfig {
+                url: DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL.to_string(),
+                file_name: "gemma-4-e2b-it-Q4_0.gguf".to_string(),
+                strict: false,
+            }
+        );
+        assert_eq!(
+            configs[2],
+            BootstrapAiModelConfig {
+                url: DEFAULT_BOOTSTRAP_GEMMA_4_E4B_MODEL_URL.to_string(),
+                file_name: "gemma-4-E4B-it-Q3_K_M.gguf".to_string(),
                 strict: false,
             }
         );
