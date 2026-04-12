@@ -38,8 +38,7 @@ const MANAGED_JAVA_CURRENT: &str = "/opt/rustyfin/java/current";
 const MANAGED_JAVA_INSTALL_DIR: &str = "/opt/rustyfin/java/temurin-21";
 const DEFAULT_AI_MODEL_DIR: &str = "/var/lib/rustyfin/ai/models";
 const DEFAULT_BOOTSTRAP_AI_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf";
-const DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL: &str =
-    "https://huggingface.co/gguf-org/gemma-4-e2b-it-gguf/resolve/main/gemma-4-e2b-it-edited-q4_0.gguf";
+const DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL: &str = "https://huggingface.co/gguf-org/gemma-4-e2b-it-gguf/resolve/main/gemma-4-e2b-it-edited-q4_0.gguf";
 const DEFAULT_BOOTSTRAP_GEMMA_4_E4B_MODEL_URL: &str =
     "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q3_K_M.gguf";
 const AI_BOOTSTRAP_MODEL_ENV: &str = "RUSTFIN_AI_BOOTSTRAP_MODEL";
@@ -1893,16 +1892,29 @@ fn build_native_binaries_with_policy(
             bail!("Expected artifact missing: {}", artifact.display());
         }
         let destination = output_dir.join(bin);
-        fs::copy(&artifact, &destination).with_context(|| {
+        let temp_destination = destination.with_file_name(format!(
+            ".{}.{}.tmp",
+            bin,
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let _ = remove_if_exists(&temp_destination);
+        fs::copy(&artifact, &temp_destination).with_context(|| {
             format!(
                 "failed to copy artifact {} to {}",
                 artifact.display(),
-                destination.display()
+                temp_destination.display()
             )
         })?;
         let permissions = fs::Permissions::from_mode(0o755);
-        fs::set_permissions(&destination, permissions)
-            .with_context(|| format!("failed to chmod {}", destination.display()))?;
+        fs::set_permissions(&temp_destination, permissions)
+            .with_context(|| format!("failed to chmod {}", temp_destination.display()))?;
+        fs::rename(&temp_destination, &destination).with_context(|| {
+            format!(
+                "failed to move artifact {} into place at {}",
+                temp_destination.display(),
+                destination.display()
+            )
+        })?;
     }
 
     println!("[rustfin-installer] output dir: {}", output_dir.display());
@@ -3957,7 +3969,7 @@ mod tests {
             configs[1],
             BootstrapAiModelConfig {
                 url: DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL.to_string(),
-                file_name: "gemma-4-e2b-it-Q4_0.gguf".to_string(),
+                file_name: "gemma-4-e2b-it-edited-q4_0.gguf".to_string(),
                 strict: false,
             }
         );
