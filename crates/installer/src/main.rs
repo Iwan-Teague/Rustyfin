@@ -39,7 +39,7 @@ const MANAGED_JAVA_INSTALL_DIR: &str = "/opt/rustyfin/java/temurin-21";
 const DEFAULT_AI_MODEL_DIR: &str = "/var/lib/rustyfin/ai/models";
 const DEFAULT_BOOTSTRAP_AI_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf";
 const DEFAULT_BOOTSTRAP_GEMMA_4_E2B_MODEL_URL: &str =
-    "https://huggingface.co/gguf-org/gemma-4-e2b-it-gguf/resolve/main/gemma-4-e2b-it-Q4_0.gguf";
+    "https://huggingface.co/gguf-org/gemma-4-e2b-it-gguf/resolve/main/gemma-4-e2b-it-edited-q4_0.gguf";
 const DEFAULT_BOOTSTRAP_GEMMA_4_E4B_MODEL_URL: &str =
     "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q3_K_M.gguf";
 const AI_BOOTSTRAP_MODEL_ENV: &str = "RUSTFIN_AI_BOOTSTRAP_MODEL";
