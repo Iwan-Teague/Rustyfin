@@ -19,6 +19,7 @@ Usage:
 
 This wrapper prepares a supported Debian/Ubuntu host for Rustyfin, then runs:
   cargo run --release --locked -p rustfin-installer -- install --skip-prereqs [args...]
+  The wrapper accepts --yes / -y for convenience and ignores it.
 
 Supported hosts:
   - Debian 12
@@ -384,6 +385,11 @@ run_rustfin_installer() {
   local installer_cmd='source "$HOME/.cargo/env" && RUSTFIN_RUST_BUILD_PROFILE=release cargo run --release --locked -p rustfin-installer -- install --skip-prereqs'
   local arg
   for arg in "$@"; do
+    case "$arg" in
+      --yes|-y)
+        continue
+        ;;
+    esac
     installer_cmd+=" $(printf '%q' "$arg")"
   done
   run_as_native_user "$installer_cmd"
