@@ -15,4 +15,4 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-exec cargo run --locked -p rustfin-installer -- "$@"
+exec cargo run --release --locked -p rustfin-installer -- "$@"
