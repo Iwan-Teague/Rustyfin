@@ -16,7 +16,7 @@ cd "$REPO_ROOT"
 
 [[ "$(uname -s)" == "Linux" ]] || die "Native servers agent is supported on Linux hosts only."
 
-RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
+RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-release}"
 
 host_arch="$(uname -m)"
 case "$host_arch" in

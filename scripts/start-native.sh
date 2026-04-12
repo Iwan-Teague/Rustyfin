@@ -25,7 +25,7 @@ Options:
   -h, --help         Show this help.
 
 Environment:
-  RUSTFIN_RUST_BUILD_PROFILE            Cargo profile for native host build (default: dev)
+  RUSTFIN_RUST_BUILD_PROFILE            Cargo profile for native host build (default: release)
   RUSTFIN_BACKEND_PORT                  Backend bind port (default: 8096)
   RUSTFIN_CALENDAR_PORT                 Calendar bind port (default: 8099)
   RUSTFIN_TMDB_AGENT_PORT               TMDB agent port (default: 8100)
@@ -138,7 +138,7 @@ user_transcription_gpu_mode="${RUSTFIN_TRANSCRIPTION_GPU_MODE-}"
 user_transcription_require_gpu="${RUSTFIN_TRANSCRIPTION_REQUIRE_GPU-}"
 user_transcription_agent_cargo_features="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES-}"
 
-RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
+RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-release}"
 RUSTFIN_ENABLE_SERVERS_AGENT="${RUSTFIN_ENABLE_SERVERS_AGENT:-1}"
 RUSTFIN_AI_GPU_BACKEND="${RUSTFIN_AI_GPU_BACKEND:-auto}"
 RUSTFIN_TRANSCRIPTION_GPU_MODE="${RUSTFIN_TRANSCRIPTION_GPU_MODE:-opencl}"
