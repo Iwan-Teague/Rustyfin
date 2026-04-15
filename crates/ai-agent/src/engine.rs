@@ -113,12 +113,13 @@ impl LlamaEngine {
 
         let backend = shared_backend()?;
         let mut model_params = LlamaModelParams::default();
+        let resolved_device_indices = resolve_device_indices(&params);
         if params.n_gpu_layers >= 0 {
             model_params = model_params.with_n_gpu_layers(params.n_gpu_layers as u32);
         }
-        model_params = model_params.with_split_mode(params.split_mode.into());
-
-        let resolved_device_indices = resolve_device_indices(&params);
+        if should_apply_split_mode_override(&params, &resolved_device_indices) {
+            model_params = model_params.with_split_mode(params.split_mode.into());
+        }
         if !resolved_device_indices.is_empty() {
             model_params = model_params
                 .with_devices(&resolved_device_indices)
@@ -215,6 +216,17 @@ fn resolve_device_indices(params: &LlamaEngineParams) -> Vec<usize> {
     };
 
     normalize_device_indices(device_indices, params.split_mode, params.main_gpu)
+}
+
+fn should_apply_split_mode_override(
+    params: &LlamaEngineParams,
+    resolved_device_indices: &[usize],
+) -> bool {
+    if params.split_mode != LlamaGpuSplitMode::None {
+        return true;
+    }
+
+    !resolved_device_indices.is_empty() || params.main_gpu.is_some()
 }
 
 fn default_gpu_backend_device_indices() -> Vec<usize> {
@@ -420,7 +432,10 @@ fn run_decode_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{LlamaGpuSplitMode, normalize_device_indices};
+    use super::{
+        LlamaEngineParams, LlamaGpuSplitMode, normalize_device_indices,
+        should_apply_split_mode_override,
+    };
 
     #[test]
     fn normalize_device_indices_keeps_all_unique_devices_for_split_modes() {
@@ -452,5 +467,24 @@ mod tests {
             normalize_device_indices(vec![], LlamaGpuSplitMode::None, Some(1)),
             vec![1]
         );
+    }
+
+    #[test]
+    fn skip_split_mode_none_override_without_visible_gpu_state() {
+        let mut params = LlamaEngineParams::default();
+        params.split_mode = LlamaGpuSplitMode::None;
+        params.main_gpu = None;
+
+        assert!(!should_apply_split_mode_override(&params, &[]));
+        assert!(should_apply_split_mode_override(&params, &[0]));
+    }
+
+    #[test]
+    fn keep_split_mode_override_when_main_gpu_is_explicit() {
+        let mut params = LlamaEngineParams::default();
+        params.split_mode = LlamaGpuSplitMode::None;
+        params.main_gpu = Some(0);
+
+        assert!(should_apply_split_mode_override(&params, &[]));
     }
 }
