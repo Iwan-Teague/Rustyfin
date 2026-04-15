@@ -84,6 +84,7 @@ impl ModelStore {
             quantization: quantization_from_filename(&file),
             architecture: None,
             context_length: None,
+            block_count: None,
         };
 
         let model_params = LlamaModelParams::default().with_vocab_only(true);
@@ -101,6 +102,7 @@ impl ModelStore {
             .cloned()
             .or(info.quantization);
         info.context_length = context_length_from_meta(&meta, info.architecture.as_deref());
+        info.block_count = block_count_from_meta(&meta, info.architecture.as_deref());
 
         Ok(info)
     }
@@ -165,6 +167,7 @@ impl ModelStore {
                             quantization: quantization_from_filename(&file),
                             architecture: None,
                             context_length: None,
+                            block_count: None,
                         });
                     }
                 }
@@ -403,6 +406,14 @@ fn context_length_from_meta(
     }
 
     let key = architecture.map(|arch| format!("{arch}.context_length"))?;
+    meta.get(&key).and_then(|value| value.parse::<u32>().ok())
+}
+
+fn block_count_from_meta(
+    meta: &HashMap<String, String>,
+    architecture: Option<&str>,
+) -> Option<u32> {
+    let key = architecture.map(|arch| format!("{arch}.block_count"))?;
     meta.get(&key).and_then(|value| value.parse::<u32>().ok())
 }
 

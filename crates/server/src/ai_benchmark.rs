@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 use std::time::Instant;
 
 use futures::StreamExt;
@@ -65,6 +66,12 @@ struct BenchmarkOutcome {
     rss_after_load_bytes: Option<u64>,
     rss_peak_bytes: Option<u64>,
     failure_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BenchmarkGpuDevice {
+    index: usize,
+    total_vram_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -168,21 +175,7 @@ pub async fn run_model_benchmarks(
             .map(|row| row.benchmark_count)
     })
     .unwrap_or(0);
-    let winner = outcomes
-        .iter()
-        .filter(|outcome| outcome.failure_message.is_none())
-        .max_by(|left, right| {
-            left.tokens_per_second
-                .partial_cmp(&right.tokens_per_second)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| right.load_duration_ms.cmp(&left.load_duration_ms))
-                .then_with(|| {
-                    left.rss_peak_bytes
-                        .unwrap_or_default()
-                        .cmp(&right.rss_peak_bytes.unwrap_or_default())
-                        .reverse()
-                })
-        });
+    let winner = select_preferred_benchmark_outcome(&outcomes);
     let last_benchmark_label = winner
         .map(|outcome| outcome.candidate.benchmark_label.clone())
         .unwrap_or_else(|| benchmark_prefix.clone());
@@ -273,26 +266,53 @@ fn select_target_model<'a>(
 
 fn benchmark_candidates(
     _model: &AiModelSummary,
-    _model_path: &Path,
+    model_path: &Path,
     model_size_bytes: u64,
     host_threads: u32,
     benchmark_prefix: &str,
 ) -> Vec<BenchmarkCandidate> {
     let base_params = engine_params_from_env();
+    let model_block_count = rustfin_ai_agent::ModelStore::inspect_file(model_path)
+        .ok()
+        .and_then(|info| info.block_count);
+    let visible_gpu_devices = rustfin_ai_agent::engine::available_gpu_backend_device_indices();
+    let preferred_gpu = preferred_benchmark_gpu_device(&base_params, &visible_gpu_devices);
+
+    build_benchmark_candidates(
+        &base_params,
+        model_size_bytes,
+        host_threads,
+        benchmark_prefix,
+        model_block_count,
+        preferred_gpu,
+        visible_gpu_devices.len(),
+    )
+}
+
+fn build_benchmark_candidates(
+    base_params: &LlamaEngineParams,
+    model_size_bytes: u64,
+    host_threads: u32,
+    benchmark_prefix: &str,
+    model_block_count: Option<u32>,
+    preferred_gpu: Option<BenchmarkGpuDevice>,
+    visible_gpu_count: usize,
+) -> Vec<BenchmarkCandidate> {
     let mut candidates = Vec::new();
+    let (stable_base_params, current_label) =
+        stabilize_benchmark_base_params(base_params, preferred_gpu, visible_gpu_count);
 
     candidates.push(BenchmarkCandidate {
-        label: "current".to_string(),
-        benchmark_label: format!("{benchmark_prefix}/current"),
-        estimated_bytes: estimate_model_bytes(model_size_bytes, &base_params),
-        params: base_params.clone(),
+        label: current_label.to_string(),
+        benchmark_label: format!("{benchmark_prefix}/{current_label}"),
+        estimated_bytes: estimate_model_bytes(model_size_bytes, &stable_base_params),
+        params: stable_base_params.clone(),
     });
 
-    let mut balanced = base_params.clone();
+    let mut balanced = stable_base_params.clone();
     let balanced_threads = host_threads.saturating_mul(3).saturating_div(4).max(1);
-    balanced.n_threads = balanced_threads.min(host_threads.max(1));
-    balanced.n_threads = balanced.n_threads.max(1);
-    if !same_params(&balanced, &base_params) {
+    balanced.n_threads = balanced_threads.min(host_threads.max(1)).max(1);
+    if !same_params(&balanced, &stable_base_params) {
         candidates.push(BenchmarkCandidate {
             label: "balanced".to_string(),
             benchmark_label: format!("{benchmark_prefix}/balanced"),
@@ -301,14 +321,40 @@ fn benchmark_candidates(
         });
     }
 
-    if base_params.n_gpu_layers != 0 {
-        let mut cpu_safe = base_params.clone();
+    if stable_base_params.n_gpu_layers != 0 {
+        if let Some(gpu) = preferred_gpu {
+            let single_gpu_full = single_gpu_params(&stable_base_params, gpu, -1);
+            if !same_params(&single_gpu_full, &stable_base_params) {
+                candidates.push(BenchmarkCandidate {
+                    label: "single_gpu_full".to_string(),
+                    benchmark_label: format!("{benchmark_prefix}/single_gpu_full"),
+                    estimated_bytes: estimate_model_bytes(model_size_bytes, &single_gpu_full),
+                    params: single_gpu_full,
+                });
+            }
+
+            if let Some(block_count) = model_block_count {
+                for layers in
+                    partial_gpu_layer_targets(block_count, gpu.total_vram_bytes, model_size_bytes)
+                {
+                    let partial = single_gpu_params(&stable_base_params, gpu, layers as i32);
+                    candidates.push(BenchmarkCandidate {
+                        label: format!("single_gpu_partial_{layers}"),
+                        benchmark_label: format!("{benchmark_prefix}/single_gpu_partial_{layers}"),
+                        estimated_bytes: estimate_model_bytes(model_size_bytes, &partial),
+                        params: partial,
+                    });
+                }
+            }
+        }
+
+        let mut cpu_safe = stable_base_params.clone();
         cpu_safe.n_gpu_layers = 0;
         cpu_safe.split_mode = LlamaGpuSplitMode::None;
         cpu_safe.main_gpu = None;
         cpu_safe.device_indices.clear();
         cpu_safe.n_threads = (host_threads / 2).max(1);
-        if !same_params(&cpu_safe, &base_params) {
+        if !same_params(&cpu_safe, &stable_base_params) {
             candidates.push(BenchmarkCandidate {
                 label: "cpu_safe".to_string(),
                 benchmark_label: format!("{benchmark_prefix}/cpu_safe"),
@@ -319,6 +365,153 @@ fn benchmark_candidates(
     }
 
     dedup_candidates(candidates)
+}
+
+fn stabilize_benchmark_base_params(
+    base_params: &LlamaEngineParams,
+    preferred_gpu: Option<BenchmarkGpuDevice>,
+    visible_gpu_count: usize,
+) -> (LlamaEngineParams, &'static str) {
+    if base_params.n_gpu_layers == 0 {
+        return (base_params.clone(), "current");
+    }
+
+    let has_explicit_single_gpu = matches!(
+        (
+            base_params.main_gpu,
+            base_params.device_indices.len(),
+            base_params.split_mode
+        ),
+        (Some(_), _, _) | (_, 1, LlamaGpuSplitMode::None)
+    );
+    if has_explicit_single_gpu || visible_gpu_count <= 1 {
+        return (base_params.clone(), "current");
+    }
+
+    if let Some(gpu) = preferred_gpu {
+        return (
+            single_gpu_params(base_params, gpu, base_params.n_gpu_layers),
+            "current_single_gpu",
+        );
+    }
+
+    (base_params.clone(), "current")
+}
+
+fn single_gpu_params(
+    base_params: &LlamaEngineParams,
+    gpu: BenchmarkGpuDevice,
+    n_gpu_layers: i32,
+) -> LlamaEngineParams {
+    let mut params = base_params.clone();
+    params.n_gpu_layers = n_gpu_layers;
+    params.split_mode = LlamaGpuSplitMode::None;
+    params.main_gpu = Some(i32::try_from(gpu.index).unwrap_or(i32::MAX));
+    params.device_indices = vec![gpu.index];
+    params
+}
+
+fn partial_gpu_layer_targets(
+    block_count: u32,
+    total_vram_bytes: Option<u64>,
+    model_size_bytes: u64,
+) -> Vec<u32> {
+    if block_count == 0 {
+        return Vec::new();
+    }
+
+    let conservative_cap = total_vram_bytes
+        .filter(|bytes| *bytes > 0 && model_size_bytes > 0)
+        .map(|bytes| {
+            let usable_ratio = (bytes as f64 * 0.72) / model_size_bytes as f64;
+            ((block_count as f64 * usable_ratio).floor() as u32).clamp(1, block_count)
+        });
+    let ratio_targets = [3_u32, 2_u32, 1_u32]
+        .into_iter()
+        .map(|numerator| block_count.saturating_mul(numerator).saturating_div(4))
+        .filter(|layers| *layers > 0);
+
+    let mut targets = std::collections::BTreeSet::new();
+    targets.insert((block_count / 3).max(1));
+    targets.extend(ratio_targets);
+    if let Some(cap) = conservative_cap {
+        targets.insert(cap);
+        targets.insert((cap.saturating_mul(3) / 4).max(1));
+        targets.insert((cap / 2).max(1));
+    }
+    targets.remove(&block_count);
+    targets.into_iter().rev().collect()
+}
+
+fn preferred_benchmark_gpu_device(
+    base_params: &LlamaEngineParams,
+    visible_gpu_devices: &[usize],
+) -> Option<BenchmarkGpuDevice> {
+    if let Some(main_gpu) = base_params
+        .main_gpu
+        .and_then(|value| usize::try_from(value).ok())
+    {
+        return Some(BenchmarkGpuDevice {
+            index: main_gpu,
+            total_vram_bytes: nvidia_gpu_total_vram_bytes(main_gpu),
+        });
+    }
+
+    if base_params.split_mode == LlamaGpuSplitMode::None
+        && let Some(index) = base_params.device_indices.first().copied()
+    {
+        return Some(BenchmarkGpuDevice {
+            index,
+            total_vram_bytes: nvidia_gpu_total_vram_bytes(index),
+        });
+    }
+
+    let nvidia_preferred = visible_gpu_devices
+        .iter()
+        .copied()
+        .filter_map(|index| {
+            nvidia_gpu_total_vram_bytes(index).map(|total_vram_bytes| BenchmarkGpuDevice {
+                index,
+                total_vram_bytes: Some(total_vram_bytes),
+            })
+        })
+        .max_by_key(|gpu| gpu.total_vram_bytes.unwrap_or_default());
+    if nvidia_preferred.is_some() {
+        return nvidia_preferred;
+    }
+
+    visible_gpu_devices
+        .first()
+        .copied()
+        .map(|index| BenchmarkGpuDevice {
+            index,
+            total_vram_bytes: None,
+        })
+}
+
+fn nvidia_gpu_total_vram_bytes(target_index: usize) -> Option<u64> {
+    let output = Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=index,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.lines().find_map(|line| {
+        let mut parts = line.split(',').map(str::trim);
+        let index = parts.next()?.parse::<usize>().ok()?;
+        let memory_mib = parts.next()?.parse::<u64>().ok()?;
+        if index == target_index {
+            Some(memory_mib.saturating_mul(1024 * 1024))
+        } else {
+            None
+        }
+    })
 }
 
 fn dedup_candidates(candidates: Vec<BenchmarkCandidate>) -> Vec<BenchmarkCandidate> {
@@ -643,6 +836,56 @@ fn warmup_cost_class_to_str(value: WarmupCostClass) -> &'static str {
     }
 }
 
+fn select_preferred_benchmark_outcome(outcomes: &[BenchmarkOutcome]) -> Option<&BenchmarkOutcome> {
+    let successful = outcomes
+        .iter()
+        .filter(|outcome| outcome.failure_message.is_none())
+        .collect::<Vec<_>>();
+    let successful_gpu = successful
+        .iter()
+        .copied()
+        .filter(|outcome| is_gpu_candidate(&outcome.candidate.params))
+        .collect::<Vec<_>>();
+
+    if let Some(winner) = select_fastest_benchmark_outcome(&successful_gpu) {
+        return Some(winner);
+    }
+
+    select_fastest_benchmark_outcome(&successful).or_else(|| outcomes.first())
+}
+
+fn select_fastest_benchmark_outcome<'a>(
+    outcomes: &[&'a BenchmarkOutcome],
+) -> Option<&'a BenchmarkOutcome> {
+    outcomes
+        .iter()
+        .copied()
+        .max_by(|left, right| compare_benchmark_outcomes(left, right))
+}
+
+fn compare_benchmark_outcomes(
+    left: &BenchmarkOutcome,
+    right: &BenchmarkOutcome,
+) -> std::cmp::Ordering {
+    left.tokens_per_second
+        .partial_cmp(&right.tokens_per_second)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| right.load_duration_ms.cmp(&left.load_duration_ms))
+        .then_with(|| {
+            left.rss_peak_bytes
+                .unwrap_or_default()
+                .cmp(&right.rss_peak_bytes.unwrap_or_default())
+                .reverse()
+        })
+}
+
+fn is_gpu_candidate(params: &LlamaEngineParams) -> bool {
+    params.n_gpu_layers != 0
+        && (params.split_mode != LlamaGpuSplitMode::None
+            || params.main_gpu.is_some()
+            || !params.device_indices.is_empty())
+}
+
 fn recommend_model_profile(
     host_fingerprint: &str,
     model: &AiModelSummary,
@@ -651,25 +894,7 @@ fn recommend_model_profile(
     host_threads: u32,
     outcomes: &[BenchmarkOutcome],
 ) -> ModelProfileRecommendation {
-    let successful = outcomes
-        .iter()
-        .filter(|outcome| outcome.failure_message.is_none())
-        .collect::<Vec<_>>();
-    let winner = successful
-        .into_iter()
-        .max_by(|left, right| {
-            left.tokens_per_second
-                .partial_cmp(&right.tokens_per_second)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| right.load_duration_ms.cmp(&left.load_duration_ms))
-                .then_with(|| {
-                    left.rss_peak_bytes
-                        .unwrap_or_default()
-                        .cmp(&right.rss_peak_bytes.unwrap_or_default())
-                        .reverse()
-                })
-        })
-        .or_else(|| outcomes.first())
+    let winner = select_preferred_benchmark_outcome(outcomes)
         .expect("benchmark outcomes should not be empty");
 
     let preferred_completion_tokens: u32 = if winner.tokens_per_second >= 25.0 {
@@ -773,19 +998,19 @@ mod tests {
     }
 
     #[test]
-    fn recommend_model_profile_prefers_fast_successful_candidate() {
+    fn recommend_model_profile_prefers_gpu_candidate_over_faster_cpu_fallback() {
         let model = sample_model();
         let candidates = vec![
             BenchmarkOutcome {
                 candidate: BenchmarkCandidate {
-                    label: "current".to_string(),
-                    benchmark_label: "current".to_string(),
+                    label: "gpu_partial".to_string(),
+                    benchmark_label: "gpu_partial".to_string(),
                     params: LlamaEngineParams {
-                        n_gpu_layers: -1,
+                        n_gpu_layers: 18,
                         tensor_split: vec![],
-                        split_mode: LlamaGpuSplitMode::Layer,
-                        main_gpu: None,
-                        device_indices: vec![0],
+                        split_mode: LlamaGpuSplitMode::None,
+                        main_gpu: Some(1),
+                        device_indices: vec![1],
                         n_ctx: 4096,
                         n_threads: 4,
                     },
@@ -806,8 +1031,8 @@ mod tests {
             },
             BenchmarkOutcome {
                 candidate: BenchmarkCandidate {
-                    label: "balanced".to_string(),
-                    benchmark_label: "balanced".to_string(),
+                    label: "cpu_safe".to_string(),
+                    benchmark_label: "cpu_safe".to_string(),
                     params: LlamaEngineParams {
                         n_gpu_layers: 0,
                         tensor_split: vec![],
@@ -843,15 +1068,16 @@ mod tests {
             &candidates,
         );
 
-        assert_eq!(recommendation.recommended_n_threads, 8);
-        assert_eq!(recommendation.recommended_n_gpu_layers, 0);
+        assert_eq!(recommendation.recommended_n_threads, 4);
+        assert_eq!(recommendation.recommended_n_gpu_layers, 18);
         assert_eq!(recommendation.recommended_split_mode, "none");
+        assert_eq!(recommendation.recommended_main_gpu, Some(1));
         assert!(matches!(
             recommendation.warmup_cost_class,
             WarmupCostClass::Medium
         ));
         assert!(recommendation.supports_structured_output);
-        assert_eq!(recommendation.recommended_device_indices.len(), 0);
+        assert_eq!(recommendation.recommended_device_indices, vec![1]);
     }
 
     #[test]
@@ -865,5 +1091,53 @@ mod tests {
                 .iter()
                 .any(|candidate| candidate.label == "current")
         );
+    }
+
+    #[test]
+    fn build_benchmark_candidates_add_partial_single_gpu_variants() {
+        let candidates = build_benchmark_candidates(
+            &LlamaEngineParams {
+                n_gpu_layers: -1,
+                tensor_split: vec![],
+                split_mode: LlamaGpuSplitMode::Layer,
+                main_gpu: None,
+                device_indices: vec![],
+                n_ctx: 4096,
+                n_threads: 8,
+            },
+            4_000_000_000,
+            8,
+            "admin",
+            Some(36),
+            Some(BenchmarkGpuDevice {
+                index: 1,
+                total_vram_bytes: Some(6 * 1024 * 1024 * 1024),
+            }),
+            2,
+        );
+
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.label == "current_single_gpu")
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.label.starts_with("single_gpu_partial_"))
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.label == "cpu_safe")
+        );
+    }
+
+    #[test]
+    fn partial_gpu_layer_targets_stay_below_full_offload() {
+        let targets = partial_gpu_layer_targets(36, Some(6 * 1024 * 1024 * 1024), 4_000_000_000);
+        assert!(!targets.is_empty());
+        assert!(targets.iter().all(|layers| *layers > 0 && *layers < 36));
+        assert!(targets.windows(2).all(|window| window[0] >= window[1]));
     }
 }
