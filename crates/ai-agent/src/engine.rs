@@ -242,6 +242,10 @@ fn default_gpu_backend_device_indices() -> Vec<usize> {
         .collect()
 }
 
+pub fn available_gpu_backend_device_indices() -> Vec<usize> {
+    default_gpu_backend_device_indices()
+}
+
 fn normalize_device_indices(
     mut device_indices: Vec<usize>,
     split_mode: LlamaGpuSplitMode,

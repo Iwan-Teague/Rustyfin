@@ -24,6 +24,8 @@ pub struct ModelInfo {
     pub architecture: Option<String>,
     /// Max context length from GGUF metadata
     pub context_length: Option<u32>,
+    /// Repeating transformer block count from GGUF metadata
+    pub block_count: Option<u32>,
 }
 
 /// An item yielded from the streaming chat completion.
