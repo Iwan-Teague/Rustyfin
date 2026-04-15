@@ -263,6 +263,34 @@ fn normalize_device_indices(
     device_indices
 }
 
+fn builtin_chat_template_name_for_architecture(architecture: &str) -> Option<&'static str> {
+    let normalized = architecture.trim().to_ascii_lowercase();
+    if normalized.starts_with("gemma") {
+        Some("gemma")
+    } else {
+        None
+    }
+}
+
+fn resolve_chat_template(model: &LlamaModel) -> Result<LlamaChatTemplate, AiError> {
+    if let Ok(architecture) = model.meta_val_str("general.architecture") {
+        if let Some(template_name) = builtin_chat_template_name_for_architecture(&architecture) {
+            return LlamaChatTemplate::new(template_name).map_err(|error| {
+                AiError::ContextError(format!(
+                    "failed to create {template_name} chat template for {architecture}: {error}"
+                ))
+            });
+        }
+    }
+
+    match model.chat_template(None) {
+        Ok(template) => Ok(template),
+        Err(_) => LlamaChatTemplate::new("chatml").map_err(|error| {
+            AiError::ContextError(format!("failed to create chat template: {error}"))
+        }),
+    }
+}
+
 fn run_decode_loop(
     model: &LlamaModel,
     engine_params: LlamaEngineParams,
@@ -270,12 +298,7 @@ fn run_decode_loop(
     sampling: SamplingParams,
     tx: &mpsc::UnboundedSender<Result<ChatChunk, AiError>>,
 ) -> Result<(), AiError> {
-    let template = match model.chat_template(None) {
-        Ok(template) => template,
-        Err(_) => LlamaChatTemplate::new("chatml").map_err(|error| {
-            AiError::ContextError(format!("failed to create chat template: {error}"))
-        })?,
-    };
+    let template = resolve_chat_template(model)?;
 
     let chat_messages = messages
         .into_iter()
@@ -433,8 +456,8 @@ fn run_decode_loop(
 #[cfg(test)]
 mod tests {
     use super::{
-        LlamaEngineParams, LlamaGpuSplitMode, normalize_device_indices,
-        should_apply_split_mode_override,
+        LlamaEngineParams, LlamaGpuSplitMode, builtin_chat_template_name_for_architecture,
+        normalize_device_indices, should_apply_split_mode_override,
     };
 
     #[test]
@@ -486,5 +509,27 @@ mod tests {
         params.main_gpu = Some(0);
 
         assert!(should_apply_split_mode_override(&params, &[]));
+    }
+
+    #[test]
+    fn prefer_builtin_gemma_template_for_gemma_architectures() {
+        assert_eq!(
+            builtin_chat_template_name_for_architecture("gemma"),
+            Some("gemma")
+        );
+        assert_eq!(
+            builtin_chat_template_name_for_architecture("gemma2"),
+            Some("gemma")
+        );
+        assert_eq!(
+            builtin_chat_template_name_for_architecture("gemma4"),
+            Some("gemma")
+        );
+    }
+
+    #[test]
+    fn keep_embedded_template_path_for_non_gemma_architectures() {
+        assert_eq!(builtin_chat_template_name_for_architecture("qwen2"), None);
+        assert_eq!(builtin_chat_template_name_for_architecture("llama"), None);
     }
 }
