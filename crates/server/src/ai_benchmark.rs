@@ -382,7 +382,7 @@ fn stabilize_benchmark_base_params(
             base_params.device_indices.len(),
             base_params.split_mode
         ),
-        (Some(_), _, _) | (_, 1, LlamaGpuSplitMode::None)
+        (Some(_), _, _) | (_, 1, _)
     );
     if has_explicit_single_gpu || visible_gpu_count <= 1 {
         return (base_params.clone(), "current");
@@ -405,8 +405,8 @@ fn single_gpu_params(
 ) -> LlamaEngineParams {
     let mut params = base_params.clone();
     params.n_gpu_layers = n_gpu_layers;
-    params.split_mode = LlamaGpuSplitMode::None;
-    params.main_gpu = Some(i32::try_from(gpu.index).unwrap_or(i32::MAX));
+    params.split_mode = LlamaGpuSplitMode::Layer;
+    params.main_gpu = None;
     params.device_indices = vec![gpu.index];
     params
 }
@@ -1121,6 +1121,16 @@ mod tests {
                 .iter()
                 .any(|candidate| candidate.label == "current_single_gpu")
         );
+        let current_single_gpu = candidates
+            .iter()
+            .find(|candidate| candidate.label == "current_single_gpu")
+            .expect("current_single_gpu candidate should exist");
+        assert_eq!(
+            current_single_gpu.params.split_mode,
+            LlamaGpuSplitMode::Layer
+        );
+        assert_eq!(current_single_gpu.params.main_gpu, None);
+        assert_eq!(current_single_gpu.params.device_indices, vec![1]);
         assert!(
             candidates
                 .iter()
