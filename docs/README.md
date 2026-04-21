@@ -28,6 +28,8 @@ The supported native Linux install flow for Rustyfin is **Debian 12, Debian 13, 
   - second-pass Linux install cleanup execution checklist and completion record
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/servers-backups-open-work-audit-2026-03-26.md`
   - detailed open backups and advanced `Servers` audit used by the execution program
+- `/Users/iwanteague/Desktop/Rustyfin/docs/plans/2026-04-15-backups-media-first-direction.md`
+  - user-owned media/device backup direction with account archive export as a companion path
 
 ## Current Docs By Area
 

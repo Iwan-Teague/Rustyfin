@@ -178,8 +178,8 @@ pub struct UpsertAiModelProfileParams<'a> {
     pub benchmark_count: i64,
 }
 
-pub async fn upsert_model_benchmark(
-    pool: &DbPool,
+async fn upsert_model_benchmark_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     params: UpsertAiModelBenchmarkParams<'_>,
 ) -> Result<AiModelBenchmarkRow, sqlx::Error> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -242,42 +242,18 @@ pub async fn upsert_model_benchmark(
     .bind(params.rss_before_bytes)
     .bind(params.rss_after_load_bytes)
     .bind(params.rss_peak_bytes)
-        .bind(params.failure_message)
-        .bind(params.notes_json)
-        .bind(now)
-        .bind(now)
-    .fetch_one(pool)
+    .bind(params.failure_message)
+    .bind(params.notes_json)
+    .bind(now)
+    .bind(now)
+    .fetch_one(&mut **tx)
     .await?;
 
     map_benchmark_row(&row)
 }
 
-pub async fn list_model_benchmarks_for_host(
-    pool: &DbPool,
-    host_fingerprint: &str,
-    limit: i64,
-) -> Result<Vec<AiModelBenchmarkRow>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT id, host_fingerprint, model_name, model_checksum, model_path, benchmark_label,
-                backend_kind, n_threads, n_gpu_layers, split_mode, main_gpu, device_indices_json,
-                load_duration_ms, prefill_tokens, prefill_duration_ms, decode_tokens, decode_duration_ms,
-                first_token_ms, total_duration_ms, tokens_per_second, rss_before_bytes, rss_after_load_bytes,
-                rss_peak_bytes, failure_message, notes_json, created_ts, updated_ts
-         FROM ai_model_benchmark
-         WHERE host_fingerprint = $1
-         ORDER BY updated_ts DESC, model_name ASC, benchmark_label ASC
-         LIMIT $2",
-    )
-    .bind(host_fingerprint)
-    .bind(limit.clamp(1, 500))
-    .fetch_all(pool)
-    .await?;
-
-    rows.iter().map(map_benchmark_row).collect()
-}
-
-pub async fn upsert_model_profile(
-    pool: &DbPool,
+async fn upsert_model_profile_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     params: UpsertAiModelProfileParams<'_>,
 ) -> Result<AiModelProfileRow, sqlx::Error> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -347,13 +323,73 @@ pub async fn upsert_model_profile(
     .bind(params.last_benchmark_label)
     .bind(params.last_load_duration_ms)
     .bind(params.last_tokens_per_second)
-        .bind(params.benchmark_count)
-        .bind(now)
-        .bind(now)
-    .fetch_one(pool)
+    .bind(params.benchmark_count)
+    .bind(now)
+    .bind(now)
+    .fetch_one(&mut **tx)
     .await?;
 
     map_profile_row(&row)
+}
+
+pub async fn upsert_model_benchmark(
+    pool: &DbPool,
+    params: UpsertAiModelBenchmarkParams<'_>,
+) -> Result<AiModelBenchmarkRow, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let row = upsert_model_benchmark_in_tx(&mut tx, params).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+pub async fn list_model_benchmarks_for_host(
+    pool: &DbPool,
+    host_fingerprint: &str,
+    limit: i64,
+) -> Result<Vec<AiModelBenchmarkRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, host_fingerprint, model_name, model_checksum, model_path, benchmark_label,
+                backend_kind, n_threads, n_gpu_layers, split_mode, main_gpu, device_indices_json,
+                load_duration_ms, prefill_tokens, prefill_duration_ms, decode_tokens, decode_duration_ms,
+                first_token_ms, total_duration_ms, tokens_per_second, rss_before_bytes, rss_after_load_bytes,
+                rss_peak_bytes, failure_message, notes_json, created_ts, updated_ts
+         FROM ai_model_benchmark
+         WHERE host_fingerprint = $1
+         ORDER BY updated_ts DESC, model_name ASC, benchmark_label ASC
+         LIMIT $2",
+    )
+    .bind(host_fingerprint)
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await?;
+
+    rows.iter().map(map_benchmark_row).collect()
+}
+
+pub async fn upsert_model_profile(
+    pool: &DbPool,
+    params: UpsertAiModelProfileParams<'_>,
+) -> Result<AiModelProfileRow, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let row = upsert_model_profile_in_tx(&mut tx, params).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+pub async fn upsert_benchmark_and_profile(
+    pool: &DbPool,
+    benchmark_params: UpsertAiModelBenchmarkParams<'_>,
+    profile_params: Option<UpsertAiModelProfileParams<'_>>,
+) -> Result<(AiModelBenchmarkRow, Option<AiModelProfileRow>), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let benchmark = upsert_model_benchmark_in_tx(&mut tx, benchmark_params).await?;
+    let profile = if let Some(params) = profile_params {
+        Some(upsert_model_profile_in_tx(&mut tx, params).await?)
+    } else {
+        None
+    };
+    tx.commit().await?;
+    Ok((benchmark, profile))
 }
 
 pub async fn list_model_profiles_for_host(

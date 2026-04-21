@@ -57,11 +57,13 @@ Rustyfin is a native-Debian-first local media platform with:
   - non-empty Dictionary search should stay backend-mediated, and AI browse/discovery coverage should use read-only visible-workspace and visible-people tools rather than client-side preloads
   - Human Dictionary account linking must stay explicit so `/ai` can safely resolve relationship-relative reads like `my mother`, `my brother`, and `my co-workers`
   - AI writes to the Human Dictionary must stay disabled or confirmation-gated until a documented protected-action flow exists
-- A `Backups` product area for end-user archive exports and future gallery/media backup flows
-  - web `/backups` should stay user-scoped and archive-oriented, not a thin wrapper over destructive host restore controls
-  - current account archive exports include profile state, user preferences, AI conversation history, playback progress, continue-watching data, and activity history
+- A `Backups` product area for user-owned device media backup, with account archive export as a companion path and host/system backup as a separate operational area
+  - primary product direction is authenticated, account-scoped media backup from future mobile-first clients, inspired by Immich-style photo/video backup
+  - web `/backups` should stay user-scoped and not become a thin wrapper over destructive host restore controls
+  - current account archive exports are a companion compressed archive of profile state, user preferences, AI conversation history, playback progress, continue-watching data, and activity history
   - optional RustyVault material on `/backups` must flow through the existing protected export path; do not add weaker host-side shortcuts around RustyVault export safeguards
-  - host/system backup and restore routes remain operational surfaces under `/api/v1/system/backups`
+  - `Gallery` is reserved for the future media/device backup surface
+  - host/system backup and restore routes remain separate operational surfaces under `/api/v1/system/backups`
 - Voice channel transcript capture now prefers browser speech recognition when available and falls back to per-user browser audio uploads on stop/save; keep the final saved transcript server-authored and merged by timestamp instead of reviving fragile live chunk transcription as the primary saved path
 - Voice-channel WebRTC should stay runtime-configurable for ICE/TURN: direct STUN-only peer setup is not reliable enough for all user pairs, so preserve support for `RUSTFIN_WEBRTC_ICE_SERVERS_JSON` or the split `RUSTFIN_WEBRTC_STUN_URL` / `RUSTFIN_WEBRTC_TURN_URL(S)` envs when extending channels audio
 - When TURN credentials are configured, keep `/runtime-config` appending TURN URLs for the browser's current host as well as explicit configured hosts so remote/public access does not get stuck with private-only relay candidates

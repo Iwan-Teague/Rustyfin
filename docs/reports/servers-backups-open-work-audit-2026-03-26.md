@@ -3,23 +3,25 @@
 Date: 2026-03-26  
 Status: still-open work only
 
+This audit covers the remaining host/system backup and restore work that still exists in Rustyfin. It does not define the long-term product direction for the user-facing Backups area; that direction is documented separately in [Rustyfin Backups Media-First Direction](../plans/2026-04-15-backups-media-first-direction.md).
+
 ## Core Backup/Restore Work (Still Open)
 
 ### Problem: No backup control plane (API + jobs + persistence)
-Why it is open: there is no backup backend surface yet. The Backups UI is a placeholder and the assistant backup tool is hard-coded to "not implemented."  
+Why it is open: there is no media/device backup backend surface yet. The current Backups UI is an account-archive companion flow, and the assistant backup tool is hard-coded to "not implemented" for the operational backup summary.
 Key files/modules: `ui/src/app/backups/page.tsx`, `crates/server/src/ai_assistant/tools.rs`, `crates/server/src/servers/router.rs`  
-Recommended implementation approach: add a dedicated backup module in `crates/server` with `POST/GET` backup job endpoints, backup metadata tables in `crates/db/migrations_pg`, and host execution adapters for filesystem + PostgreSQL backup capture. Reuse existing `job` lifecycle and audit logging patterns already used in Servers operations.  
+Recommended implementation approach: add a dedicated host backup module in `crates/server` with `POST/GET` backup job endpoints, backup metadata tables in `crates/db/migrations_pg`, and host execution adapters for filesystem + PostgreSQL backup capture. Reuse existing `job` lifecycle and audit logging patterns already used in Servers operations.
 Dependencies: backup manifest schema, storage target configuration (local path/object store), permissions model (admin-only operations), host-level execution identity.  
-What done looks like: backup jobs can be created/listed/inspected from API, state persists in DB, and UI can render real backup history and status.
+What done looks like: host backup jobs can be created/listed/inspected from API, state persists in DB, and UI can render real backup history and status.
 
-### Problem: No restore workflow with safety boundaries
+### Problem: No host restore workflow with safety boundaries
 Why it is open: no restore endpoint, no restore job flow, and no staged safety checks exist; only a `backups/` directory is created during server provisioning.  
 Key files/modules: `crates/servers-host/src/lib.rs` (writes `backups/` dir only), `ui/src/app/backups/page.tsx`, `crates/server/src/servers/router.rs`  
 Recommended implementation approach: implement restore as a staged job (`validate -> preflight -> stop/quiesce -> restore -> verify -> optional rollback`) with strict manifest checksum verification and protected confirmations for destructive restore actions.  
 Dependencies: backup manifest/checksum design, service coordination policy (Rustyfin + managed server downtime), rollback strategy.  
 What done looks like: admins can run a restore from an existing snapshot with auditable checkpoints and deterministic rollback behavior on failure.
 
-### Problem: No schedule/retention execution for backups
+### Problem: No host schedule/retention execution for backups
 Why it is open: backup scheduling and pruning are referenced in UI copy but there is no backup scheduler task in server runtime.  
 Key files/modules: `ui/src/app/backups/page.tsx`, `crates/server/src/main.rs`  
 Recommended implementation approach: add a periodic backup scheduler (same style as existing TMDB scheduler loop) that evaluates backup policies, enqueues jobs, and prunes old snapshots by retention rules.  

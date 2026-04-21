@@ -73,11 +73,12 @@ The supported native Linux install flow is implemented for Debian 12, Debian 13,
   - Rustyfin accounts can be linked to one Human Dictionary person so the assistant can safely resolve relationship-relative reads such as `my mother`, `my brother`, and `my co-workers`
   - Current assistant integration is read-only and deterministic for relationship lookups; AI writes to the Human Dictionary are not enabled by default
 - Backups
-  - Web `/backups` now focuses on user-scoped archive exports instead of host restore controls
+  - Primary product direction is user-owned device media backup, with a future mobile-first flow inspired by Immich-style photo/video backup
+  - The current web `/backups` surface still ships an account archive export as a companion path, not the north-star product
   - Current `Accounts` exports create a compressed archive of profile state, preferences, AI conversation history, playback progress, continue-watching data, and activity history
   - `/backups` can also embed an optional RustyVault export snapshot captured through the protected vault export flow
-  - `Gallery` is reserved as the separate page section for future media/gallery-oriented backup flows
-  - Host/system backup and restore routes remain operational surfaces under `/api/v1/system/backups`
+  - `Gallery` is reserved for the future media/device backup surface
+  - Host/system backup and restore routes remain separate operational surfaces under `/api/v1/system/backups`
 - AI
   - Web `/ai` assistant surface backed by the native Rust `crates/ai-agent` integration
   - End-user `/ai` is chat-focused; model downloads, deletion, and storage-folder management are admin-only through the Admin `AI` tab

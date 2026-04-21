@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use async_trait::async_trait;
 use axum::Json;
 use axum::extract::{Multipart, State};
 use base64::Engine as _;
@@ -22,10 +23,53 @@ pub struct AiTranscribeResponse {
     pub text: String,
 }
 
+#[async_trait]
+trait TranscriptionClient: Send + Sync {
+    async fn start_session(&self, state: &AppState, session_id: &str) -> Result<(), ApiError>;
+    async fn stop_session(&self, state: &AppState, session_id: &str) -> Result<(), ApiError>;
+    async fn transcribe_chunk(
+        &self,
+        state: &AppState,
+        body: &AgentTranscribeChunkRequest,
+    ) -> Result<Vec<transcription_agent::AgentTranscriptSegment>, ApiError>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HttpTranscriptionClient;
+
+#[async_trait]
+impl TranscriptionClient for HttpTranscriptionClient {
+    async fn start_session(&self, state: &AppState, session_id: &str) -> Result<(), ApiError> {
+        transcription_agent::start_session(state, session_id).await
+    }
+
+    async fn stop_session(&self, state: &AppState, session_id: &str) -> Result<(), ApiError> {
+        transcription_agent::stop_session(state, session_id).await
+    }
+
+    async fn transcribe_chunk(
+        &self,
+        state: &AppState,
+        body: &AgentTranscribeChunkRequest,
+    ) -> Result<Vec<transcription_agent::AgentTranscriptSegment>, ApiError> {
+        transcription_agent::transcribe_chunk(state, body).await
+    }
+}
+
 pub async fn transcribe_audio(
     user: AuthUser,
     State(state): State<AppState>,
+    multipart: Multipart,
+) -> Result<Json<AiTranscribeResponse>, AppError> {
+    let client = HttpTranscriptionClient;
+    transcribe_audio_with_client(user, state, multipart, &client).await
+}
+
+async fn transcribe_audio_with_client<C: TranscriptionClient + ?Sized>(
+    user: AuthUser,
+    state: AppState,
     mut multipart: Multipart,
+    client: &C,
 ) -> Result<Json<AiTranscribeResponse>, AppError> {
     let mut file_name: Option<String> = None;
     let mut content_type: Option<String> = None;
@@ -74,10 +118,11 @@ pub async fn transcribe_audio(
     }
 
     let session_id = format!("ai-input-{}", uuid::Uuid::new_v4());
-    transcription_agent::start_session(&state, &session_id).await?;
+    client.start_session(&state, &session_id).await?;
 
-    let transcript_result = transcribe_pcm_chunks(&state, &user, &session_id, &decoded).await;
-    let _ = transcription_agent::stop_session(&state, &session_id).await;
+    let transcript_result =
+        transcribe_pcm_chunks_with_client(&state, &user, &session_id, &decoded, client).await;
+    let _ = client.stop_session(&state, &session_id).await;
     let text = transcript_result?;
 
     Ok(Json(AiTranscribeResponse { text }))
@@ -96,6 +141,26 @@ pub(crate) async fn transcribe_pcm_chunks_to_segments(
     decoded: &DecodedAudio,
     first_chunk_started_ts_ms: i64,
 ) -> Result<Vec<transcription_agent::AgentTranscriptSegment>, AppError> {
+    let client = HttpTranscriptionClient;
+    transcribe_pcm_chunks_to_segments_with_client(
+        state,
+        user,
+        session_id,
+        decoded,
+        first_chunk_started_ts_ms,
+        &client,
+    )
+    .await
+}
+
+async fn transcribe_pcm_chunks_to_segments_with_client<C: TranscriptionClient + ?Sized>(
+    state: &AppState,
+    user: &AuthUser,
+    session_id: &str,
+    decoded: &DecodedAudio,
+    first_chunk_started_ts_ms: i64,
+    client: &C,
+) -> Result<Vec<transcription_agent::AgentTranscriptSegment>, AppError> {
     let samples_per_chunk =
         ((decoded.sample_rate_hz as i64 * MAX_AGENT_CHUNK_MS) / 1000).max(1) as usize;
     let bytes_per_chunk = samples_per_chunk.saturating_mul(2);
@@ -106,20 +171,21 @@ pub(crate) async fn transcribe_pcm_chunks_to_segments(
         let chunk_duration_ms =
             ((chunk.len() as f64 / 2.0) / decoded.sample_rate_hz as f64 * 1000.0).round() as i64;
         let chunk_end_ms = chunk_start_ms + chunk_duration_ms.max(1);
-        let segments = transcription_agent::transcribe_chunk(
-            state,
-            &AgentTranscribeChunkRequest {
-                session_id: session_id.to_string(),
-                user_id: user.user_id.clone(),
-                username: user.username.clone(),
-                sample_rate_hz: decoded.sample_rate_hz,
-                started_ts_ms: chunk_start_ms.max(1),
-                ended_ts_ms: chunk_end_ms.max(chunk_start_ms + 1),
-                pcm_s16le_base64: base64::engine::general_purpose::STANDARD.encode(chunk),
-                language: None,
-            },
-        )
-        .await?;
+        let segments = client
+            .transcribe_chunk(
+                state,
+                &AgentTranscribeChunkRequest {
+                    session_id: session_id.to_string(),
+                    user_id: user.user_id.clone(),
+                    username: user.username.clone(),
+                    sample_rate_hz: decoded.sample_rate_hz,
+                    started_ts_ms: chunk_start_ms.max(1),
+                    ended_ts_ms: chunk_end_ms.max(chunk_start_ms + 1),
+                    pcm_s16le_base64: base64::engine::general_purpose::STANDARD.encode(chunk),
+                    language: None,
+                },
+            )
+            .await?;
 
         for segment in segments {
             let text = segment.text.trim();
@@ -144,7 +210,20 @@ async fn transcribe_pcm_chunks(
     session_id: &str,
     decoded: &DecodedAudio,
 ) -> Result<String, AppError> {
-    let segments = transcribe_pcm_chunks_to_segments(state, user, session_id, decoded, 1).await?;
+    let client = HttpTranscriptionClient;
+    transcribe_pcm_chunks_with_client(state, user, session_id, decoded, &client).await
+}
+
+async fn transcribe_pcm_chunks_with_client<C: TranscriptionClient + ?Sized>(
+    state: &AppState,
+    user: &AuthUser,
+    session_id: &str,
+    decoded: &DecodedAudio,
+    client: &C,
+) -> Result<String, AppError> {
+    let segments =
+        transcribe_pcm_chunks_to_segments_with_client(state, user, session_id, decoded, 1, client)
+            .await?;
 
     let transcript_parts = segments
         .into_iter()
@@ -344,22 +423,13 @@ async fn transcode_audio_with_ffmpeg(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
     use axum::extract::DefaultBodyLimit;
     use axum::routing::post;
-    use axum::{Json, Router};
     use axum_test::TestServer;
     use axum_test::multipart::{MultipartForm, Part};
-    use serde::Deserialize;
-    use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
-    use std::sync::Arc;
-
-    #[derive(Debug, Deserialize)]
-    struct MockChunkRequest {
-        started_ts_ms: i64,
-        ended_ts_ms: i64,
-        pcm_s16le_base64: String,
-    }
+    use std::sync::{Arc, Mutex};
 
     fn test_state(transcription_agent_url: String) -> AppState {
         let pool = PgPoolOptions::new()
@@ -447,32 +517,80 @@ mod tests {
         bytes
     }
 
-    async fn spawn_mock_transcription_agent() -> (String, tokio::task::JoinHandle<()>) {
-        let app = Router::new()
-            .route("/v1/sessions/start", post(|| async { Json(json!({})) }))
-            .route("/v1/sessions/stop", post(|| async { Json(json!({})) }))
-            .route(
-                "/v1/transcribe/chunk",
-                post(|Json(payload): Json<MockChunkRequest>| async move {
-                    let chunk = base64::engine::general_purpose::STANDARD
-                        .decode(payload.pcm_s16le_base64)
-                        .expect("chunk should decode");
-                    assert!(!chunk.is_empty());
-                    Json(json!({
-                        "segments": [{
-                            "started_ts_ms": payload.started_ts_ms,
-                            "ended_ts_ms": payload.ended_ts_ms,
-                            "text": "hello rustyfin"
-                        }]
-                    }))
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        (format!("http://{addr}"), handle)
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum FakeClientCall {
+        StartSession(String),
+        TranscribeChunk {
+            session_id: String,
+            started_ts_ms: i64,
+            ended_ts_ms: i64,
+            sample_rate_hz: u32,
+            pcm_len_bytes: usize,
+        },
+        StopSession(String),
+    }
+
+    #[derive(Debug, Default)]
+    struct FakeTranscriptionClient {
+        calls: Mutex<Vec<FakeClientCall>>,
+        transcript_text: String,
+    }
+
+    impl FakeTranscriptionClient {
+        fn with_transcript(text: impl Into<String>) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                transcript_text: text.into(),
+            }
+        }
+
+        fn calls(&self) -> Vec<FakeClientCall> {
+            self.calls.lock().expect("fake client calls").clone()
+        }
+    }
+
+    #[async_trait]
+    impl TranscriptionClient for FakeTranscriptionClient {
+        async fn start_session(&self, _state: &AppState, session_id: &str) -> Result<(), ApiError> {
+            self.calls
+                .lock()
+                .expect("fake client calls")
+                .push(FakeClientCall::StartSession(session_id.to_string()));
+            Ok(())
+        }
+
+        async fn stop_session(&self, _state: &AppState, session_id: &str) -> Result<(), ApiError> {
+            self.calls
+                .lock()
+                .expect("fake client calls")
+                .push(FakeClientCall::StopSession(session_id.to_string()));
+            Ok(())
+        }
+
+        async fn transcribe_chunk(
+            &self,
+            _state: &AppState,
+            body: &AgentTranscribeChunkRequest,
+        ) -> Result<Vec<transcription_agent::AgentTranscriptSegment>, ApiError> {
+            let chunk = base64::engine::general_purpose::STANDARD
+                .decode(&body.pcm_s16le_base64)
+                .map_err(|e| ApiError::Internal(format!("failed to decode fake chunk: {e}")))?;
+            self.calls
+                .lock()
+                .expect("fake client calls")
+                .push(FakeClientCall::TranscribeChunk {
+                    session_id: body.session_id.clone(),
+                    started_ts_ms: body.started_ts_ms,
+                    ended_ts_ms: body.ended_ts_ms,
+                    sample_rate_hz: body.sample_rate_hz,
+                    pcm_len_bytes: chunk.len(),
+                });
+            Ok(vec![transcription_agent::AgentTranscriptSegment {
+                started_ts_ms: body.started_ts_ms,
+                ended_ts_ms: body.ended_ts_ms,
+                text: self.transcript_text.clone(),
+            }])
+        }
     }
 
     #[test]
@@ -505,12 +623,27 @@ mod tests {
 
     #[tokio::test]
     async fn transcribe_route_accepts_small_wav_uploads() {
-        let (agent_url, agent_handle) = spawn_mock_transcription_agent().await;
-        let state = test_state(agent_url);
+        let fake_client = Arc::new(FakeTranscriptionClient::with_transcript("hello rustyfin"));
+        let state = test_state("http://127.0.0.1:9".to_string());
         let app = Router::new()
             .route(
                 "/transcribe",
-                post(transcribe_audio).layer(DefaultBodyLimit::max(MAX_AI_TRANSCRIBE_BYTES)),
+                post({
+                    let fake_client = Arc::clone(&fake_client);
+                    move |user: AuthUser, State(state): State<AppState>, multipart: Multipart| {
+                        let fake_client = Arc::clone(&fake_client);
+                        async move {
+                            transcribe_audio_with_client(
+                                user,
+                                state,
+                                multipart,
+                                fake_client.as_ref(),
+                            )
+                            .await
+                        }
+                    }
+                })
+                .layer(DefaultBodyLimit::max(MAX_AI_TRANSCRIBE_BYTES)),
             )
             .with_state(state.clone());
         let server = TestServer::new(app).unwrap();
@@ -534,8 +667,29 @@ mod tests {
         response.assert_status_ok();
         let body: serde_json::Value = response.json();
         assert_eq!(body["text"].as_str(), Some("hello rustyfin"));
-
-        agent_handle.abort();
+        let calls = fake_client.calls();
+        assert_eq!(calls.len(), 3);
+        let session_id = match &calls[0] {
+            FakeClientCall::StartSession(session_id) => session_id.clone(),
+            other => panic!("expected start session call, got {other:?}"),
+        };
+        match &calls[1] {
+            FakeClientCall::TranscribeChunk {
+                session_id: chunk_session_id,
+                started_ts_ms,
+                ended_ts_ms,
+                sample_rate_hz,
+                pcm_len_bytes,
+            } => {
+                assert_eq!(chunk_session_id, &session_id);
+                assert_eq!(*started_ts_ms, 1);
+                assert!(*ended_ts_ms > *started_ts_ms);
+                assert_eq!(*sample_rate_hz, 16_000);
+                assert!(*pcm_len_bytes > 0);
+            }
+            other => panic!("expected transcribe chunk call, got {other:?}"),
+        }
+        assert_eq!(calls[2], FakeClientCall::StopSession(session_id.clone()));
     }
 
     #[tokio::test]
