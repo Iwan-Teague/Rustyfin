@@ -1,0 +1,44 @@
+name: ai-judge-smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ai-judge-smoke:
+    name: ai-judge-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            ffmpeg \
+            libasound2-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run AI judge smoke gate
+        run: bash scripts/ci/judge_gates.sh --mode smoke --artifacts-dir .tmp/gates/ci-smoke
+
+      - name: Upload AI judge smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-judge-smoke-artifacts
+          path: .tmp/gates/ci-smoke
+          if-no-files-found: error

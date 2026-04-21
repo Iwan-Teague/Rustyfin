@@ -68,6 +68,15 @@ struct BenchmarkOutcome {
     failure_message: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ModelProfilePersistence {
+    recommendation: ModelProfileRecommendation,
+    benchmark_count: i64,
+    last_benchmark_label: String,
+    last_load_duration_ms: u64,
+    last_tokens_per_second: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BenchmarkGpuDevice {
     index: usize,
@@ -116,6 +125,19 @@ pub async fn run_model_benchmarks(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "admin-benchmark".to_string());
+    let next_profile_benchmark_count = rustfin_db::repo::ai_models::list_model_profiles_for_host(
+        &state.db,
+        &host_fingerprint,
+        200,
+    )
+    .await
+    .ok()
+    .and_then(|rows| {
+        rows.into_iter()
+            .find(|row| row.model_checksum == model_checksum)
+            .map(|row| row.benchmark_count.saturating_add(1))
+    })
+    .unwrap_or(1);
 
     let candidates = benchmark_candidates(
         target_model,
@@ -127,13 +149,25 @@ pub async fn run_model_benchmarks(
     let mut outcomes = Vec::new();
     for candidate in candidates {
         let outcome = benchmark_candidate(&model_path, &candidate).await;
-        persist_benchmark_outcome(
+        outcomes.push(outcome.clone());
+        let profile_persistence = build_profile_persistence(
+            &host_fingerprint,
+            target_model,
+            &model_checksum,
+            model_size_bytes,
+            host_threads,
+            next_profile_benchmark_count,
+            &outcomes,
+        );
+        persist_benchmark_progress(
             &state.db,
             &host_fingerprint,
             target_model,
             &model_path,
             &model_checksum,
+            model_size_bytes,
             &outcome,
+            profile_persistence.as_ref(),
         )
         .await?;
         if let Some(message) = outcome.failure_message.as_deref() {
@@ -151,7 +185,6 @@ pub async fn run_model_benchmarks(
                 "AI benchmark candidate completed"
             );
         }
-        outcomes.push(outcome);
     }
 
     let recommendation = recommend_model_profile(
@@ -162,44 +195,6 @@ pub async fn run_model_benchmarks(
         host_threads,
         &outcomes,
     );
-    let previous_profile_count = rustfin_db::repo::ai_models::list_model_profiles_for_host(
-        &state.db,
-        &host_fingerprint,
-        200,
-    )
-    .await
-    .ok()
-    .and_then(|rows| {
-        rows.into_iter()
-            .find(|row| row.model_checksum == model_checksum)
-            .map(|row| row.benchmark_count)
-    })
-    .unwrap_or(0);
-    let winner = select_preferred_benchmark_outcome(&outcomes);
-    let last_benchmark_label = winner
-        .map(|outcome| outcome.candidate.benchmark_label.clone())
-        .unwrap_or_else(|| benchmark_prefix.clone());
-    let last_load_duration_ms = winner
-        .map(|outcome| outcome.load_duration_ms)
-        .unwrap_or_default();
-    let last_tokens_per_second = winner
-        .map(|outcome| outcome.tokens_per_second)
-        .unwrap_or_default();
-    persist_model_profile(
-        &state.db,
-        &host_fingerprint,
-        target_model,
-        &model_path,
-        &model_checksum,
-        model_size_bytes,
-        &recommendation,
-        previous_profile_count.saturating_add(1),
-        &last_benchmark_label,
-        last_load_duration_ms,
-        last_tokens_per_second,
-    )
-    .await?;
-
     Ok(AiBenchmarkRunSummary {
         model_name: target_model.name.clone(),
         model_checksum,
@@ -678,13 +673,15 @@ fn max_option_u64(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     }
 }
 
-async fn persist_benchmark_outcome(
+async fn persist_benchmark_progress(
     pool: &rustfin_db::DbPool,
     host_fingerprint: &str,
     model: &AiModelSummary,
     model_path: &Path,
     model_checksum: &str,
+    model_size_bytes: u64,
     outcome: &BenchmarkOutcome,
+    profile: Option<&ModelProfilePersistence>,
 ) -> Result<(), AppError> {
     let notes_json = serde_json::json!({
         "label": outcome.candidate.label,
@@ -707,46 +704,114 @@ async fn persist_benchmark_outcome(
     })
     .to_string();
 
-    let row = rustfin_db::repo::ai_models::upsert_model_benchmark(
+    let model_path_string = model_path.to_string_lossy().to_string();
+    let benchmark_device_indices_json =
+        serde_json::to_string(&outcome.candidate.params.device_indices)
+            .unwrap_or_else(|_| "[]".to_string());
+
+    let benchmark_params = rustfin_db::repo::ai_models::UpsertAiModelBenchmarkParams {
+        host_fingerprint,
+        model_name: &model.name,
+        model_checksum,
+        model_path: &model_path_string,
+        benchmark_label: &outcome.candidate.benchmark_label,
+        backend_kind: "local",
+        n_threads: i32::try_from(outcome.candidate.params.n_threads).unwrap_or(i32::MAX),
+        n_gpu_layers: outcome.candidate.params.n_gpu_layers,
+        split_mode: outcome.candidate.params.split_mode.as_str(),
+        main_gpu: outcome.candidate.params.main_gpu,
+        device_indices_json: &benchmark_device_indices_json,
+        load_duration_ms: i64::try_from(outcome.load_duration_ms).unwrap_or(i64::MAX),
+        prefill_tokens: i64::try_from(outcome.prefill_tokens).unwrap_or(i64::MAX),
+        prefill_duration_ms: i64::try_from(outcome.prefill_duration_ms).unwrap_or(i64::MAX),
+        decode_tokens: i64::try_from(outcome.decode_tokens).unwrap_or(i64::MAX),
+        decode_duration_ms: i64::try_from(outcome.decode_duration_ms).unwrap_or(i64::MAX),
+        first_token_ms: i64::try_from(outcome.first_token_ms).unwrap_or(i64::MAX),
+        total_duration_ms: i64::try_from(outcome.total_duration_ms).unwrap_or(i64::MAX),
+        tokens_per_second: outcome.tokens_per_second,
+        rss_before_bytes: outcome
+            .rss_before_bytes
+            .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+        rss_after_load_bytes: outcome
+            .rss_after_load_bytes
+            .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+        rss_peak_bytes: outcome
+            .rss_peak_bytes
+            .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+        failure_message: outcome.failure_message.as_deref(),
+        notes_json: &notes_json,
+    };
+    let profile_artifacts = profile.map(|profile| {
+        let notes_json = serde_json::json!({
+            "model_size_bytes": model_size_bytes,
+            "estimated_model_bytes": profile.recommendation.estimated_model_bytes,
+            "notes": profile.recommendation.notes,
+            "winner": {
+                "n_threads": profile.recommendation.recommended_n_threads,
+                "n_gpu_layers": profile.recommendation.recommended_n_gpu_layers,
+                "split_mode": profile.recommendation.recommended_split_mode,
+                "main_gpu": profile.recommendation.recommended_main_gpu,
+                "device_indices": profile.recommendation.recommended_device_indices,
+            },
+        })
+        .to_string();
+        let device_indices_json =
+            serde_json::to_string(&profile.recommendation.recommended_device_indices)
+                .unwrap_or_else(|_| "[]".to_string());
+        (notes_json, device_indices_json)
+    });
+
+    let profile_params = profile
+        .zip(profile_artifacts.as_ref())
+        .map(
+            |(profile, artifacts)| rustfin_db::repo::ai_models::UpsertAiModelProfileParams {
+                host_fingerprint,
+                model_name: &model.name,
+                model_checksum,
+                model_path: &model_path_string,
+                context_window: i32::try_from(profile.recommendation.context_window)
+                    .unwrap_or(i32::MAX),
+                preferred_completion_tokens: i32::try_from(
+                    profile.recommendation.preferred_completion_tokens,
+                )
+                .unwrap_or(i32::MAX),
+                planner_max_output: i32::try_from(profile.recommendation.planner_max_output)
+                    .unwrap_or(i32::MAX),
+                summary_max_output: i32::try_from(profile.recommendation.summary_max_output)
+                    .unwrap_or(i32::MAX),
+                safety_headroom: i32::try_from(profile.recommendation.safety_headroom)
+                    .unwrap_or(i32::MAX),
+                warmup_cost_class: warmup_cost_class_to_str(
+                    profile.recommendation.warmup_cost_class,
+                ),
+                supports_structured_output: profile.recommendation.supports_structured_output,
+                supports_prompt_cache: profile.recommendation.supports_prompt_cache,
+                recommended_n_threads: i32::try_from(profile.recommendation.recommended_n_threads)
+                    .unwrap_or(i32::MAX),
+                recommended_n_gpu_layers: profile.recommendation.recommended_n_gpu_layers,
+                recommended_split_mode: &profile.recommendation.recommended_split_mode,
+                recommended_main_gpu: profile.recommendation.recommended_main_gpu,
+                recommended_device_indices_json: &artifacts.1,
+                estimated_model_bytes: i64::try_from(profile.recommendation.estimated_model_bytes)
+                    .unwrap_or(i64::MAX),
+                notes_json: &artifacts.0,
+                last_benchmark_label: &profile.last_benchmark_label,
+                last_load_duration_ms: i64::try_from(profile.last_load_duration_ms)
+                    .unwrap_or(i64::MAX),
+                last_tokens_per_second: profile.last_tokens_per_second,
+                benchmark_count: profile.benchmark_count,
+            },
+        );
+
+    let row = rustfin_db::repo::ai_models::upsert_benchmark_and_profile(
         pool,
-        rustfin_db::repo::ai_models::UpsertAiModelBenchmarkParams {
-            host_fingerprint,
-            model_name: &model.name,
-            model_checksum,
-            model_path: model_path.to_string_lossy().as_ref(),
-            benchmark_label: &outcome.candidate.benchmark_label,
-            backend_kind: "local",
-            n_threads: i32::try_from(outcome.candidate.params.n_threads).unwrap_or(i32::MAX),
-            n_gpu_layers: outcome.candidate.params.n_gpu_layers,
-            split_mode: outcome.candidate.params.split_mode.as_str(),
-            main_gpu: outcome.candidate.params.main_gpu,
-            device_indices_json: &serde_json::to_string(&outcome.candidate.params.device_indices)
-                .unwrap_or_else(|_| "[]".to_string()),
-            load_duration_ms: i64::try_from(outcome.load_duration_ms).unwrap_or(i64::MAX),
-            prefill_tokens: i64::try_from(outcome.prefill_tokens).unwrap_or(i64::MAX),
-            prefill_duration_ms: i64::try_from(outcome.prefill_duration_ms).unwrap_or(i64::MAX),
-            decode_tokens: i64::try_from(outcome.decode_tokens).unwrap_or(i64::MAX),
-            decode_duration_ms: i64::try_from(outcome.decode_duration_ms).unwrap_or(i64::MAX),
-            first_token_ms: i64::try_from(outcome.first_token_ms).unwrap_or(i64::MAX),
-            total_duration_ms: i64::try_from(outcome.total_duration_ms).unwrap_or(i64::MAX),
-            tokens_per_second: outcome.tokens_per_second,
-            rss_before_bytes: outcome
-                .rss_before_bytes
-                .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
-            rss_after_load_bytes: outcome
-                .rss_after_load_bytes
-                .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
-            rss_peak_bytes: outcome
-                .rss_peak_bytes
-                .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
-            failure_message: outcome.failure_message.as_deref(),
-            notes_json: &notes_json,
-        },
+        benchmark_params,
+        profile_params,
     )
     .await
     .map_err(|error| {
         AppError::from(rustfin_core::error::ApiError::Internal(format!(
-            "failed to persist AI benchmark result: {error}"
+            "failed to persist AI benchmark progress: {error}"
         )))
     })?;
 
@@ -755,76 +820,40 @@ async fn persist_benchmark_outcome(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn persist_model_profile(
-    pool: &rustfin_db::DbPool,
+fn build_profile_persistence(
     host_fingerprint: &str,
     model: &AiModelSummary,
-    model_path: &Path,
     model_checksum: &str,
     model_size_bytes: u64,
-    recommendation: &ModelProfileRecommendation,
+    host_threads: u32,
     benchmark_count: i64,
-    last_benchmark_label: &str,
-    last_load_duration_ms: u64,
-    last_tokens_per_second: f64,
-) -> Result<(), AppError> {
-    let notes_json = serde_json::json!({
-        "model_size_bytes": model_size_bytes,
-        "notes": recommendation.notes,
-        "winner": {
-            "n_threads": recommendation.recommended_n_threads,
-            "n_gpu_layers": recommendation.recommended_n_gpu_layers,
-            "split_mode": recommendation.recommended_split_mode,
-            "main_gpu": recommendation.recommended_main_gpu,
-        },
+    outcomes: &[BenchmarkOutcome],
+) -> Option<ModelProfilePersistence> {
+    if !outcomes
+        .iter()
+        .any(|outcome| outcome.failure_message.is_none())
+    {
+        return None;
+    }
+
+    let recommendation = recommend_model_profile(
+        host_fingerprint,
+        model,
+        model_checksum,
+        model_size_bytes,
+        host_threads,
+        outcomes,
+    );
+    let winner = select_preferred_benchmark_outcome(outcomes)
+        .filter(|outcome| outcome.failure_message.is_none())?;
+
+    Some(ModelProfilePersistence {
+        recommendation,
+        benchmark_count,
+        last_benchmark_label: winner.candidate.benchmark_label.clone(),
+        last_load_duration_ms: winner.load_duration_ms,
+        last_tokens_per_second: winner.tokens_per_second,
     })
-    .to_string();
-
-    let _ = rustfin_db::repo::ai_models::upsert_model_profile(
-        pool,
-        rustfin_db::repo::ai_models::UpsertAiModelProfileParams {
-            host_fingerprint,
-            model_name: &model.name,
-            model_checksum,
-            model_path: model_path.to_string_lossy().as_ref(),
-            context_window: i32::try_from(recommendation.context_window).unwrap_or(i32::MAX),
-            preferred_completion_tokens: i32::try_from(recommendation.preferred_completion_tokens)
-                .unwrap_or(i32::MAX),
-            planner_max_output: i32::try_from(recommendation.planner_max_output)
-                .unwrap_or(i32::MAX),
-            summary_max_output: i32::try_from(recommendation.summary_max_output)
-                .unwrap_or(i32::MAX),
-            safety_headroom: i32::try_from(recommendation.safety_headroom).unwrap_or(i32::MAX),
-            warmup_cost_class: warmup_cost_class_to_str(recommendation.warmup_cost_class),
-            supports_structured_output: recommendation.supports_structured_output,
-            supports_prompt_cache: recommendation.supports_prompt_cache,
-            recommended_n_threads: i32::try_from(recommendation.recommended_n_threads)
-                .unwrap_or(i32::MAX),
-            recommended_n_gpu_layers: recommendation.recommended_n_gpu_layers,
-            recommended_split_mode: &recommendation.recommended_split_mode,
-            recommended_main_gpu: recommendation.recommended_main_gpu,
-            recommended_device_indices_json: &serde_json::to_string(
-                &recommendation.recommended_device_indices,
-            )
-            .unwrap_or_else(|_| "[]".to_string()),
-            estimated_model_bytes: i64::try_from(recommendation.estimated_model_bytes)
-                .unwrap_or(i64::MAX),
-            notes_json: &notes_json,
-            last_benchmark_label,
-            last_load_duration_ms: i64::try_from(last_load_duration_ms).unwrap_or(i64::MAX),
-            last_tokens_per_second,
-            benchmark_count,
-        },
-    )
-    .await
-    .map_err(|error| {
-        AppError::from(rustfin_core::error::ApiError::Internal(format!(
-            "failed to persist AI model profile: {error}"
-        )))
-    })?;
-
-    let _ = model_size_bytes;
-    Ok(())
 }
 
 fn warmup_cost_class_to_str(value: WarmupCostClass) -> &'static str {
@@ -1149,5 +1178,161 @@ mod tests {
         assert!(!targets.is_empty());
         assert!(targets.iter().all(|layers| *layers > 0 && *layers < 36));
         assert!(targets.windows(2).all(|window| window[0] >= window[1]));
+    }
+
+    #[test]
+    fn build_profile_persistence_skips_all_failure_runs() {
+        let model = sample_model();
+        let outcomes = vec![BenchmarkOutcome {
+            candidate: BenchmarkCandidate {
+                label: "gpu_partial".to_string(),
+                benchmark_label: "bench/gpu_partial".to_string(),
+                params: LlamaEngineParams {
+                    n_gpu_layers: 18,
+                    tensor_split: vec![],
+                    split_mode: LlamaGpuSplitMode::Layer,
+                    main_gpu: None,
+                    device_indices: vec![1],
+                    n_ctx: 4096,
+                    n_threads: 4,
+                },
+                estimated_bytes: 0,
+            },
+            load_duration_ms: 0,
+            prefill_tokens: 0,
+            prefill_duration_ms: 0,
+            decode_tokens: 0,
+            decode_duration_ms: 0,
+            first_token_ms: 0,
+            total_duration_ms: 0,
+            tokens_per_second: 0.0,
+            rss_before_bytes: None,
+            rss_after_load_bytes: None,
+            rss_peak_bytes: None,
+            failure_message: Some("load failed".to_string()),
+        }];
+
+        assert!(
+            build_profile_persistence(
+                "host",
+                &model,
+                "checksum",
+                2 * 1024 * 1024 * 1024,
+                8,
+                3,
+                &outcomes,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn build_profile_persistence_uses_best_success_so_far() {
+        let model = sample_model();
+        let outcomes = vec![
+            BenchmarkOutcome {
+                candidate: BenchmarkCandidate {
+                    label: "cpu_safe".to_string(),
+                    benchmark_label: "bench/cpu_safe".to_string(),
+                    params: LlamaEngineParams {
+                        n_gpu_layers: 0,
+                        tensor_split: vec![],
+                        split_mode: LlamaGpuSplitMode::None,
+                        main_gpu: None,
+                        device_indices: vec![],
+                        n_ctx: 4096,
+                        n_threads: 8,
+                    },
+                    estimated_bytes: 0,
+                },
+                load_duration_ms: 10_000,
+                prefill_tokens: 32,
+                prefill_duration_ms: 200,
+                decode_tokens: 64,
+                decode_duration_ms: 900,
+                first_token_ms: 220,
+                total_duration_ms: 1_100,
+                tokens_per_second: 28.0,
+                rss_before_bytes: None,
+                rss_after_load_bytes: None,
+                rss_peak_bytes: Some(3 * 1024 * 1024 * 1024),
+                failure_message: None,
+            },
+            BenchmarkOutcome {
+                candidate: BenchmarkCandidate {
+                    label: "gpu_full".to_string(),
+                    benchmark_label: "bench/gpu_full".to_string(),
+                    params: LlamaEngineParams {
+                        n_gpu_layers: -1,
+                        tensor_split: vec![],
+                        split_mode: LlamaGpuSplitMode::Layer,
+                        main_gpu: None,
+                        device_indices: vec![1],
+                        n_ctx: 4096,
+                        n_threads: 8,
+                    },
+                    estimated_bytes: 0,
+                },
+                load_duration_ms: 15_000,
+                prefill_tokens: 32,
+                prefill_duration_ms: 250,
+                decode_tokens: 64,
+                decode_duration_ms: 1_000,
+                first_token_ms: 300,
+                total_duration_ms: 1_250,
+                tokens_per_second: 24.0,
+                rss_before_bytes: None,
+                rss_after_load_bytes: None,
+                rss_peak_bytes: Some(4 * 1024 * 1024 * 1024),
+                failure_message: None,
+            },
+            BenchmarkOutcome {
+                candidate: BenchmarkCandidate {
+                    label: "late_failure".to_string(),
+                    benchmark_label: "bench/late_failure".to_string(),
+                    params: LlamaEngineParams {
+                        n_gpu_layers: -1,
+                        tensor_split: vec![],
+                        split_mode: LlamaGpuSplitMode::Layer,
+                        main_gpu: None,
+                        device_indices: vec![1],
+                        n_ctx: 4096,
+                        n_threads: 8,
+                    },
+                    estimated_bytes: 0,
+                },
+                load_duration_ms: 0,
+                prefill_tokens: 0,
+                prefill_duration_ms: 0,
+                decode_tokens: 0,
+                decode_duration_ms: 0,
+                first_token_ms: 0,
+                total_duration_ms: 0,
+                tokens_per_second: 0.0,
+                rss_before_bytes: None,
+                rss_after_load_bytes: None,
+                rss_peak_bytes: None,
+                failure_message: Some("late crash".to_string()),
+            },
+        ];
+
+        let profile = build_profile_persistence(
+            "host",
+            &model,
+            "checksum",
+            2 * 1024 * 1024 * 1024,
+            8,
+            4,
+            &outcomes,
+        )
+        .expect("profile should persist after at least one successful candidate");
+
+        assert_eq!(profile.benchmark_count, 4);
+        assert_eq!(profile.last_benchmark_label, "bench/gpu_full");
+        assert_eq!(profile.last_load_duration_ms, 15_000);
+        assert_eq!(profile.last_tokens_per_second, 24.0);
+        assert_eq!(profile.recommendation.recommended_n_gpu_layers, -1);
+        assert_eq!(profile.recommendation.recommended_split_mode, "layer");
+        assert_eq!(profile.recommendation.recommended_device_indices, vec![1]);
     }
 }

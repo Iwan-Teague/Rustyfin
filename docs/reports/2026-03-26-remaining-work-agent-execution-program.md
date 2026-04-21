@@ -63,7 +63,7 @@ The remaining work is concentrated in six open programs:
 2. downloads and first-party client distribution
 3. network surface implementation
 4. smart-home product surface implementation
-5. backup/restore and advanced servers work
+5. host backup/restore and advanced servers work
 6. AI write-capable execution and final assistant maturity work
 
 ## Supporting Audits
@@ -73,7 +73,9 @@ These supporting audits were used to turn the remaining work into an execution-r
 - `docs/reports/2026-03-26-installer-platform-runtime-open-work-audit.md`
   - detailed platform, installer, runtime-layout, and validation open work
 - `docs/reports/servers-backups-open-work-audit-2026-03-26.md`
-  - detailed backup/restore and advanced Servers/Minecraft open work
+  - detailed host backup/restore and advanced Servers/Minecraft open work
+- `docs/plans/2026-04-15-backups-media-first-direction.md`
+  - user-facing Backups direction for device/media backup, with account archive export as a companion path
 - current AI state and code audit from:
   - `docs/plans/2026-03-15-ai-grounded-tools-architecture.md`
   - `crates/server/src/ai_assistant/**`
