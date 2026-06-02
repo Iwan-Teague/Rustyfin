@@ -1,0 +1,5 @@
+# Rust build artifacts from the generator sub-projects
+**/target/
+
+# Generated HTML preview if you re-run the palette generator in place
+src/palette/suite-curated.html

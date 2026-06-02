@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "extract-glyph"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+ttf-parser = "0.20"
+
+[[bin]]
+name = "extract-glyph"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 1
