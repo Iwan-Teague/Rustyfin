@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "render-logos"
+version = "0.1.0"
+edition = "2021"
+description = "Renders the Rusty* suite app-icon PNGs and the standalone R mark from the custom R outline."
+
+[dependencies]
+resvg = "0.44"
+
+[[bin]]
+name = "render-logos"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 1
