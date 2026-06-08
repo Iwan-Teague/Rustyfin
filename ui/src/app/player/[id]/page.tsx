@@ -18,9 +18,15 @@ import { clientErrorMessage } from '@/lib/errors';
 type PlaybackDescriptor = {
   item_id: string;
   file_id: string;
+  direct_url?: string | null;
   hls_start_url: string;
   media_info_url: string;
   duration_ms?: number | null;
+  // Server-authoritative default play method. "direct" means the browser can natively
+  // play `direct_url` (range server handles seeking); anything else (including a missing
+  // field on older servers) means use the HLS transcode path.
+  play_method?: 'direct' | 'transcode' | string | null;
+  direct_play?: boolean | null;
 };
 
 type PlaybackSession = {
@@ -433,6 +439,8 @@ export default function PlayerPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  // True while we are direct-playing the source via the byte-range server (no HLS session).
+  const directPlayingRef = useRef(false);
   const subtitleFileInputRef = useRef<HTMLInputElement>(null);
   const activeSubtitleObjectUrlRef = useRef<string | null>(null);
 
@@ -496,12 +504,97 @@ export default function PlayerPage() {
     }
   }, []);
 
+  // Direct play is available when the server flagged the source as browser-native and we
+  // have a usable direct URL. A forced transcode quality overrides this (handled at the
+  // call sites by routing to startHls instead).
+  const directPlayAvailable = Boolean(
+    descriptor?.direct_url && descriptor?.play_method === 'direct',
+  );
+
+  const startDirect = useCallback(
+    async (options?: StartHlsOptions) => {
+      const directUrl = descriptor?.direct_url;
+      if (!directUrl) {
+        setError('No media file is attached to this item. Rescan the library and try again.');
+        return;
+      }
+
+      const video = videoRef.current;
+      if (!video) {
+        setError('Player is not ready yet.');
+        return;
+      }
+
+      if (options?.autoPlayOnReady !== undefined) {
+        requestedPlaybackRef.current = options.autoPlayOnReady;
+      }
+
+      const knownDurationSeconds = Math.max(
+        descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
+        mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
+      );
+      const explicitSeekTime =
+        options?.seekTimeOverrideSecs !== undefined &&
+        Number.isFinite(options.seekTimeOverrideSecs) &&
+        options.seekTimeOverrideSecs >= 0
+          ? options.seekTimeOverrideSecs
+          : undefined;
+      const startTimeSecs = normalizeSessionStartTimeSeconds(explicitSeekTime, knownDurationSeconds);
+
+      setStartingHls(true);
+      setError('');
+      try {
+        // Tear down any HLS transcode that was previously running for this item.
+        destroyHls();
+        if (sessionIdRef.current) {
+          await stopSession(sessionIdRef.current);
+          sessionIdRef.current = null;
+        }
+
+        directPlayingRef.current = true;
+        // Direct playback uses absolute media time, so there is no session offset/window.
+        setHlsSessionStartOffsetSecs(0);
+        setHlsAvailableWindowDurationSecs(0);
+
+        video.preload = 'auto';
+        video.autoplay = requestedPlaybackRef.current;
+        if (video.currentSrc !== directUrl && video.src !== directUrl) {
+          resetVideoSourceForMse(video);
+          video.src = directUrl;
+        }
+        video.load();
+
+        if (startTimeSecs !== undefined && startTimeSecs > 0) {
+          await waitForVideoMetadata(video).catch(() => {});
+          try {
+            video.currentTime = startTimeSecs;
+          } catch {
+            // Some browsers reject seeks before the range server returns the first bytes.
+          }
+        }
+
+        if (requestedPlaybackRef.current) {
+          await attemptPlayWithWarmup(video);
+        } else {
+          await ensurePausedPreviewFrame(video);
+        }
+      } catch (e: unknown) {
+        setError(clientErrorMessage(e, 'Failed to start playback.'));
+      } finally {
+        setStartingHls(false);
+      }
+    },
+    [descriptor, destroyHls, mediaInfo, stopSession],
+  );
+
   const startHls = useCallback(
     async (options?: StartHlsOptions) => {
       if (!descriptor?.file_id) {
         setError('No media file is attached to this item. Rescan the library and try again.');
         return;
       }
+      // Switching (back) to HLS: we are no longer direct-playing.
+      directPlayingRef.current = false;
 
       const video = videoRef.current;
       if (!video) {
@@ -745,6 +838,21 @@ export default function PlayerPage() {
       const effectiveDurationSeconds = Math.max(knownDurationSeconds, video.duration || 0);
       const safeTarget = Math.max(0, Math.min(targetSeconds, effectiveDurationSeconds || targetSeconds));
       if (!Number.isFinite(safeTarget)) return;
+
+      // Direct play: the byte-range server backs native seeking, so just move currentTime
+      // (which is absolute media time here, with no session offset).
+      if (directPlayingRef.current) {
+        try {
+          video.currentTime = safeTarget;
+        } catch {
+          // no-op
+        }
+        await waitForVideoFrameData(video).catch(() => {});
+        if (shouldResumeAfterSeek) {
+          await attemptPlayWithWarmup(video);
+        }
+        return;
+      }
 
       const currentWindowDuration = Math.max(
         hlsAvailableWindowDurationSecs,
@@ -990,19 +1098,28 @@ export default function PlayerPage() {
           ? resolveResumeStartTimeSeconds(rawResumeSeconds, knownDurationSeconds)
           : undefined;
       requestedPlaybackRef.current = false;
-      void startHls(
+      const startOptions =
         resumeSeconds !== undefined
           ? { seekTimeOverrideSecs: resumeSeconds, autoPlayOnReady: false }
-          : { autoPlayOnReady: false },
-      );
+          : { autoPlayOnReady: false };
+      // Default playback uses direct play when the server says the source is browser-native
+      // and the user has not forced a transcode quality; otherwise fall back to HLS.
+      if (directPlayAvailable && hlsTargetHeight === null) {
+        void startDirect(startOptions);
+      } else {
+        void startHls(startOptions);
+      }
     }
   }, [
     canStartPlayback,
     descriptor?.duration_ms,
+    directPlayAvailable,
+    hlsTargetHeight,
     loadingDescriptor,
     loadingPlayState,
     mediaInfo?.duration_secs,
     playState,
+    startDirect,
     startHls,
   ]);
 
@@ -1253,13 +1370,17 @@ export default function PlayerPage() {
                 ? hlsSessionStartOffsetSecs + video.currentTime
                 : undefined;
             setHlsTargetHeight(nextTargetHeight);
-            void startHls({
-              targetHeightOverride: nextTargetHeight,
-              seekTimeOverrideSecs:
-                currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
-                  ? currentAbsoluteSeconds
-                  : undefined,
-            });
+            const seekTimeOverrideSecs =
+              currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
+                ? currentAbsoluteSeconds
+                : undefined;
+            // "Auto" with a browser-native source returns to direct play; an explicit
+            // quality always forces the HLS transcode path.
+            if (nextTargetHeight === null && directPlayAvailable) {
+              void startDirect({ seekTimeOverrideSecs, autoPlayOnReady: !video?.paused });
+            } else {
+              void startHls({ targetHeightOverride: nextTargetHeight, seekTimeOverrideSecs });
+            }
           }}
           onSeekRequest={handleSeek}
           onDownload={handleDownload}

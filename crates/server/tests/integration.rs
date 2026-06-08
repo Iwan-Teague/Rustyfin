@@ -1120,6 +1120,28 @@ async fn dictionary_workspace_membership_routes_enforce_owner_management_and_las
 }
 
 #[tokio::test]
+async fn system_backup_restore_rejects_non_admin() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+
+    let _viewer_user_id = create_user_as_admin(
+        &server,
+        &admin_token,
+        "backup_viewer",
+        "backup_viewer_pass_123",
+    )
+    .await;
+    let viewer_token = login(&server, "backup_viewer", "backup_viewer_pass_123").await;
+    let viewer_hdr = auth_hdr(&viewer_token);
+
+    let restore_resp = server
+        .post("/api/v1/system/backups/jobs/nonexistent-job/restore")
+        .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
+        .await;
+    restore_resp.assert_status(axum::http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn dictionary_account_link_route_validates_visibility_and_cross_space_workspaces() {
     let (server, state) = test_app_with_db_state().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;

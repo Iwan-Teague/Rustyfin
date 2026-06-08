@@ -100,6 +100,32 @@ pub enum ChannelEvent {
     },
 }
 
+impl ChannelEvent {
+    /// Returns the channel id this event pertains to, if any.
+    ///
+    /// Used by the per-socket broadcast fan-out to decide whether an event belongs
+    /// to a private (admin-only) channel and must therefore be withheld from
+    /// non-admin sockets. Events that are not scoped to a single channel (`Hello`,
+    /// `Pong`, `Error`) return `None` and are always delivered.
+    pub fn channel_id(&self) -> Option<&str> {
+        match self {
+            ChannelEvent::VoicePresence { channel_id, .. }
+            | ChannelEvent::VoiceJoined { channel_id, .. }
+            | ChannelEvent::VoiceTranscriptionState { channel_id, .. }
+            | ChannelEvent::RtcOffer { channel_id, .. }
+            | ChannelEvent::RtcAnswer { channel_id, .. }
+            | ChannelEvent::RtcIce { channel_id, .. }
+            | ChannelEvent::ChannelDeleted { channel_id }
+            | ChannelEvent::MessageDeleted { channel_id, .. } => Some(channel_id),
+            ChannelEvent::NewMessage { msg } => Some(&msg.channel_id),
+            ChannelEvent::ChannelCreated { channel } | ChannelEvent::ChannelUpdated { channel } => {
+                Some(&channel.id)
+            }
+            ChannelEvent::Hello { .. } | ChannelEvent::Pong | ChannelEvent::Error { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelInfo {
     pub id: String,

@@ -268,6 +268,8 @@ export function useRoomPlayback({
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<unknown>(null);
   const sessionIdRef = useRef<string | null>(null);
+  // True while direct-playing the source via the byte-range server (no HLS session).
+  const directPlayingRef = useRef(false);
   const applyingRemoteRef = useRef(false);
   const autoPreloadedItemRef = useRef<string | null>(null);
   const audioStateRef = useRef<VideoAudioState>({ muted: false, volume: 1 });
@@ -326,6 +328,7 @@ export function useRoomPlayback({
       await stopSession(sessionIdRef.current);
       sessionIdRef.current = null;
     }
+    directPlayingRef.current = false;
     setDescriptor(null);
     setMediaInfo(null);
     setHlsSessionStartOffsetSecs(0);
@@ -333,6 +336,102 @@ export function useRoomPlayback({
   }, [destroyHls, stopSession]);
 
   const applyRemoteStateRef = useRef<(stateMessage: WsStateMessage) => Promise<void>>(async () => {});
+
+  // Direct play is available when the server flagged the source as browser-native and we
+  // have a usable direct URL. A forced transcode quality overrides this at the call sites.
+  const directPlayAvailable = Boolean(
+    descriptor?.direct_url && descriptor?.play_method === 'direct',
+  );
+
+  const startDirect = useCallback(
+    async (options: StartPlaybackOptions = {}): Promise<boolean> => {
+      const directUrl = descriptor?.direct_url;
+      if (!directUrl) {
+        if (!options.silent) {
+          setError('Playback descriptor is not ready yet');
+        }
+        return false;
+      }
+
+      setStartingHls(true);
+      if (!options.silent) {
+        setError('');
+        setInfo('');
+      }
+
+      try {
+        const video = videoRef.current;
+        if (!video) throw new Error('Video element is not ready');
+        audioStateRef.current = readVideoAudioState(video);
+        const preservedAudioState = audioStateRef.current;
+        const knownDurationSeconds = Math.max(
+          descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
+          mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
+        );
+        const explicitSeekTime =
+          options.seekTimeOverrideSecs !== undefined &&
+          Number.isFinite(options.seekTimeOverrideSecs) &&
+          options.seekTimeOverrideSecs >= 0
+            ? options.seekTimeOverrideSecs
+            : undefined;
+        const syncRoomStateOnReady = options.syncRoomStateOnReady ?? true;
+
+        // Tear down any HLS transcode that was previously running for this item.
+        destroyHls();
+        if (sessionIdRef.current) {
+          await stopSession(sessionIdRef.current);
+          sessionIdRef.current = null;
+        }
+
+        directPlayingRef.current = true;
+        // Direct playback uses absolute media time, so there is no session offset/window.
+        setHlsSessionStartOffsetSecs(0);
+        setHlsAvailableWindowDurationSecs(0);
+
+        const shouldAutoplay =
+          syncRoomStateOnReady && roomState ? roomState.playing : (options.autoplayWhenNoState ?? true);
+        video.preload = 'auto';
+        video.autoplay = shouldAutoplay;
+        if (video.currentSrc !== directUrl && video.src !== directUrl) {
+          resetVideoSourceForMse(video);
+          video.src = directUrl;
+        }
+        video.load();
+        applyVideoAudioState(video, preservedAudioState);
+        await waitForVideoMetadata(video);
+
+        if (explicitSeekTime !== undefined && explicitSeekTime > 0) {
+          const safeSeek =
+            knownDurationSeconds > 0
+              ? Math.min(explicitSeekTime, Math.max(0, knownDurationSeconds - 0.5))
+              : explicitSeekTime;
+          try {
+            video.currentTime = safeSeek;
+          } catch {
+            // Some browsers reject seeks before the range server returns the first bytes.
+          }
+        }
+
+        if (syncRoomStateOnReady && roomState) {
+          await applyRemoteStateRef.current(roomState);
+        } else if (shouldAutoplay) {
+          await attemptPlayWithWarmup(video);
+        } else {
+          video.pause();
+          await ensurePreviewFrame(video).catch(() => {});
+        }
+        return true;
+      } catch (err: unknown) {
+        if (!options.silent) {
+          setError(clientErrorMessage(err, 'Failed to start playback'));
+        }
+        return false;
+      } finally {
+        setStartingHls(false);
+      }
+    },
+    [descriptor, destroyHls, mediaInfo, roomState, setError, setInfo, stopSession],
+  );
 
   const startHls = useCallback(
     async (options: StartPlaybackOptions = {}): Promise<boolean> => {
@@ -342,6 +441,8 @@ export function useRoomPlayback({
         }
         return false;
       }
+      // Switching (back) to HLS: we are no longer direct-playing.
+      directPlayingRef.current = false;
 
       setStartingHls(true);
       if (!options.silent) {
@@ -561,6 +662,22 @@ export function useRoomPlayback({
 
       notePendingSeek(safeTarget);
 
+      // Direct play: native seeking is backed by the byte-range server, so just move
+      // currentTime (absolute media time, no session offset / restart).
+      if (directPlayingRef.current) {
+        try {
+          video.currentTime = safeTarget;
+        } catch {
+          // no-op
+        }
+        await waitForVideoFrameData(video).catch(() => {});
+        if (shouldResumeAfterSeek) {
+          applyVideoAudioState(video, audioStateRef.current);
+          await attemptPlayWithWarmup(video);
+        }
+        return;
+      }
+
       const currentWindowDuration = Math.max(
         hlsAvailableWindowDurationSecs,
         readBufferedWindowDuration(video),
@@ -623,26 +740,30 @@ export function useRoomPlayback({
       clearPendingSeek();
     }
 
-    const currentWindowDuration = Math.max(
-      hlsAvailableWindowDurationSecs,
-      readBufferedWindowDuration(video),
-    );
-    const bufferedWindowEndSecs = hlsSessionStartOffsetSecs + currentWindowDuration;
-    const requiresSessionRestart =
-      targetSeconds < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
-      targetSeconds > bufferedWindowEndSecs + 1;
+    // Direct play backs seeking natively, so we never restart a transcode session here;
+    // the buffered-window / session-restart logic below is HLS-only.
+    if (!directPlayingRef.current) {
+      const currentWindowDuration = Math.max(
+        hlsAvailableWindowDurationSecs,
+        readBufferedWindowDuration(video),
+      );
+      const bufferedWindowEndSecs = hlsSessionStartOffsetSecs + currentWindowDuration;
+      const requiresSessionRestart =
+        targetSeconds < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
+        targetSeconds > bufferedWindowEndSecs + 1;
 
-    if (requiresSessionRestart) {
-      await startHls({
-        autoplayWhenNoState: stateMessage.playing,
-        silent: true,
-        targetHeightOverride: hlsTargetHeight,
-        seekTimeOverrideSecs: targetSeconds,
-      });
-      window.setTimeout(() => {
-        applyingRemoteRef.current = false;
-      }, 60);
-      return;
+      if (requiresSessionRestart) {
+        await startHls({
+          autoplayWhenNoState: stateMessage.playing,
+          silent: true,
+          targetHeightOverride: hlsTargetHeight,
+          seekTimeOverrideSecs: targetSeconds,
+        });
+        window.setTimeout(() => {
+          applyingRemoteRef.current = false;
+        }, 60);
+        return;
+      }
     }
 
     const sessionRelativeTarget = Math.max(0, targetSeconds - hlsSessionStartOffsetSecs);
@@ -735,9 +856,26 @@ export function useRoomPlayback({
     if (autoPreloadedItemRef.current === room.item_id) return;
 
     autoPreloadedItemRef.current = room.item_id;
-    appendDebug(`auto preload requested item_id=${room.item_id} preferred=hls`);
+    const preferDirect = directPlayAvailable && hlsTargetHeight === null;
+    appendDebug(
+      `auto preload requested item_id=${room.item_id} preferred=${preferDirect ? 'direct' : 'hls'}`,
+    );
 
     void (async () => {
+      // Default to direct play when the server says the source is browser-native and no
+      // transcode quality is forced; fall back to HLS on failure or otherwise.
+      if (preferDirect) {
+        const directOk = await startDirect({
+          autoplayWhenNoState: false,
+          silent: true,
+        });
+        if (directOk) {
+          appendDebug(`auto preload succeeded mode=direct item_id=${room.item_id}`);
+          return;
+        }
+        appendDebug(`auto preload direct failed; falling back to hls item_id=${room.item_id}`);
+      }
+
       const hlsOk = await startHls({
         autoplayWhenNoState: false,
         silent: true,
@@ -754,8 +892,11 @@ export function useRoomPlayback({
     room,
     joinedRole,
     descriptor,
+    directPlayAvailable,
+    hlsTargetHeight,
     isVideoRoom,
     startingHls,
+    startDirect,
     startHls,
     appendDebug,
     setInfo,
@@ -836,6 +977,8 @@ export function useRoomPlayback({
     applyingRemoteRef,
     applyRemoteState,
     startHls,
+    startDirect,
+    directPlayAvailable,
     handleSeek,
     notePendingSeek,
     resetPlaybackState,

@@ -256,7 +256,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let mut broadcast_rx = state.channel_manager.subscribe();
 
     // ── Send Hello ────────────────────────────────────────────────────────────
-    let hello = build_hello(&state).await;
+    let hello = build_hello(&state, &role).await;
     if send_event(&mut socket, &hello).await.is_err() {
         state
             .channel_manager
@@ -281,12 +281,21 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             outbound = broadcast_rx.recv() => {
                 match outbound {
                     Ok(event) => {
+                        // Withhold private-channel events from non-admin sockets. The
+                        // process-wide broadcast fans out to every socket, so private
+                        // channel activity (messages, presence, transcription, channel
+                        // metadata) would otherwise leak. The private-id set is kept in
+                        // memory (no per-event DB query) and gates by the event's channel
+                        // id. Events with no channel id (e.g. Pong) are always delivered.
+                        if !is_event_visible_to_role(&state, &role, &event).await {
+                            continue;
+                        }
                         if send_event(&mut socket, &event).await.is_err() {
                             break;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let hello = build_hello(&state).await;
+                        let hello = build_hello(&state, &role).await;
                         if send_event(&mut socket, &hello).await.is_err() {
                             break;
                         }
@@ -298,6 +307,12 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             personal = personal_rx.recv() => {
                 match personal {
                     Some(event) => {
+                        // Personal-queue events (RTC signaling, VoiceJoined) are already
+                        // access-checked at their emit sites, but apply the same private
+                        // gate as a uniform defense-in-depth layer.
+                        if !is_event_visible_to_role(&state, &role, &event).await {
+                            continue;
+                        }
                         if send_event(&mut socket, &event).await.is_err() {
                             break;
                         }
@@ -685,11 +700,50 @@ async fn dispatch(
     }
 }
 
-async fn build_hello(state: &AppState) -> ChannelEvent {
-    let channels = rustfin_db::repo::channels::list_channels(&state.db)
+/// The single source of truth for the "private == admin-only" visibility rule,
+/// matching the HTTP handler (`channels/handlers.rs::list_channels`). A channel is
+/// visible to a socket when it is public, or when the socket's role is admin.
+fn channel_visible_to_role(is_private: bool, role: &str) -> bool {
+    !is_private || role == "admin"
+}
+
+/// Decides whether a fanned-out event may be delivered to a socket with the given
+/// role. Admins see everything. Non-admins are denied any event scoped to a channel
+/// currently flagged private; events not tied to a single channel are always allowed.
+async fn is_event_visible_to_role(state: &AppState, role: &str, event: &ChannelEvent) -> bool {
+    if role == "admin" {
+        return true;
+    }
+    match event.channel_id() {
+        Some(channel_id) => !state.channel_manager.is_channel_private(channel_id).await,
+        None => true,
+    }
+}
+
+async fn build_hello(state: &AppState, role: &str) -> ChannelEvent {
+    let all_channels = rustfin_db::repo::channels::list_channels(&state.db)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // Refresh the manager's in-memory private-channel set from the authoritative
+    // channel list. This keeps the per-socket broadcast filter accurate (it is also
+    // updated incrementally on channel create/update/delete) and runs on every
+    // connect, so a missed sync self-heals on the next socket.
+    state
+        .channel_manager
+        .set_private_channels(
+            all_channels
+                .iter()
+                .filter(|c| c.is_private)
+                .map(|c| c.id.clone()),
+        )
+        .await;
+
+    // Mirror the HTTP handler rule (channels/handlers.rs `list_channels`):
+    // non-admins must never see private (admin-only) channels in the sidebar.
+    let channels = all_channels
         .iter()
+        .filter(|c| channel_visible_to_role(c.is_private, role))
         .map(|c| super::protocol::ChannelInfo {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -806,4 +860,86 @@ async fn send_error(socket: &mut WebSocket, msg: &str) -> Result<(), AppError> {
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::protocol::ChannelInfo;
+    use super::*;
+
+    /// Mirrors the channel-list filter `build_hello` applies: a non-admin must never
+    /// see private channels in their sidebar, while public channels reach everyone and
+    /// admins see all. This is the TXT-1 / TXT-5 fix at the predicate level.
+    #[test]
+    fn build_hello_filter_excludes_private_channels_for_non_admin() {
+        let channels = [
+            ChannelInfo {
+                id: "pub".to_string(),
+                name: "general".to_string(),
+                kind: "text".to_string(),
+                position: 0,
+                is_private: false,
+            },
+            ChannelInfo {
+                id: "priv".to_string(),
+                name: "admins".to_string(),
+                kind: "text".to_string(),
+                position: 1,
+                is_private: true,
+            },
+        ];
+
+        let visible_to_user: Vec<&str> = channels
+            .iter()
+            .filter(|c| channel_visible_to_role(c.is_private, "user"))
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(visible_to_user, vec!["pub"]);
+
+        let visible_to_admin: Vec<&str> = channels
+            .iter()
+            .filter(|c| channel_visible_to_role(c.is_private, "admin"))
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(visible_to_admin, vec!["pub", "priv"]);
+    }
+
+    /// The per-socket broadcast filter relies on `ChannelEvent::channel_id()` to know
+    /// which channel an event belongs to; channel-scoped events must expose their id
+    /// and non-scoped events must return `None` (always delivered).
+    #[test]
+    fn channel_event_channel_id_is_exposed_for_scoped_events() {
+        let new_message = ChannelEvent::NewMessage {
+            msg: MessageInfo {
+                id: "m-1".to_string(),
+                channel_id: "ch-priv".to_string(),
+                user_id: "u-1".to_string(),
+                username: "alice".to_string(),
+                avatar_url: None,
+                content: "secret".to_string(),
+                attachments: vec![],
+                created_ts: 0,
+            },
+        };
+        assert_eq!(new_message.channel_id(), Some("ch-priv"));
+
+        let presence = ChannelEvent::VoicePresence {
+            channel_id: "ch-priv".to_string(),
+            user_id: "u-1".to_string(),
+            username: "alice".to_string(),
+            avatar_url: None,
+            joined: true,
+            active_since_ts: None,
+        };
+        assert_eq!(presence.channel_id(), Some("ch-priv"));
+
+        assert_eq!(ChannelEvent::Pong.channel_id(), None);
+        assert_eq!(
+            ChannelEvent::Error {
+                message: "x".to_string()
+            }
+            .channel_id(),
+            None
+        );
+    }
 }

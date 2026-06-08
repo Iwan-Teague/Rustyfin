@@ -1110,15 +1110,25 @@ export default function WatchPartyRoomPage() {
                           : undefined;
                       playback.setHlsTargetHeight(nextTargetHeight);
                       void (async () => {
-                        const started = await playback.startHls({
-                          silent: false,
-                          targetHeightOverride: nextTargetHeight,
-                          seekTimeOverrideSecs:
-                            currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
-                              ? currentAbsoluteSeconds
-                              : undefined,
-                          syncRoomStateOnReady: false,
-                        });
+                        const seekTimeOverrideSecs =
+                          currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
+                            ? currentAbsoluteSeconds
+                            : undefined;
+                        // "Auto" with a browser-native source returns to direct play; an
+                        // explicit quality always forces the HLS transcode path.
+                        const started =
+                          nextTargetHeight === null && playback.directPlayAvailable
+                            ? await playback.startDirect({
+                                silent: false,
+                                seekTimeOverrideSecs,
+                                syncRoomStateOnReady: false,
+                              })
+                            : await playback.startHls({
+                                silent: false,
+                                targetHeightOverride: nextTargetHeight,
+                                seekTimeOverrideSecs,
+                                syncRoomStateOnReady: false,
+                              });
                         if (!started) {
                           playback.setHlsTargetHeight(previousTargetHeight ?? null);
                         }

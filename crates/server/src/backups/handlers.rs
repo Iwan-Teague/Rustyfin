@@ -1,6 +1,6 @@
 use super::repo;
 use super::service;
-use crate::auth::AuthUser;
+use crate::auth::AdminUser;
 use crate::error::AppError;
 use crate::state::AppState;
 use axum::{
@@ -10,7 +10,7 @@ use axum::{
 use rustfin_core::error::ApiError;
 
 pub async fn list_policies(
-    _auth: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<repo::BackupPolicy>>, AppError> {
     let policies = repo::list_policies(&state.db).await?;
@@ -18,7 +18,7 @@ pub async fn list_policies(
 }
 
 pub async fn create_policy(
-    _auth: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     Json(policy): Json<repo::BackupPolicy>,
 ) -> Result<Json<repo::BackupPolicy>, AppError> {
@@ -28,7 +28,7 @@ pub async fn create_policy(
 }
 
 pub async fn list_jobs(
-    _auth: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<repo::BackupJob>>, AppError> {
     let jobs = repo::list_jobs(&state.db).await?;
@@ -36,7 +36,7 @@ pub async fn list_jobs(
 }
 
 pub async fn create_backup_job(
-    _auth: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     // Optional policy ID in body? or just trigger manual
 ) -> Result<Json<String>, AppError> {
@@ -47,7 +47,7 @@ pub async fn create_backup_job(
 }
 
 pub async fn restore_backup(
-    _auth: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<(), AppError> {
