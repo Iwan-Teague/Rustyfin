@@ -11,6 +11,25 @@ const nextConfig = {
     // Linting runs in dedicated CI/test scripts; keep production build resilient.
     ignoreDuringBuilds: true,
   },
+  async headers() {
+    // Defense-in-depth floor applied to EVERY response, including the static
+    // assets, _next/* chunks and proxied routes that src/middleware.ts excludes
+    // from its matcher. Deliberately limited to headers that are always safe on
+    // JS/CSS/images/JSON so they cannot break asset delivery or media streaming.
+    // The full Content-Security-Policy (and the route-specific RustyVault
+    // hardening) is set per-document in src/middleware.ts, not here, so static
+    // assets are never burdened with a CSP they don't need.
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     return [
       {
