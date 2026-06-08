@@ -57,7 +57,11 @@ Immediately after this audit, the four P0 items (including both Criticals) were 
 | **SEC-5/6** | Security headers (CSP, `frame-ancestors 'none'`, `nosniff`, Referrer/Permissions-Policy) now apply app-wide, not just `/vault`; vault CSP drops `'unsafe-eval'` (keeps `'wasm-unsafe-eval'` for Argon2). Main-app `script-src` keeps `'unsafe-inline'` for Next hydration (documented tradeoff). | UI **tsc clean**. CSP needs a runtime smoke test. |
 | **ARC-1** | Added `.github/workflows/ci.yml` running `scripts/ci/debian_native_gates.sh` (fmt/clippy/tests/UI build) with a Postgres service on PR + push to `main`. | YAML validated; full run only verifiable on GitHub. |
 
-**Still open (notable):** SEC-3 (HttpOnly/Secure cookie auth — deferred; it is an auth-transport refactor that also needs CSRF handling); AUD-2 (full-mesh → SFU, only if larger rooms are wanted); the Medium/Low backlog (VID-5/6/7, TXT-4, ARC-2/3/4, etc.). Both the P0 and P1 fix sets are committed to `main`.
+**P2 fixes (landed 2026-06-08, third wave):** ARC-3 — the DB pool now sets `acquire_timeout(10s)` + `min_connections(2)`, so requests fail fast instead of waiting indefinitely on pool exhaustion and stay warm after idle. SEC-2 — `serve_subtitle` now requires `AuthUser`; it was an unauthenticated file-read endpoint and is unused by the current UI (subtitles load client-side), so gating it breaks no live flow.
+
+**Investigated, deferred with reason:** VID-6 (idle-session timeout) is *not* a safe one-line lower — the player buffers up to 600s, so segment fetches (which reset the idle timer) pause during normal playback; a short server timeout would reap actively-playing sessions. It needs a client heartbeat first. ARC-4 (continue-watching N+1) is bounded to 12 rows, self-healing after the first load, and dominated by the per-movie ffprobe (not the query count) — low value versus a moderate query refactor.
+
+**Still open (notable):** SEC-3 (HttpOnly/Secure cookie auth — an auth-transport refactor that also needs CSRF handling); AUD-2 (full-mesh → SFU, only if larger rooms are wanted); the rest of the Medium/Low backlog (VID-5/7, TXT-4, ARC-2). The P0, P1, and P2 fix sets are all committed to `main`.
 
 > **Runtime caveat:** the app-wide CSP (SEC-5) and the voice-recovery changes (AUD-1) can only be *fully* validated at runtime. Smoke-test video/HLS playback, channels voice, watch-party, and vault unlock before relying on them. The transcode remux path (VID-3) should be checked against a real H.264-in-MKV file.
 
