@@ -4821,6 +4821,10 @@ fn hex_decode(s: &str) -> Option<String> {
 }
 
 async fn serve_subtitle(
+    // Require an authenticated session: this reads sidecar files under library
+    // roots and must not be reachable unauthenticated. (Not used by the current
+    // UI, which loads subtitles client-side, so gating it breaks no live flow.)
+    _auth: AuthUser,
     State(state): State<AppState>,
     Path(sub_path): Path<String>,
 ) -> Result<axum::response::Response, AppError> {
