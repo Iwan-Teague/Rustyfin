@@ -1,0 +1,147 @@
+name: ci
+
+# Main-workspace quality gate. Runs the curated native gate
+# (scripts/ci/debian_native_gates.sh) so the workspace cannot merge with a
+# broken cargo fmt/clippy, failing crate tests, or a broken UI lint/build.
+#
+# This intentionally reuses the gate script as the single source of truth rather
+# than re-listing each cargo/npm command, so local `./scripts/ci/debian_native_gates.sh`
+# runs and CI stay in lockstep.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-gates:
+    name: native-gates
+    # The gate script is named debian_native; ubuntu-latest is the closest hosted
+    # runner. The script's "supported Debian host" gate is allowed to SKIP here via
+    # --allow-non-debian (see flags below) since GitHub does not offer hosted Debian.
+    #
+    # MAINTAINER NOTE: this job compiles the full Rust workspace plus the Next.js UI.
+    # If the hosted runner runs out of disk on large dependency trees, switch to a
+    # larger runner or add a disk-reclaim step (e.g. jlumbroso/free-disk-space).
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    # Postgres service for the setup integration gate (check_setup_integration) and
+    # any DB-backed cargo tests. The DB name contains "test" so the integration
+    # harness guard in crates/server/tests/integration.rs accepts it without needing
+    # RUSTFIN_TEST_DB_ALLOW_ANY.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rustfin
+          POSTGRES_PASSWORD: rustfin
+          POSTGRES_DB: rustfin_test
+        ports:
+          - 5432:5432
+        # Wait until Postgres is accepting connections before the job starts.
+        options: >-
+          --health-cmd "pg_isready -U rustfin -d rustfin_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Point both DB env vars the gate reads at the service container. The host is
+      # 127.0.0.1 because the service port is published to the runner via `ports`.
+      # "rustfin_test" satisfies the harness guard that requires "test" in the URL.
+      RUSTFIN_DATABASE_URL: postgres://rustfin:rustfin@127.0.0.1:5432/rustfin_test
+      RUSTFIN_TEST_DATABASE_URL: postgres://rustfin:rustfin@127.0.0.1:5432/rustfin_test
+      # Keep cargo from saturating the runner; the script honors this for cargo gates.
+      RUSTFIN_GATE_CARGO_JOBS: "2"
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the gate's `git rev-parse HEAD` / report metadata work.
+          fetch-depth: 0
+
+      - name: Install native build + gate dependencies
+        run: |
+          sudo apt-get update
+          # ffmpeg provides ffprobe (media-fixture gate). clang/cmake/pkg-config/
+          # libssl-dev/libasound2-dev mirror the ai-judge workflows' native build deps.
+          # jq + curl + lsof + postgresql-client (psql) are required by the gate's
+          # check_required_tooling host-tooling probe.
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            curl \
+            ffmpeg \
+            jq \
+            libasound2-dev \
+            libssl-dev \
+            lsof \
+            pkg-config \
+            postgresql-client
+
+      - name: Install Rust toolchain
+        # Honors rust-toolchain.toml (channel = stable, components = rustfmt, clippy),
+        # which the workspace needs for edition 2024 + the fmt/clippy gates.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        # The gate's check_ui_dependencies_present requires ui/node_modules/.bin/tsc,
+        # and the UI lint/typecheck/build gates need a populated node_modules.
+        run: npm --prefix ui ci
+
+      - name: Run native quality gates
+        # Single source of truth. Flags chosen for hosted CI:
+        #   --allow-non-debian  : ubuntu-latest is not Debian 12/13; lets the host gate
+        #                         SKIP (exit 222) instead of FAIL, and drops systemctl
+        #                         from the required-tooling probe. Runtime/systemd gates
+        #                         self-SKIP because rustyfin-native.service is not installed.
+        #   --skip-browser-smoke: the Playwright browser smoke suite needs a live
+        #                         backend + setup bootstrap; it does NOT self-skip and is
+        #                         out of scope for this compile/lint/test/build gate.
+        #   --skip-judge        : the AI judge gate already runs in the dedicated
+        #                         ai-judge-smoke / ai-judge-release workflows on the same
+        #                         triggers; skipping here avoids running it twice.
+        # Everything meaningful still runs: fmt --check, clippy -D warnings, the Rust
+        # lib/integration/transcoder/calendar/servers-host test gates, and the UI
+        # lint/typecheck/production build.
+        #
+        # MAINTAINER NOTE: to also exercise the live runtime + browser smoke gates,
+        # drop --skip-browser-smoke and provision a deployed rustyfin-native.service;
+        # to fold the AI judge gate in here, drop --skip-judge (and retire the
+        # dedicated ai-judge-* workflows to avoid duplication).
+        run: |
+          bash scripts/ci/debian_native_gates.sh \
+            --allow-non-debian \
+            --skip-browser-smoke \
+            --skip-judge \
+            --report .tmp/gates/ci-native-gates.md
+
+      - name: Upload gate report and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gates-report
+          path: .tmp/gates
+          if-no-files-found: warn
