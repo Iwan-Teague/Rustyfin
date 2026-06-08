@@ -2697,6 +2697,31 @@ fn browser_direct_play_caps() -> rustfin_transcoder::decision::ClientCaps {
     }
 }
 
+/// Disambiguate the container used for the play decision from the file extension.
+/// ffprobe reports both Matroska (.mkv) and WebM under the same `format_name`
+/// ("matroska,webm"), but browsers can direct-play WebM (VP8/VP9/Opus/Vorbis) while
+/// they cannot natively play an .mkv (e.g. the very common H.264-in-Matroska) — so the
+/// raw probe name must not be trusted to gate direct-play. Map the containers we care
+/// about by extension; fall back to the first probed token otherwise.
+fn canonical_container_for_decision(path: &str, probed: &str) -> String {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("mp4") | Some("m4v") => "mp4".to_string(),
+        Some("mov") | Some("qt") => "mov".to_string(),
+        Some("webm") => "webm".to_string(),
+        Some("mkv") => "matroska".to_string(),
+        _ => probed
+            .split(',')
+            .map(str::trim)
+            .find(|t| !t.is_empty())
+            .unwrap_or(probed)
+            .to_ascii_lowercase(),
+    }
+}
+
 /// Decide whether the browser can direct-play this source. Returns true only for a
 /// clean `DirectPlay` decision; remux and transcode both route through HLS. We also
 /// guard the webm-only codecs (VP8/VP9/Opus/Vorbis): those are listed in the caps so
@@ -2793,13 +2818,19 @@ async fn resolve_playback_media_info(
     let cached_file_duration_ms = file.duration_ms.filter(|value| *value > 0);
     let media_path = std::path::Path::new(&file.path);
 
-    let media_info = if media_path.exists() && media_path.is_file() {
+    let mut media_info = if media_path.exists() && media_path.is_file() {
         rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path)
             .await
             .ok()
     } else {
         None
     };
+
+    // Disambiguate the container by extension before the direct-play decision (an .mkv
+    // probes as "matroska,webm" and must not be treated as browser-direct-playable WebM).
+    if let Some(info) = media_info.as_mut() {
+        info.container = canonical_container_for_decision(&file.path, &info.container);
+    }
 
     if let Some(info) = media_info.as_ref() {
         let probed_duration_ms = (info.duration_secs * 1000.0).round() as i64;
@@ -3502,7 +3533,11 @@ async fn create_playback_session(
         // Best-effort probe: on failure, conservatively fall back to a full
         // transcode (the path that has always worked) rather than guessing remux.
         match probe_media_info_for_file(&state, &input_path).await {
-            Ok(media_info) => {
+            Ok(mut media_info) => {
+                // Same extension-based disambiguation as the descriptor path, so an
+                // H.264-in-MKV remuxes (copy) instead of being misread as direct/webm.
+                media_info.container =
+                    canonical_container_for_decision(&file.path, &media_info.container);
                 let framerate = media_info.video.as_ref().and_then(|video| video.framerate);
                 let plan = remux_plan_for_source(&media_info)
                     .unwrap_or(rustfin_transcoder::session::RemuxPlan::Transcode);
@@ -5535,8 +5570,9 @@ async fn sse_events(
 mod tests {
     use super::{
         ChildWatchOrderMode, LOGIN_ATTEMPT_BUCKETS, LOGIN_COOLDOWN_SECONDS, LOGIN_INITIAL_ATTEMPTS,
-        Router, cached_image_source_token, enforce_login_rate_limit, extract_login_client_identity,
-        infer_image_ext_from_source, item_image_url, login_attempt_key, mounted_rustyvault_router,
+        Router, cached_image_source_token, canonical_container_for_decision,
+        enforce_login_rate_limit, extract_login_client_identity, infer_image_ext_from_source,
+        item_image_url, login_attempt_key, mounted_rustyvault_router,
         normalize_session_start_time_secs, parse_episode_order_from_media_path,
         parse_episode_order_from_sort_title, parse_season_order_from_sort_title,
         parse_season_order_from_title, preferred_item_image_types, reset_login_rate_limit,
@@ -5553,6 +5589,33 @@ mod tests {
     use std::sync::Arc;
     use std::sync::LazyLock;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn canonical_container_disambiguates_mkv_from_webm() {
+        // ffprobe reports both .mkv and .webm as "matroska,webm"; only the file
+        // extension reveals whether the browser can direct-play it (webm) or not (mkv).
+        assert_eq!(
+            canonical_container_for_decision("/m/Movie (2026).mkv", "matroska,webm"),
+            "matroska"
+        );
+        assert_eq!(
+            canonical_container_for_decision("/m/Clip.webm", "matroska,webm"),
+            "webm"
+        );
+        assert_eq!(
+            canonical_container_for_decision("/m/Movie.mp4", "mov,mp4,m4a,3gp,3g2,mj2"),
+            "mp4"
+        );
+        assert_eq!(
+            canonical_container_for_decision("/m/Movie.mov", "mov,mp4,m4a"),
+            "mov"
+        );
+        // Unknown extension falls back to the first probed format token.
+        assert_eq!(
+            canonical_container_for_decision("/m/clip.ts", "mpegts"),
+            "mpegts"
+        );
+    }
 
     fn build_test_state(
         rustyvault: crate::state::RustyVaultRuntimeState,
