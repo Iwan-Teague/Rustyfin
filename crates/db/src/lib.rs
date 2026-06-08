@@ -74,6 +74,10 @@ pub async fn connect(target: &str) -> Result<DbPool, sqlx::Error> {
         .unwrap_or(15);
     let pool = PgPoolOptions::new()
         .max_connections(max_conns)
+        // Keep a couple of warm connections to avoid cold-start latency after idle,
+        // and fail fast (rather than wait indefinitely) when the pool is exhausted.
+        .min_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(10))
         .connect(&url)
         .await?;
     Ok(pool)
