@@ -2736,6 +2736,44 @@ fn browser_can_direct_play(media: &rustfin_transcoder::ffprobe::MediaInfo) -> bo
     true
 }
 
+/// Decide whether an HLS session for this source can remux (copy streams) instead of
+/// re-encoding. Returns `Some(RemuxPlan::Remux { .. })` only when `decide()` says the
+/// codecs are browser-compatible but the container is not directly playable, and the
+/// streams are limited to what copies cleanly into MPEG-TS HLS: H.264 video plus AAC or
+/// MP3 audio (with `copy_audio` true only for AAC). Anything else — including any case
+/// that requires a real transcode, VP8/VP9/Opus (webm/direct-play territory, not
+/// remux-to-TS), or a missing video stream — returns `None`, keeping the full re-encode.
+fn remux_plan_for_source(
+    media: &rustfin_transcoder::ffprobe::MediaInfo,
+) -> Option<rustfin_transcoder::session::RemuxPlan> {
+    use rustfin_transcoder::decision::{PlayMethod, decide};
+
+    let caps = browser_direct_play_caps();
+    if decide(media, &caps).method != PlayMethod::Remux {
+        return None;
+    }
+
+    // Video must be H.264 to copy into a TS HLS segment.
+    let video_codec = media.video.as_ref()?.codec.to_ascii_lowercase();
+    if video_codec != "h264" {
+        return None;
+    }
+
+    // Audio: copy only when already AAC; re-encode MP3 to AAC; reject everything
+    // else (e.g. Opus/Vorbis, which are webm/direct-play cases, not remux-to-TS).
+    // A source with no audio stream is fine to remux (video-only copy).
+    let copy_audio = match media.audio.first() {
+        None => true,
+        Some(audio) => match audio.codec.to_ascii_lowercase().as_str() {
+            "aac" => true,
+            "mp3" => false,
+            _ => return None,
+        },
+    };
+
+    Some(rustfin_transcoder::session::RemuxPlan::Remux { copy_audio })
+}
+
 /// Best-effort single probe for the playback descriptor. Probes the source exactly once
 /// and reuses the result for both duration resolution and the direct-play decision, so we
 /// never issue a second ffprobe round-trip on this hot path. On any probe failure we
@@ -3442,14 +3480,40 @@ async fn create_playback_session(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("item not found for media file".into()))?;
     let input_path = std::path::PathBuf::from(&file.path);
-    let target_height = if requested_target_height.is_some() {
+
+    // Decide remux-vs-transcode and capture the source framerate (for GOP sizing).
+    // A forced resolution always fully transcodes — a scale can't be a stream copy —
+    // so we only consider remux for default-quality playback. We probe at most once:
+    // the forced-height path needs the probe for validation anyway, and the default
+    // path needs it for the remux decision.
+    let (target_height, remux_plan, source_framerate) = if requested_target_height.is_some() {
         let media_info = probe_media_info_for_file(&state, &input_path).await?;
-        validate_target_height_for_source(
+        let height = validate_target_height_for_source(
             requested_target_height,
             media_info.video.as_ref().map(|video| video.height),
-        )?
+        )?;
+        let framerate = media_info.video.as_ref().and_then(|video| video.framerate);
+        (
+            height,
+            rustfin_transcoder::session::RemuxPlan::Transcode,
+            framerate,
+        )
     } else {
-        None
+        // Best-effort probe: on failure, conservatively fall back to a full
+        // transcode (the path that has always worked) rather than guessing remux.
+        match probe_media_info_for_file(&state, &input_path).await {
+            Ok(media_info) => {
+                let framerate = media_info.video.as_ref().and_then(|video| video.framerate);
+                let plan = remux_plan_for_source(&media_info)
+                    .unwrap_or(rustfin_transcoder::session::RemuxPlan::Transcode);
+                (None, plan, framerate)
+            }
+            Err(_) => (
+                None,
+                rustfin_transcoder::session::RemuxPlan::Transcode,
+                None,
+            ),
+        }
     };
 
     let start_time_secs = normalize_session_start_time_secs(body.start_time_secs, file.duration_ms);
@@ -3461,6 +3525,8 @@ async fn create_playback_session(
             start_time_secs,
             target_height,
             None,
+            remux_plan,
+            source_framerate,
             auth.user_id.clone(),
             body.file_id.clone(),
         )

@@ -48,7 +48,9 @@ impl Default for TranscoderConfig {
             ffprobe_path: PathBuf::from("ffprobe"),
             transcode_dir: PathBuf::from("/tmp/rustfin_transcode"),
             max_concurrent: 4,
-            segment_secs: 4,
+            // Short segments lower time-to-first-frame: the client can begin
+            // playback after the first ~2s segment instead of waiting ~4s.
+            segment_secs: 2,
             idle_timeout_secs: 60,
             hw_accel: None,
             hw_device_path: None,
