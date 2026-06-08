@@ -63,7 +63,16 @@ Immediately after this audit, the four P0 items (including both Criticals) were 
 
 **Still open (notable):** SEC-3 (HttpOnly/Secure cookie auth — an auth-transport refactor that also needs CSRF handling); AUD-2 (full-mesh → SFU, only if larger rooms are wanted); the rest of the Medium/Low backlog (VID-5/7, TXT-4, ARC-2). The P0, P1, and P2 fix sets are all committed to `main`.
 
-> **Runtime caveat:** the app-wide CSP (SEC-5) and the voice-recovery changes (AUD-1) can only be *fully* validated at runtime. Smoke-test video/HLS playback, channels voice, watch-party, and vault unlock before relying on them. The transcode remux path (VID-3) should be checked against a real H.264-in-MKV file.
+### Smoke test results (2026-06-08, live app)
+
+Launched the full stack (Rust server + Next.js UI + Postgres), completed first-run setup, scanned a library with a generated H.264/AAC `.mp4` and `.mkv`, and exercised the changes:
+
+- **SEC-5 CSP** ✅ — security headers present app-wide (`/`, `/setup`, `/vault`); `/setup` renders correctly (brand gradient, Tailwind) with a **clean console — no CSP violations**. **SEC-6** ✅ — `/vault` serves `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'` (no `'unsafe-eval'`).
+- **ARC-3** ✅ — server boots, runs all migrations, and serves against the pooled DB.
+- **VID-1/2 direct-play** ✅ **+ regression found & fixed:** an H.264/AAC **MP4** returns `play_method: direct`; an H.264/AAC **MKV** initially mis-returned `direct` because ffprobe labels `.mkv` as `matroska,webm` and the `webm` token matched the browser caps. Browsers cannot play H.264-in-MKV, so this would have broken the most common movie format. Fixed by disambiguating the decision container from the file extension (`canonical_container_for_decision`); the MKV now correctly returns `transcode`.
+- **VID-3 remux** ✅ — starting an HLS session for the MKV runs `ffmpeg … -c:v copy -bsf:v h264_mp4toannexb -c:a copy … -hls_time 2` (true stream-copy, **2s segments** per VID-4), exits 0, and produces valid HLS — no wasteful re-encode.
+
+**Not exercised live** (covered by unit/integration tests + header checks): vault unlock (Argon2 WASM under the CSP), private-channel WS filtering (TXT), and voice recovery (AUD — needs two real peers).
 
 ---
 
