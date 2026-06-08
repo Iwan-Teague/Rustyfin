@@ -57,10 +57,16 @@ const AUTO_LOCK_ALARM = 'rustyvault-auto-lock';
 const REGISTERED_SCRIPT_ID = 'rustyvault-site-script';
 const PENDING_EXPIRY_MS = 45_000;
 
+type RememberedFrame = {
+  frameId: number;
+  url: string;
+  isTopFrame: boolean;
+};
+
 let unlocked: any = null;
 let matchesByTab = new Map<number, MatchedVaultItem[]>();
 let pagePolicyByTab = new Map<number, PagePolicy>();
-let lastFrameByTab = new Map<number, number>();
+let lastFrameByTab = new Map<number, RememberedFrame>();
 let vaultPreferences: RustyVaultPreferences = defaultRustyVaultPreferences();
 
 function nowTs() {
@@ -92,7 +98,11 @@ function requireTabId(explicitTabId: number | undefined, sender: any, action: st
 
 function rememberFrame(tabId: number, sender: any) {
   if (typeof sender?.frameId === 'number' && sender.frameId >= 0) {
-    lastFrameByTab.set(tabId, sender.frameId);
+    lastFrameByTab.set(tabId, {
+      frameId: sender.frameId,
+      url: typeof sender.url === 'string' ? sender.url : '',
+      isTopFrame: sender.frameId === 0,
+    });
   }
 }
 
@@ -100,7 +110,21 @@ function preferredFrameId(tabId: number, sender: any) {
   if (typeof sender?.frameId === 'number' && sender.frameId >= 0) {
     return sender.frameId;
   }
-  return lastFrameByTab.get(tabId);
+  return lastFrameByTab.get(tabId)?.frameId;
+}
+
+// Resolve the frame that actually owns a fill/save request so the page policy
+// can be evaluated against *that* frame instead of the top document. The fill
+// path delivers credentials here, so a cross-origin subframe must be caught.
+function resolveTargetFrame(tabId: number, sender: any): RememberedFrame | null {
+  if (typeof sender?.frameId === 'number' && sender.frameId >= 0) {
+    return {
+      frameId: sender.frameId,
+      url: typeof sender.url === 'string' ? sender.url : '',
+      isTopFrame: sender.frameId === 0,
+    };
+  }
+  return lastFrameByTab.get(tabId) ?? null;
 }
 
 async function sendContentMessage(
@@ -394,7 +418,7 @@ async function maybeFinalizeSubmittedCandidate(tabId: number, payload: PageConte
           message: action.message,
         },
       },
-      lastFrameByTab.get(tabId),
+      lastFrameByTab.get(tabId)?.frameId,
     ).catch(() => null);
   }
 }
@@ -453,7 +477,7 @@ async function savePendingActionToServer(
   });
   await clearPendingAction(tabId);
   await clearGeneratedPassword(tabId);
-  await sendContentMessage(tabId, { type: 'dismiss-save-prompt' }, frameId ?? lastFrameByTab.get(tabId)).catch(() => null);
+  await sendContentMessage(tabId, { type: 'dismiss-save-prompt' }, frameId ?? lastFrameByTab.get(tabId)?.frameId).catch(() => null);
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (tab?.url) {
     await loadMatchesForUrl(tabId, tab.url, { topLevelUrl: tab.url, isTopFrame: true }).catch(() => null);
@@ -609,9 +633,15 @@ chrome.runtime.onMessage.addListener(
               ) {
                 rememberFrame(sender.tab.id, sender);
               }
-              await loadMatchesForUrl(sender.tab.id, message.payload.url, {
-                topLevelUrl: message.payload.topLevelUrl,
-                isTopFrame: message.payload.isTopFrame,
+              // Prefer the browser-supplied frame identity over page-reported
+              // values so a cross-origin iframe cannot poison this tab's match
+              // list by claiming to be the top frame at an attacker-chosen URL.
+              const frameUrl = (typeof sender.url === 'string' && sender.url) || message.payload.url;
+              const frameIsTop =
+                typeof sender.frameId === 'number' ? sender.frameId === 0 : message.payload.isTopFrame;
+              await loadMatchesForUrl(sender.tab.id, frameUrl, {
+                topLevelUrl: sender.tab.url || message.payload.topLevelUrl,
+                isTopFrame: frameIsTop,
               });
               await maybeFinalizeSubmittedCandidate(sender.tab.id, message.payload);
             }
@@ -643,7 +673,24 @@ chrome.runtime.onMessage.addListener(
             }
             const tabId = requireTabId(message.tabId, sender, 'fill credentials on');
             rememberFrame(tabId, sender);
-            const policy = await resolvePagePolicy(tabId);
+            // Credentials are delivered to this exact frame, so the page policy
+            // must be evaluated against the target frame (not the top document).
+            // Otherwise a login form inside a cross-origin iframe would receive
+            // plaintext credentials the `untrusted_iframe` policy forbids.
+            const targetFrame = resolveTargetFrame(tabId, sender);
+            const tab = await chrome.tabs.get(tabId).catch(() => null);
+            // Fail closed: a subframe target can only be filled if we can compare
+            // its real URL against the top document. Missing either side means we
+            // cannot prove same-origin, so refuse rather than risk a cross-origin
+            // leak the `untrusted_iframe` policy is meant to block.
+            if (targetFrame && !targetFrame.isTopFrame && (!targetFrame.url || !tab?.url)) {
+              throw new Error(describePolicyReason('untrusted_iframe'));
+            }
+            const policy = await resolvePagePolicy(tabId, {
+              url: targetFrame?.url || tab?.url,
+              topLevelUrl: tab?.url || targetFrame?.url,
+              isTopFrame: targetFrame ? targetFrame.isTopFrame : true,
+            });
             if (!policy.canManualFill) {
               throw new Error(
                 describePolicyReason(policy.manualFillBlockedReason) ||
@@ -664,7 +711,7 @@ chrome.runtime.onMessage.addListener(
                   password: payload.password,
                 },
               },
-              preferredFrameId(tabId, sender),
+              targetFrame ? targetFrame.frameId : preferredFrameId(tabId, sender),
             );
             await setLastFilled(tabId, {
               tabId,
@@ -705,15 +752,22 @@ chrome.runtime.onMessage.addListener(
             const tabId = requireTabId(message.tabId, sender, 'show inline state for');
             rememberFrame(tabId, sender);
             const sitePermissionGranted = await hasSitePermission(message.url).catch(() => false);
+            // Evaluate against the requesting frame, not a blanket top-level URL,
+            // so a cross-origin iframe overlay is told `untrusted_iframe` and is
+            // never offered the vault match list or a fill affordance.
+            const frameUrl = (typeof sender?.url === 'string' && sender.url) || message.url;
+            const frameIsTop = typeof sender?.frameId === 'number' ? sender.frameId === 0 : true;
             const policy = await resolvePagePolicy(tabId, {
-              url: message.url,
-              topLevelUrl: message.url,
-              isTopFrame: true,
+              url: frameUrl,
+              topLevelUrl: sender?.tab?.url || message.url,
+              isTopFrame: frameIsTop,
             });
             sendResponse(
               responseOk({
                 unlocked: Boolean(unlocked),
-                matches: matchesByTab.get(tabId) || [],
+                // Never leak the vault match list to an untrusted cross-origin
+                // frame, even as titles/usernames in an overlay it controls.
+                matches: policy.crossOriginIframe ? [] : matchesByTab.get(tabId) || [],
                 pagePolicy: policy,
                 pendingAction: await getPendingAction(tabId),
                 sitePermissionGranted,

@@ -63,8 +63,21 @@ pub fn decide(media: &MediaInfo, caps: &ClientCaps) -> PlayDecision {
     let mut transcode_video = false;
     let mut transcode_audio = false;
 
-    // Check container
-    let container_ok = caps.containers.iter().any(|c| media.container.contains(c));
+    // Check container. ffprobe reports `format_name` as a comma-joined list of format
+    // aliases (e.g. "mov,mp4,m4a,3gp,3g2,mj2"). Split into tokens and check membership
+    // instead of a substring match so that, for example, a client that only lists "mp4"
+    // is not considered compatible with a container whose name merely *contains* "mp4"
+    // as a substring of an unrelated token. Matching is case-insensitive.
+    let container_ok = media
+        .container
+        .split(',')
+        .map(|token| token.trim())
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            caps.containers
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(token))
+        });
 
     if !container_ok {
         reasons.push(TranscodeReason::ContainerNotSupported);
@@ -216,5 +229,25 @@ mod tests {
         let d = decide(&media, &caps);
         assert_eq!(d.method, PlayMethod::Transcode);
         assert!(d.reasons.contains(&TranscodeReason::VideoResolutionTooHigh));
+    }
+
+    #[test]
+    fn container_match_is_token_based_not_substring() {
+        // ffprobe joins format aliases with commas. A client that lists "mp4" must match
+        // the "mp4" token in this list, but must NOT match purely because some token
+        // contains the substring "mp4".
+        let mut media = test_media();
+        media.container = "mov,mp4,m4a,3gp,3g2,mj2".into();
+        let caps = ClientCaps {
+            containers: vec!["mp4".into()],
+            ..ClientCaps::default()
+        };
+        let d = decide(&media, &caps);
+        assert!(!d.reasons.contains(&TranscodeReason::ContainerNotSupported));
+
+        // A container whose only token merely contains "mp4" as a substring is not a match.
+        media.container = "notmp4container".into();
+        let d = decide(&media, &caps);
+        assert!(d.reasons.contains(&TranscodeReason::ContainerNotSupported));
     }
 }

@@ -605,6 +605,14 @@ pub async fn create_channel(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
+    // Keep the in-memory private-channel set (used by the websocket fan-out filter)
+    // in sync before broadcasting, so the ChannelCreated event is itself gated
+    // correctly for non-admin sockets.
+    state
+        .channel_manager
+        .mark_channel_private(&row.id, row.is_private)
+        .await;
+
     state
         .channel_manager
         .broadcast(ChannelEvent::ChannelCreated {
@@ -654,6 +662,14 @@ pub async fn update_channel(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::Internal("channel disappeared after update".into()))?;
+
+    // Sync the in-memory private set before broadcasting so the ChannelUpdated event
+    // is gated by the channel's NEW privacy state: a now-public channel's update
+    // reaches non-admins, while a now-private channel's update is withheld from them.
+    state
+        .channel_manager
+        .mark_channel_private(&updated.id, updated.is_private)
+        .await;
 
     state
         .channel_manager
@@ -717,6 +733,14 @@ pub async fn delete_channel(
         .broadcast(ChannelEvent::ChannelDeleted {
             channel_id: deleted_channel_id.clone(),
         });
+
+    // Drop from the in-memory private set AFTER broadcasting: while the id is still in
+    // the set, the ChannelDeleted event for a private channel stays gated so non-admin
+    // sockets (which never knew the channel existed) don't receive its deletion event.
+    state
+        .channel_manager
+        .forget_channel(&deleted_channel_id)
+        .await;
 
     log_admin_channel_action(
         &state,

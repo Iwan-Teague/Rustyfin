@@ -2543,6 +2543,13 @@ struct PlaybackDescriptorResponse {
     hls_start_url: String,
     media_info_url: String,
     duration_ms: Option<i64>,
+    /// How the client should play this item by default: "direct" means the source is
+    /// browser-natively playable and the client should point `<video>` at `direct_url`
+    /// (the byte-range file server handles seeking); "transcode" means the client should
+    /// use the HLS path. Clients that do not understand this field must fall back to HLS.
+    play_method: &'static str,
+    /// Convenience boolean mirroring `play_method == "direct"`.
+    direct_play: bool,
 }
 
 fn item_image_url(
@@ -2666,6 +2673,118 @@ async fn get_item(
     Ok(Json(item_to_response(item, show_images)))
 }
 
+/// Conservative capabilities representing what a modern browser can reliably play
+/// natively in a `<video>` element. Intentionally narrow: anything not listed here
+/// (HEVC/H.265, VC1, MPEG-2, AC3/EAC3/DTS, MKV/AVI/TS, ...) falls through to the HLS
+/// transcode path. We only direct-play when we are confident the browser can decode
+/// the file as-is.
+fn browser_direct_play_caps() -> rustfin_transcoder::decision::ClientCaps {
+    rustfin_transcoder::decision::ClientCaps {
+        // mp4/mov family for H.264/AAC, plus webm for VP8/VP9/Opus/Vorbis.
+        containers: vec![
+            "mp4".into(),
+            "m4v".into(),
+            "mov".into(),
+            "quicktime".into(),
+            "webm".into(),
+        ],
+        // H.264 reported by ffprobe as "h264"; VP8/VP9 only inside webm (gated below).
+        video_codecs: vec!["h264".into(), "vp8".into(), "vp9".into()],
+        audio_codecs: vec!["aac".into(), "mp3".into(), "opus".into(), "vorbis".into()],
+        max_bitrate_kbps: None,
+        max_width: None,
+        max_height: None,
+    }
+}
+
+/// Decide whether the browser can direct-play this source. Returns true only for a
+/// clean `DirectPlay` decision; remux and transcode both route through HLS. We also
+/// guard the webm-only codecs (VP8/VP9/Opus/Vorbis): those are listed in the caps so
+/// the generic `decide()` accepts them, but they are only browser-safe inside a webm
+/// container, so reject any cross-container combination (e.g. VP9-in-mp4) here.
+fn browser_can_direct_play(media: &rustfin_transcoder::ffprobe::MediaInfo) -> bool {
+    use rustfin_transcoder::decision::{PlayMethod, decide};
+
+    let caps = browser_direct_play_caps();
+    let decision = decide(media, &caps);
+    if decision.method != PlayMethod::DirectPlay {
+        return false;
+    }
+
+    let container_tokens: Vec<String> = media
+        .container
+        .split(',')
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| !token.is_empty())
+        .collect();
+    let is_webm = container_tokens.iter().any(|token| token == "webm");
+
+    // VP8/VP9 video and Opus/Vorbis audio are only safe in webm.
+    if let Some(video) = media.video.as_ref() {
+        let codec = video.codec.to_ascii_lowercase();
+        if (codec == "vp8" || codec == "vp9") && !is_webm {
+            return false;
+        }
+    }
+    if let Some(audio) = media.audio.first() {
+        let codec = audio.codec.to_ascii_lowercase();
+        if (codec == "opus" || codec == "vorbis") && !is_webm {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Best-effort single probe for the playback descriptor. Probes the source exactly once
+/// and reuses the result for both duration resolution and the direct-play decision, so we
+/// never issue a second ffprobe round-trip on this hot path. On any probe failure we
+/// return `None` for the media info, which the caller treats as "transcode" (conservative).
+async fn resolve_playback_media_info(
+    state: &AppState,
+    file_id: &str,
+    preferred_duration_ms: Option<i64>,
+) -> (Option<i64>, Option<rustfin_transcoder::ffprobe::MediaInfo>) {
+    let mut duration_ms = preferred_duration_ms.filter(|value| *value > 0);
+
+    let Ok(Some(file)) = rustfin_db::repo::media_files::get_media_file(&state.db, file_id).await
+    else {
+        return (duration_ms, None);
+    };
+
+    let cached_file_duration_ms = file.duration_ms.filter(|value| *value > 0);
+    let media_path = std::path::Path::new(&file.path);
+
+    let media_info = if media_path.exists() && media_path.is_file() {
+        rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
+    if let Some(info) = media_info.as_ref() {
+        let probed_duration_ms = (info.duration_secs * 1000.0).round() as i64;
+        if probed_duration_ms > 0 {
+            duration_ms = Some(probed_duration_ms);
+            if cached_file_duration_ms != Some(probed_duration_ms) {
+                let _ = rustfin_db::repo::media_files::update_media_file_duration(
+                    &state.db,
+                    file_id,
+                    probed_duration_ms,
+                )
+                .await;
+            }
+        }
+    }
+
+    if duration_ms.is_none() {
+        duration_ms = cached_file_duration_ms;
+    }
+
+    (duration_ms, media_info)
+}
+
 async fn get_item_playback(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -2684,12 +2803,21 @@ async fn get_item_playback(
             ApiError::Conflict("No playable file mapped to this item; rescan library.".into())
         })?;
 
-    let duration_ms = resolve_and_persist_media_duration_ms(
+    // Single best-effort probe: reused for both duration and the direct-play decision.
+    let (duration_ms, media_info) = resolve_playback_media_info(
         &state,
         &file_id,
         item.duration_ms.filter(|value| *value > 0),
     )
     .await;
+
+    // Conservative default: transcode unless we successfully probed and the source is a
+    // browser-native format. A probe failure or any uncertainty keeps us on HLS.
+    let direct_play = media_info
+        .as_ref()
+        .map(browser_can_direct_play)
+        .unwrap_or(false);
+    let play_method = if direct_play { "direct" } else { "transcode" };
 
     let token = issue_stream_token(
         &auth.user_id,
@@ -2707,6 +2835,8 @@ async fn get_item_playback(
         hls_start_url: "/api/v1/playback/sessions".to_string(),
         media_info_url: format!("/api/v1/playback/info/{file_id}"),
         duration_ms,
+        play_method,
+        direct_play,
     }))
 }
 

@@ -18,6 +18,11 @@ pub struct ChannelManager {
     voice: RwLock<HashMap<String, Vec<VoiceMember>>>,
     /// channel_id -> unix timestamp (seconds) when the current active voice session began.
     voice_active_since_ts: RwLock<HashMap<String, i64>>,
+    /// Set of channel ids that are private (admin-only). Maintained in-memory so the
+    /// per-socket broadcast fan-out can filter private-channel events for non-admin
+    /// sockets without a DB query per event. Seeded/refreshed from `list_channels`
+    /// on every websocket connect and kept in sync on channel create/update/delete.
+    private_channels: RwLock<HashSet<String>>,
 }
 
 pub struct JoinVoiceResult {
@@ -38,11 +43,41 @@ impl ChannelManager {
             user_senders: RwLock::new(HashMap::new()),
             voice: RwLock::new(HashMap::new()),
             voice_active_since_ts: RwLock::new(HashMap::new()),
+            private_channels: RwLock::new(HashSet::new()),
         }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<ChannelEvent>> {
         self.broadcast.subscribe()
+    }
+
+    /// Replaces the in-memory private-channel id set wholesale. Called from the
+    /// websocket connect path (which already lists every channel) so the set stays
+    /// authoritative even if an out-of-band DB change was missed.
+    pub async fn set_private_channels(&self, channel_ids: impl IntoIterator<Item = String>) {
+        let next: HashSet<String> = channel_ids.into_iter().collect();
+        *self.private_channels.write().await = next;
+    }
+
+    /// Inserts or removes a single channel id from the private set after a channel
+    /// is created or its privacy flag is updated.
+    pub async fn mark_channel_private(&self, channel_id: &str, is_private: bool) {
+        let mut private = self.private_channels.write().await;
+        if is_private {
+            private.insert(channel_id.to_string());
+        } else {
+            private.remove(channel_id);
+        }
+    }
+
+    /// Drops a channel id from the private set when the channel is deleted.
+    pub async fn forget_channel(&self, channel_id: &str) {
+        self.private_channels.write().await.remove(channel_id);
+    }
+
+    /// Returns true if the channel id is currently known to be private (admin-only).
+    pub async fn is_channel_private(&self, channel_id: &str) -> bool {
+        self.private_channels.read().await.contains(channel_id)
     }
 
     pub async fn register_user(

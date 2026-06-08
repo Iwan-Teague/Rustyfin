@@ -76,6 +76,11 @@ export type PlaybackDescriptor = {
   hls_start_url: string;
   media_info_url: string;
   duration_ms?: number | null;
+  // Server-authoritative default play method. "direct" means the browser can natively
+  // play `direct_url` (range server handles seeking); anything else (including a missing
+  // field on older servers) means use the HLS transcode path.
+  play_method?: 'direct' | 'transcode' | string | null;
+  direct_play?: boolean | null;
 };
 
 export type PlaybackSession = {
