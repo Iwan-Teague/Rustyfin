@@ -24,6 +24,7 @@ import type {
   VoiceTranscriptionState,
 } from './channelsApi';
 import VoiceEngine from '@/app/channels/components/VoiceEngine';
+import type { PeerConnectionUiState } from '@/app/channels/components/VoiceEngine';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,17 @@ type RuntimeIceServer = {
   credential?: string;
 };
 
+// Re-exported so UI consumers (e.g. the voice member list) can type the
+// per-peer connection indicator without reaching into VoiceEngine internals.
+export type { PeerConnectionUiState };
+
+// channelId → (remote userId → connection UI state). Lets the UI show a
+// "reconnecting…/couldn't connect" badge instead of silent dead audio.
+type VoicePeerConnectionStates = Record<
+  string,
+  Record<string, PeerConnectionUiState>
+>;
+
 export interface ChannelsContextValue {
   wsReady: boolean;
   sendWs: (msg: object) => void;
@@ -63,6 +75,7 @@ export interface ChannelsContextValue {
   hasLocalVoiceSession: boolean;
   voiceActiveSince: Record<string, number>;
   voiceSpeaking: Record<string, string[]>;
+  voicePeerConnectionStates: VoicePeerConnectionStates;
   voiceTranscriptions: Record<string, VoiceTranscriptionState>;
   remoteVolumes: Record<string, number>;
   localMicGain: number;
@@ -200,6 +213,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [voicePresence, setVoicePresence] = useState<Record<string, UserInfo[]>>({});
   const [voiceActiveSince, setVoiceActiveSince] = useState<Record<string, number>>({});
   const [voiceSpeaking, setVoiceSpeaking] = useState<Record<string, string[]>>({});
+  const [voicePeerConnectionStates, setVoicePeerConnectionStates] =
+    useState<VoicePeerConnectionStates>({});
   const [voiceTranscriptions, setVoiceTranscriptions] = useState<
     Record<string, VoiceTranscriptionState>
   >({});
@@ -379,6 +394,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       setVoicePresence({});
       setVoiceActiveSince({});
       setVoiceSpeaking({});
+      setVoicePeerConnectionStates({});
       setVoiceTranscriptions({});
       setRemoteVolumes({});
       clearVoiceEngineEvents();
@@ -426,6 +442,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           setVoiceActiveSince(event.voice_active_since_ts ?? {});
           setVoiceTranscriptions(event.voice_transcriptions ?? {});
           setVoiceSpeaking({});
+          setVoicePeerConnectionStates({});
           setWsReady(true);
           // Auto-rejoin voice channel if there was an active session before the reconnect
           const prevSession = voiceSessionRef.current;
@@ -715,6 +732,12 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
             delete next[previousChannelId];
             return next;
           });
+          setVoicePeerConnectionStates((prev) => {
+            if (!(previousChannelId in prev)) return prev;
+            const next = { ...prev };
+            delete next[previousChannelId];
+            return next;
+          });
         }
         setVoiceSession(null);
       }
@@ -787,6 +810,12 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       sendWs({ type: 'leave_voice', channel_id: voiceSession.channelId });
       voiceSession.localStream?.getTracks().forEach((t) => t.stop());
       setVoiceSpeaking((prev) => {
+        if (!(voiceSession.channelId in prev)) return prev;
+        const next = { ...prev };
+        delete next[voiceSession.channelId];
+        return next;
+      });
+      setVoicePeerConnectionStates((prev) => {
         if (!(voiceSession.channelId in prev)) return prev;
         const next = { ...prev };
         delete next[voiceSession.channelId];
@@ -967,6 +996,38 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  // Per-peer WebRTC connection state from VoiceEngine. A null state means the
+  // peer is gone (drop the entry). Mirrors the nested-record shape of
+  // voiceSpeaking so the UI can show a reconnecting/failed indicator.
+  const handlePeerConnectionStateChange = useCallback(
+    (channelId: string, userId: string, state: PeerConnectionUiState | null) => {
+      setVoicePeerConnectionStates((prev) => {
+        const channelStates = prev[channelId];
+        if (state === null) {
+          if (!channelStates || !(userId in channelStates)) return prev;
+          const nextChannel = { ...channelStates };
+          delete nextChannel[userId];
+          const next = { ...prev };
+          if (Object.keys(nextChannel).length === 0) {
+            delete next[channelId];
+          } else {
+            next[channelId] = nextChannel;
+          }
+          return next;
+        }
+        if (channelStates?.[userId] === state) return prev;
+        return {
+          ...prev,
+          [channelId]: {
+            ...(channelStates ?? {}),
+            [userId]: state,
+          },
+        };
+      });
+    },
+    [],
+  );
+
   // ── Context value ────────────────────────────────────────────────────────────
 
   const value: ChannelsContextValue = {
@@ -979,6 +1040,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     hasLocalVoiceSession,
     voiceActiveSince,
     voiceSpeaking,
+    voicePeerConnectionStates,
     voiceTranscriptions,
     remoteVolumes,
     localMicGain,
@@ -1018,6 +1080,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           localMicGain={localMicGain}
           preferredOutputDeviceId={preferredOutputDeviceId}
           onSpeakingChange={handleSpeakingChange}
+          onPeerConnectionStateChange={handlePeerConnectionStateChange}
           transcriptionState={voiceTranscriptions[voiceSession.channelId] ?? null}
           onTranscriptionRecordingUpload={uploadTranscriptionRecordingForSession}
           onTranscriptionTextUpload={uploadTranscriptionTextForSession}
