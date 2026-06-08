@@ -46,7 +46,20 @@ Immediately after this audit, the four P0 items (including both Criticals) were 
 | **VID-1/2** (+ VID-10 container match) | Playback descriptor now returns `play_method` + `direct_play`, computed server-side via `decide()` over a single reused ffprobe (conservative browser caps: H.264/AAC/MP3 in mp4/mov, VP8/9/Opus/Vorbis in webm, else transcode); both video players direct-play compatible content through the byte-range server instead of transcoding, with guarded HLS-only cleanup; container match is now token-based. | transcoder unit **15/15**, playback/stream integration **3/3 PASS**, UI **tsc clean**. |
 | **VLT-1** | Extension fill evaluates the cross-origin-iframe policy against the *actual target frame* (browser-supplied `sender.url`/`frameId`, no new permission) and refuses cross-origin fills; `get-inline-state` + `page-context` hardened against frame spoofing. | Extension `tsc --noEmit` **clean (exit 0)**. |
 
-**Scope note:** VID-1/2 eliminates *needless* transcoding (the big latency/CPU win — compatible files now play directly). The transcode path itself is **not yet tuned** — VID-3 (`-c copy` remux for container-only mismatches) and VID-4 (encoder `zerolatency`/GOP + LL-HLS) remain open (P1). All other P1/P2 items below are unchanged. These fixes live in the working tree and are **not committed**.
+**Scope note (P0):** VID-1/2 eliminates *needless* transcoding (the big latency/CPU win — compatible files now play directly).
+
+### P1 fixes (landed 2026-06-08, second wave)
+
+| ID | Fix | Verification |
+|---|---|---|
+| **VID-3/4** | HLS sessions now `-c copy` remux H.264/AAC sources whose only problem is the container (e.g. MKV) instead of re-encoding (`+h264_mp4toannexb`, audio copied when already AAC); software/HW encoders tuned for fast start (`-tune zerolatency`, NVENC `-preset p1 -tune ll`, GOP = 1 keyframe/segment); default segment 4s→2s. Forced-quality requests still fully transcode. | transcoder **20/20**, playback/stream integration **3/3**, server check clean. |
+| **AUD-1/3/7** | Voice peers recover from ICE/connection failure (`restartIce` → rebuild, disconnect grace timer, debounce, retry-capped), pick up TURN if `/runtime-config` resolves late, and surface per-peer connection state for a reconnecting/failed indicator. | UI **tsc clean**. (Real WebRTC needs a manual smoke test.) |
+| **SEC-5/6** | Security headers (CSP, `frame-ancestors 'none'`, `nosniff`, Referrer/Permissions-Policy) now apply app-wide, not just `/vault`; vault CSP drops `'unsafe-eval'` (keeps `'wasm-unsafe-eval'` for Argon2). Main-app `script-src` keeps `'unsafe-inline'` for Next hydration (documented tradeoff). | UI **tsc clean**. CSP needs a runtime smoke test. |
+| **ARC-1** | Added `.github/workflows/ci.yml` running `scripts/ci/debian_native_gates.sh` (fmt/clippy/tests/UI build) with a Postgres service on PR + push to `main`. | YAML validated; full run only verifiable on GitHub. |
+
+**Still open (notable):** SEC-3 (HttpOnly/Secure cookie auth — deferred; it is an auth-transport refactor that also needs CSRF handling); AUD-2 (full-mesh → SFU, only if larger rooms are wanted); the Medium/Low backlog (VID-5/6/7, TXT-4, ARC-2/3/4, etc.). Both the P0 and P1 fix sets are committed to `main`.
+
+> **Runtime caveat:** the app-wide CSP (SEC-5) and the voice-recovery changes (AUD-1) can only be *fully* validated at runtime. Smoke-test video/HLS playback, channels voice, watch-party, and vault unlock before relying on them. The transcode remux path (VID-3) should be checked against a real H.264-in-MKV file.
 
 ---
 
