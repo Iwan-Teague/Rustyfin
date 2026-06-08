@@ -25,6 +25,11 @@ interface Props {
   localMicGain: number;
   preferredOutputDeviceId: string | null;
   onSpeakingChange: (channelId: string, userId: string, speaking: boolean) => void;
+  onPeerConnectionStateChange: (
+    channelId: string,
+    userId: string,
+    state: PeerConnectionUiState | null,
+  ) => void;
   transcriptionState: VoiceTranscriptionState | null;
   onTranscriptionRecordingUpload: (
     channelId: string,
@@ -67,10 +72,32 @@ type ChannelSpeechRecognition = {
 
 type ChannelSpeechRecognitionConstructor = new () => ChannelSpeechRecognition;
 
+// Per-peer connection state surfaced to the UI so it can show a
+// "reconnecting…/couldn't connect" indicator instead of silent dead audio.
+export type PeerConnectionUiState =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'failed';
+
 const SPEAKING_SAMPLE_INTERVAL_MS = 120;
 const SPEAKING_RMS_THRESHOLD = 0.03;
 const SPEAKING_HANG_MS = 300;
 const SYNTHETIC_OUTPUT_PREFIX = 'synthetic-audiooutput-';
+
+// ── ICE / connection recovery tuning (AUD-1) ────────────────────────────────
+// Grace period after a peer goes `disconnected` before we treat it as needing
+// recovery. Transient network blips often self-heal back to `connected`.
+const PEER_DISCONNECT_GRACE_MS = 4000;
+// Debounce so a burst of `failed`/`disconnected` transitions only triggers one
+// recovery attempt.
+const PEER_RECOVERY_DEBOUNCE_MS = 800;
+// Cap recovery attempts per peer within a window so a permanently broken link
+// (e.g. no reachable TURN) can't spin forever.
+const PEER_MAX_RECOVERY_ATTEMPTS = 5;
+// After this quiet period (no further failures) the recovery attempt counter
+// resets, so a peer that later breaks again gets a fresh budget.
+const PEER_RECOVERY_ATTEMPT_RESET_MS = 30_000;
 
 function collectBrowserTranscript(event: ChannelSpeechRecognitionEvent): string {
   const transcripts: string[] = [];
@@ -123,6 +150,7 @@ export default function VoiceEngine({
   localMicGain,
   preferredOutputDeviceId,
   onSpeakingChange,
+  onPeerConnectionStateChange,
   transcriptionState,
   onTranscriptionRecordingUpload,
   onTranscriptionTextUpload,
@@ -132,6 +160,26 @@ export default function VoiceEngine({
   const remoteAudioPipelinesRef = useRef<Map<string, RemoteAudioPipeline>>(new Map());
   const speakingMonitorsRef = useRef<Map<string, SpeakingMonitor>>(new Map());
   const pendingIceCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  // ── Recovery bookkeeping (AUD-1) ──────────────────────────────────────────
+  // Per-peer recovery state, keyed by remote userId. Survives pc rebuilds
+  // because it is indexed by userId, not by the RTCPeerConnection instance.
+  const peerRecoveryRef = useRef<
+    Map<
+      string,
+      {
+        graceTimerId: number | null;
+        debounceTimerId: number | null;
+        attempts: number;
+        lastAttemptAtMs: number;
+        uiState: PeerConnectionUiState | null;
+      }
+    >
+  >(new Map());
+  // Latest iceServers and state callback, mirrored into refs so the long-lived
+  // pc.onconnectionstatechange closures and the late-iceServers refresh always
+  // read current values instead of the values captured at peer construction.
+  const iceServersRef = useRef<RTCIceServer[]>(iceServers);
+  const onPeerConnectionStateChangeRef = useRef(onPeerConnectionStateChange);
   const processedEventSeqRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const localMicContextRef = useRef<AudioContext | null>(null);
@@ -512,9 +560,54 @@ export default function VoiceEngine({
     startSpeakingMonitor(userId, stream);
   }
 
-  function closePeer(userId: string) {
+  // ── Recovery state machine helpers (AUD-1 / AUD-3) ─────────────────────────
+
+  function getPeerRecovery(userId: string) {
+    let entry = peerRecoveryRef.current.get(userId);
+    if (!entry) {
+      entry = {
+        graceTimerId: null,
+        debounceTimerId: null,
+        attempts: 0,
+        lastAttemptAtMs: 0,
+        uiState: null,
+      };
+      peerRecoveryRef.current.set(userId, entry);
+    }
+    return entry;
+  }
+
+  function clearPeerRecoveryTimers(userId: string) {
+    const entry = peerRecoveryRef.current.get(userId);
+    if (!entry) return;
+    if (entry.graceTimerId !== null) {
+      window.clearTimeout(entry.graceTimerId);
+      entry.graceTimerId = null;
+    }
+    if (entry.debounceTimerId !== null) {
+      window.clearTimeout(entry.debounceTimerId);
+      entry.debounceTimerId = null;
+    }
+  }
+
+  // Surface a per-peer connection state to the UI (deduped). Passing null clears
+  // it (peer fully gone), matching the onSpeakingChange(false) convention.
+  function setPeerUiState(userId: string, state: PeerConnectionUiState | null) {
+    const entry = getPeerRecovery(userId);
+    if (entry.uiState === state) return;
+    entry.uiState = state;
+    onPeerConnectionStateChangeRef.current(channelId, userId, state);
+  }
+
+  function closePeer(userId: string, options?: { preserveRecovery?: boolean }) {
     const pc = peersRef.current.get(userId);
     if (pc) {
+      // Detach handlers so the close() we trigger here can't re-enter the
+      // recovery state machine via onconnectionstatechange('closed').
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
       pc.close();
       peersRef.current.delete(userId);
     }
@@ -527,6 +620,12 @@ export default function VoiceEngine({
     teardownRemoteAudioPipeline(userId);
     stopSpeakingMonitor(userId);
     pendingIceCandidatesRef.current.delete(userId);
+    if (!options?.preserveRecovery) {
+      clearPeerRecoveryTimers(userId);
+      // Emit a final null state before dropping the bookkeeping entry.
+      setPeerUiState(userId, null);
+      peerRecoveryRef.current.delete(userId);
+    }
   }
 
   function queueRemoteIceCandidate(userId: string, candidate: RTCIceCandidateInit) {
@@ -550,13 +649,204 @@ export default function VoiceEngine({
     }
   }
 
+  // Re-send an offer on an existing pc (used after restartIce on the initiator
+  // side). Re-attaches local tracks and re-flushes pending ICE the same way the
+  // initial connect path does.
+  async function sendOfferForRecovery(userId: string, pc: RTCPeerConnection) {
+    addLocalTracks(pc);
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      sendWs({
+        type: 'rtc_offer',
+        to_user_id: userId,
+        channel_id: channelId,
+        sdp: JSON.stringify(pc.localDescription),
+      });
+      await flushPendingIceCandidates(userId, pc);
+    } catch (err) {
+      console.error('VoiceEngine: recovery offer failed for', userId, err);
+      // Fall back to a full rebuild on the next scheduled attempt.
+      closePeer(userId, { preserveRecovery: true });
+    }
+  }
+
+  // Core recovery action. Decides restartIce vs full rebuild and respects the
+  // single-offerer rule so both sides don't generate glare.
+  function recoverPeer(userId: string) {
+    if (userId === currentUserId) return;
+    // Peer was torn down (user left) while the timer was pending.
+    if (!peerRecoveryRef.current.has(userId)) return;
+
+    const entry = getPeerRecovery(userId);
+    entry.debounceTimerId = null;
+
+    // Reset the attempt budget if the link was quiet long enough since the last
+    // attempt, so a peer that breaks again much later gets a fresh allowance.
+    const nowMs = performance.now();
+    if (
+      entry.attempts > 0 &&
+      nowMs - entry.lastAttemptAtMs > PEER_RECOVERY_ATTEMPT_RESET_MS
+    ) {
+      entry.attempts = 0;
+    }
+
+    if (entry.attempts >= PEER_MAX_RECOVERY_ATTEMPTS) {
+      // Give up actively retrying; leave UI in `failed` so it can show
+      // "couldn't connect". A later natural recovery (onconnectionstatechange
+      // → connected) or a fresh offer from the remote will clear it.
+      setPeerUiState(userId, 'failed');
+      return;
+    }
+
+    entry.attempts += 1;
+    entry.lastAttemptAtMs = nowMs;
+    setPeerUiState(userId, 'reconnecting');
+
+    const pc = peersRef.current.get(userId);
+    const initiator = shouldInitiatePeer(userId);
+
+    // Prefer an in-place ICE restart when the platform supports it and the pc is
+    // still around — it's cheaper and keeps the same RTCPeerConnection/track.
+    const canRestartIce =
+      !!pc &&
+      pc.signalingState !== 'closed' &&
+      typeof pc.restartIce === 'function';
+
+    if (canRestartIce && pc) {
+      try {
+        pc.restartIce();
+        if (initiator) {
+          // Drive renegotiation explicitly with an iceRestart offer; the
+          // answerer's restartIce primes it to accept the new credentials.
+          void sendOfferForRecovery(userId, pc);
+        }
+        return;
+      } catch (err) {
+        console.warn('VoiceEngine: restartIce failed, rebuilding peer', userId, err);
+        // fall through to rebuild
+      }
+    }
+
+    // Rebuild path: tear down (preserving recovery bookkeeping/UI state) and
+    // re-create. Only the deterministic initiator re-offers; the answerer
+    // rebuilds a fresh pc that is ready to accept the incoming re-offer.
+    closePeer(userId, { preserveRecovery: true });
+    const fresh = createPeer(userId);
+    // Re-attach the local audio track (or recvonly transceiver) just like the
+    // initial connect path, so the answerer is ready before the re-offer lands.
+    addLocalTracks(fresh);
+    if (initiator) {
+      void (async () => {
+        try {
+          const offer = await fresh.createOffer();
+          await fresh.setLocalDescription(offer);
+          sendWs({
+            type: 'rtc_offer',
+            to_user_id: userId,
+            channel_id: channelId,
+            sdp: JSON.stringify(fresh.localDescription),
+          });
+        } catch (err) {
+          console.error('VoiceEngine: rebuild offer failed for', userId, err);
+        }
+      })();
+    }
+  }
+
+  // Debounced trigger so a burst of failure transitions collapses into one
+  // recovery attempt.
+  function schedulePeerRecovery(userId: string) {
+    if (userId === currentUserId) return;
+    if (!peersRef.current.has(userId) && !peerRecoveryRef.current.has(userId)) {
+      return;
+    }
+    const entry = getPeerRecovery(userId);
+    setPeerUiState(userId, 'reconnecting');
+    if (entry.debounceTimerId !== null) {
+      return;
+    }
+    entry.debounceTimerId = window.setTimeout(() => {
+      recoverPeer(userId);
+    }, PEER_RECOVERY_DEBOUNCE_MS);
+  }
+
+  // State-machine dispatcher wired to onconnectionstatechange /
+  // oniceconnectionstatechange. Maps transport states to UI state + recovery.
+  function handlePeerConnectionStateChange(userId: string, pc: RTCPeerConnection) {
+    // Prefer the aggregate connectionState; fall back to iceConnectionState on
+    // platforms that fire the ice event but not the aggregate one.
+    const connState = pc.connectionState;
+    const iceState = pc.iceConnectionState;
+    const entry = getPeerRecovery(userId);
+
+    const isConnected = connState === 'connected' || iceState === 'connected' || iceState === 'completed';
+    const isFailed = connState === 'failed' || iceState === 'failed';
+    const isDisconnected = connState === 'disconnected' || iceState === 'disconnected';
+
+    if (isConnected) {
+      // Healthy again — cancel any pending recovery and reset the budget.
+      clearPeerRecoveryTimers(userId);
+      entry.attempts = 0;
+      setPeerUiState(userId, 'connected');
+      return;
+    }
+
+    if (isFailed) {
+      // Hard failure: recover immediately (debounced).
+      if (entry.graceTimerId !== null) {
+        window.clearTimeout(entry.graceTimerId);
+        entry.graceTimerId = null;
+      }
+      schedulePeerRecovery(userId);
+      return;
+    }
+
+    if (isDisconnected) {
+      // Soft failure: start a grace timer; many `disconnected` blips heal on
+      // their own back to `connected` (which clears this timer above).
+      setPeerUiState(userId, 'reconnecting');
+      if (entry.graceTimerId === null) {
+        entry.graceTimerId = window.setTimeout(() => {
+          entry.graceTimerId = null;
+          const current = peersRef.current.get(userId);
+          const stillBad =
+            !current ||
+            current.connectionState === 'disconnected' ||
+            current.connectionState === 'failed' ||
+            current.iceConnectionState === 'disconnected' ||
+            current.iceConnectionState === 'failed';
+          if (stillBad) {
+            schedulePeerRecovery(userId);
+          }
+        }, PEER_DISCONNECT_GRACE_MS);
+      }
+      return;
+    }
+
+    if (connState === 'connecting' || iceState === 'checking') {
+      // Only show "connecting" if we aren't already mid-reconnect, so we don't
+      // flap the indicator back from "reconnecting".
+      if (entry.uiState !== 'reconnecting' && entry.uiState !== 'connected') {
+        setPeerUiState(userId, 'connecting');
+      }
+    }
+  }
+
   function createPeer(userId: string): RTCPeerConnection {
     const existing = peersRef.current.get(userId);
     if (existing) {
+      // Detach handlers first so the old connection's `closed` transition and
+      // any late ICE events can't re-enter the recovery state machine or race
+      // the replacement peer.
+      existing.onicecandidate = null;
+      existing.ontrack = null;
+      existing.onconnectionstatechange = null;
+      existing.oniceconnectionstatechange = null;
       existing.close();
     }
 
-    const pc = new RTCPeerConnection(createPeerConfig(iceServers));
+    const pc = new RTCPeerConnection(createPeerConfig(iceServersRef.current));
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -573,6 +863,16 @@ export default function VoiceEngine({
       const stream = e.streams[0] ?? new MediaStream([e.track]);
       attachAudio(userId, stream);
     };
+
+    pc.onconnectionstatechange = () => {
+      handlePeerConnectionStateChange(userId, pc);
+    };
+    pc.oniceconnectionstatechange = () => {
+      handlePeerConnectionStateChange(userId, pc);
+    };
+
+    // Seed an initial "connecting" indicator at construction.
+    setPeerUiState(userId, 'connecting');
 
     peersRef.current.set(userId, pc);
     return pc;
@@ -610,6 +910,78 @@ export default function VoiceEngine({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existingMembers, currentUserId, channelId, iceServers]);
 
+  // Keep the state-change callback fresh for the long-lived pc handlers.
+  useEffect(() => {
+    onPeerConnectionStateChangeRef.current = onPeerConnectionStateChange;
+  }, [onPeerConnectionStateChange]);
+
+  // ── AUD-7: apply late iceServers to already-built peers ────────────────────
+  // /runtime-config resolves asynchronously; peers created before it lands hold
+  // the STUN-only fallback and would never learn about TURN. When iceServers
+  // actually changes, push the new configuration onto every live peer (or
+  // rebuild if setConfiguration is unavailable) so TURN can be used. Skip on the
+  // first run and when the value is unchanged to avoid thrashing healthy peers.
+  const previousIceServersRef = useRef<RTCIceServer[]>(iceServers);
+  useEffect(() => {
+    iceServersRef.current = iceServers;
+
+    const previous = previousIceServersRef.current;
+    const unchanged =
+      previous === iceServers ||
+      JSON.stringify(previous) === JSON.stringify(iceServers);
+    if (unchanged) {
+      return;
+    }
+    previousIceServersRef.current = iceServers;
+
+    const nextConfig = createPeerConfig(iceServers);
+    peersRef.current.forEach((pc, userId) => {
+      if (pc.signalingState === 'closed') return;
+      const configurable = pc as RTCPeerConnection & {
+        setConfiguration?: (config: RTCConfiguration) => void;
+      };
+      if (typeof configurable.setConfiguration === 'function') {
+        try {
+          configurable.setConfiguration(nextConfig);
+          // setConfiguration alone won't re-gather against the new (TURN)
+          // servers; trigger an ICE restart so the new servers are exercised.
+          // Only the deterministic initiator drives the renegotiation.
+          if (typeof pc.restartIce === 'function') {
+            pc.restartIce();
+            if (shouldInitiatePeer(userId)) {
+              void sendOfferForRecovery(userId, pc);
+            }
+          }
+          return;
+        } catch (err) {
+          console.warn('VoiceEngine: setConfiguration failed, rebuilding peer', userId, err);
+        }
+      }
+      // Fallback: rebuild the peer with the new config. Preserve recovery
+      // bookkeeping; only the initiator re-offers.
+      closePeer(userId, { preserveRecovery: true });
+      const fresh = createPeer(userId);
+      addLocalTracks(fresh);
+      if (shouldInitiatePeer(userId)) {
+        void (async () => {
+          try {
+            const offer = await fresh.createOffer();
+            await fresh.setLocalDescription(offer);
+            sendWs({
+              type: 'rtc_offer',
+              to_user_id: userId,
+              channel_id: channelId,
+              sdp: JSON.stringify(fresh.localDescription),
+            });
+          } catch (err) {
+            console.error('VoiceEngine: rebuild-after-ice-change offer failed for', userId, err);
+          }
+        })();
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iceServers]);
+
   useEffect(() => {
     processedEventSeqRef.current = 0;
     pendingIceCandidatesRef.current.clear();
@@ -627,6 +999,10 @@ export default function VoiceEngine({
       for (const userId of Array.from(speakingMonitorsRef.current.keys())) {
         stopSpeakingMonitor(userId);
       }
+      for (const userId of Array.from(peerRecoveryRef.current.keys())) {
+        clearPeerRecoveryTimers(userId);
+      }
+      peerRecoveryRef.current.clear();
       teardownLocalMicPipeline();
       teardownTranscriptionCapture();
       if (audioContextRef.current) {
