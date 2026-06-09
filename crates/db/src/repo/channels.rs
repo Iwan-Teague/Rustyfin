@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::DbPool;
 
 #[derive(Debug, Clone)]
@@ -20,6 +22,9 @@ pub struct MessageRow {
     pub avatar_path: Option<String>,
     pub content: String,
     pub created_ts: i64,
+    /// Monotonic ordering key (migration 030). Surfaced so clients can report the highest
+    /// message they have seen back to the channel read-cursor (`set_channel_last_read`).
+    pub sort_seq: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -151,9 +156,9 @@ pub async fn delete_channel(pool: &DbPool, id: &str) -> Result<(), sqlx::Error> 
 }
 
 pub async fn get_message(pool: &DbPool, id: &str) -> Result<Option<MessageRow>, sqlx::Error> {
-    let row: Option<(String, String, String, String, Option<String>, String, i64)> = sqlx::query_as(
+    let row: Option<(String, String, String, String, Option<String>, String, i64, i64)> = sqlx::query_as(
         "SELECT m.id, m.channel_id, m.user_id, COALESCE(NULLIF(u.display_name, ''), m.username) AS username, \
-                u.avatar_path, m.content, m.created_ts \
+                u.avatar_path, m.content, m.created_ts, m.sort_seq \
          FROM channel_message m \
          LEFT JOIN \"user\" u ON u.id = m.user_id \
          WHERE m.id = $1",
@@ -163,14 +168,17 @@ pub async fn get_message(pool: &DbPool, id: &str) -> Result<Option<MessageRow>, 
     .await?;
 
     Ok(row.map(
-        |(id, channel_id, user_id, username, avatar_path, content, created_ts)| MessageRow {
-            id,
-            channel_id,
-            user_id,
-            username,
-            avatar_path,
-            content,
-            created_ts,
+        |(id, channel_id, user_id, username, avatar_path, content, created_ts, sort_seq)| {
+            MessageRow {
+                id,
+                channel_id,
+                user_id,
+                username,
+                avatar_path,
+                content,
+                created_ts,
+                sort_seq,
+            }
         },
     ))
 }
@@ -191,14 +199,19 @@ pub async fn list_messages(
     before_id: Option<&str>,
 ) -> Result<Vec<MessageRow>, sqlx::Error> {
     let normalized_before_id = before_id.map(str::trim).filter(|id| !id.is_empty());
-    let rows: Vec<(String, String, String, String, Option<String>, String, i64)> = if let Some(
-        before_id,
-    ) =
-        normalized_before_id
-    {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        i64,
+        i64,
+    )> = if let Some(before_id) = normalized_before_id {
         sqlx::query_as(
                 "SELECT m.id, m.channel_id, m.user_id, COALESCE(NULLIF(u.display_name, ''), m.username) AS username, \
-                        u.avatar_path, m.content, m.created_ts \
+                        u.avatar_path, m.content, m.created_ts, m.sort_seq \
                  FROM channel_message m \
                  LEFT JOIN \"user\" u ON u.id = m.user_id \
                  WHERE m.channel_id = $1 \
@@ -223,7 +236,7 @@ pub async fn list_messages(
     } else {
         sqlx::query_as(
                 "SELECT m.id, m.channel_id, m.user_id, COALESCE(NULLIF(u.display_name, ''), m.username) AS username, \
-                        u.avatar_path, m.content, m.created_ts \
+                        u.avatar_path, m.content, m.created_ts, m.sort_seq \
                  FROM channel_message m \
                  LEFT JOIN \"user\" u ON u.id = m.user_id \
                  WHERE m.channel_id = $1 AND m.created_ts < $2 \
@@ -240,14 +253,17 @@ pub async fn list_messages(
     let mut messages: Vec<MessageRow> = rows
         .into_iter()
         .map(
-            |(id, channel_id, user_id, username, avatar_path, content, created_ts)| MessageRow {
-                id,
-                channel_id,
-                user_id,
-                username,
-                avatar_path,
-                content,
-                created_ts,
+            |(id, channel_id, user_id, username, avatar_path, content, created_ts, sort_seq)| {
+                MessageRow {
+                    id,
+                    channel_id,
+                    user_id,
+                    username,
+                    avatar_path,
+                    content,
+                    created_ts,
+                    sort_seq,
+                }
             },
         )
         .collect();
@@ -267,9 +283,10 @@ pub async fn create_message(
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
 
-    sqlx::query(
+    let (sort_seq,): (i64,) = sqlx::query_as(
         "INSERT INTO channel_message (id, channel_id, user_id, username, content, created_ts) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING sort_seq",
     )
     .bind(&id)
     .bind(channel_id)
@@ -277,7 +294,7 @@ pub async fn create_message(
     .bind(username)
     .bind(content)
     .bind(now)
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
 
     Ok(MessageRow {
@@ -288,6 +305,7 @@ pub async fn create_message(
         avatar_path: None,
         content: content.to_string(),
         created_ts: now,
+        sort_seq,
     })
 }
 
@@ -308,9 +326,10 @@ pub async fn create_message_with_attachment(
     let now = chrono::Utc::now().timestamp();
     let mut tx = pool.begin().await?;
 
-    sqlx::query(
+    let (sort_seq,): (i64,) = sqlx::query_as(
         "INSERT INTO channel_message (id, channel_id, user_id, username, content, created_ts) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING sort_seq",
     )
     .bind(&message_id)
     .bind(channel_id)
@@ -318,7 +337,7 @@ pub async fn create_message_with_attachment(
     .bind(username)
     .bind(content)
     .bind(now)
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -348,6 +367,7 @@ pub async fn create_message_with_attachment(
             avatar_path: None,
             content: content.to_string(),
             created_ts: now,
+            sort_seq,
         },
         MessageAttachmentRow {
             id: attachment_id,
@@ -565,4 +585,90 @@ pub async fn get_message_attachment(
             created_ts,
         },
     ))
+}
+
+// ── Per-user channel read state (unread / "new activity") ──────────────────────
+
+/// Records that `user_id` has read `channel_id` up to `seq` (a `channel_message.sort_seq`).
+///
+/// The cursor is monotonic: `GREATEST` keeps the stored value if it is already ahead of
+/// `seq`, so an out-of-order or stale mark-read request can never move the read cursor
+/// backwards and resurrect already-seen messages as unread.
+pub async fn set_channel_last_read(
+    pool: &DbPool,
+    user_id: &str,
+    channel_id: &str,
+    seq: i64,
+    now_ms: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO channel_read_state (user_id, channel_id, last_read_sort_seq, updated_ts) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (user_id, channel_id) DO UPDATE SET \
+             last_read_sort_seq = GREATEST(channel_read_state.last_read_sort_seq, EXCLUDED.last_read_sort_seq), \
+             updated_ts = EXCLUDED.updated_ts",
+    )
+    .bind(user_id)
+    .bind(channel_id)
+    .bind(seq)
+    .bind(now_ms)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Returns the per-channel unread message count for `user_id` across the given channels.
+///
+/// One query: for each requested channel, counts the messages whose `sort_seq` is greater
+/// than the user's `last_read_sort_seq` (treated as 0 when no read-state row exists, via a
+/// per-user `LEFT JOIN`). Channels with no unread messages — including those the user has
+/// never opened but that hold no newer messages — map to 0. Channel ids not present in the
+/// returned map should likewise be treated as 0 by the caller.
+///
+/// Empty input short-circuits to an empty map with no query.
+pub async fn channel_unread_counts(
+    pool: &DbPool,
+    user_id: &str,
+    channel_ids: &[String],
+) -> sqlx::Result<HashMap<String, i64>> {
+    if channel_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // $1 = user_id; channel ids occupy $2..$(2 + len).
+    let placeholders = crate::repo::dollar_placeholders(2, channel_ids.len());
+    let sql = format!(
+        "SELECT c.id, \
+                COUNT(m.id) FILTER ( \
+                    WHERE m.sort_seq > COALESCE(rs.last_read_sort_seq, 0) \
+                ) AS unread \
+         FROM channel c \
+         LEFT JOIN channel_read_state rs \
+                ON rs.channel_id = c.id AND rs.user_id = $1 \
+         LEFT JOIN channel_message m \
+                ON m.channel_id = c.id \
+         WHERE c.id IN ({placeholders}) \
+         GROUP BY c.id, rs.last_read_sort_seq"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql).bind(user_id);
+    for channel_id in channel_ids {
+        query = query.bind(channel_id);
+    }
+    let rows = query.fetch_all(pool).await?;
+
+    Ok(rows.into_iter().collect())
+}
+
+/// Returns the highest `channel_message.sort_seq` in a channel, or 0 if it has no messages.
+///
+/// Useful for "mark everything read" callers (and tests) that need the channel's current
+/// high-water mark to pass to [`set_channel_last_read`].
+pub async fn channel_max_sort_seq(pool: &DbPool, channel_id: &str) -> Result<i64, sqlx::Error> {
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT MAX(sort_seq) FROM channel_message WHERE channel_id = $1")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(max,)| max).unwrap_or(0))
 }

@@ -15,6 +15,7 @@ interface Props {
   voicePresence: Record<string, UserInfo[]>;
   voiceActiveSince: Record<string, number>;
   voiceSpeaking: Record<string, string[]>;
+  unreadByChannel: Record<string, number>;
   activeChannelId: string | null;
   connectedVoiceChannelId: string | null;
   isAdmin: boolean;
@@ -115,6 +116,7 @@ interface ChannelRowProps {
   voicePresence: Record<string, UserInfo[]>;
   voiceActiveSince: Record<string, number>;
   voiceSpeaking: Record<string, string[]>;
+  unreadCount: number;
   nowMs: number;
   isAdmin: boolean;
   activeChannelId: string | null;
@@ -134,6 +136,7 @@ function ChannelRow({
   voicePresence,
   voiceActiveSince,
   voiceSpeaking,
+  unreadCount,
   nowMs,
   isAdmin,
   activeChannelId,
@@ -153,6 +156,8 @@ function ChannelRow({
   const lastTapAtRef = useRef(0);
 
   const isActive = ch.id === activeChannelId;
+  // Voice channels never show an unread badge; the active channel is implicitly read.
+  const showUnreadBadge = ch.kind !== 'voice' && unreadCount > 0 && !isActive;
   const rowClass = [
     'group relative flex cursor-pointer select-none items-center gap-2 rounded-2xl px-2 py-1.5 text-sm',
     isActive
@@ -181,7 +186,26 @@ function ChannelRow({
         }}
       >
         <span className="muted shrink-0">{icon}</span>
-        <span className="truncate flex-1">{ch.name}</span>
+        <span
+          className={[
+            'truncate flex-1',
+            showUnreadBadge ? 'font-semibold text-white' : '',
+          ].join(' ')}
+        >
+          {ch.name}
+        </span>
+        {showUnreadBadge && (
+          <span
+            className="shrink-0 min-w-[1.1rem] rounded-full px-1.5 text-center text-[11px] font-semibold leading-[1.1rem] text-white"
+            style={{
+              background:
+                'linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 85%)',
+            }}
+            aria-label={`${unreadCount} unread ${unreadCount === 1 ? 'message' : 'messages'}`}
+          >
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
+        )}
         {ch.kind === 'voice' && members.length > 0 && (
           <span className="shrink-0 text-[11px] text-white/48">{members.length}</span>
         )}
@@ -263,6 +287,7 @@ export default function ChannelSidebar({
   voicePresence,
   voiceActiveSince,
   voiceSpeaking,
+  unreadByChannel,
   activeChannelId,
   connectedVoiceChannelId,
   isAdmin,
@@ -351,6 +376,7 @@ export default function ChannelSidebar({
                 voicePresence={voicePresence}
                 voiceActiveSince={voiceActiveSince}
                 voiceSpeaking={voiceSpeaking}
+                unreadCount={unreadByChannel[ch.id] ?? 0}
                 nowMs={nowMs}
                 isAdmin={isAdmin}
                 activeChannelId={activeChannelId}
@@ -398,6 +424,7 @@ export default function ChannelSidebar({
                 voicePresence={voicePresence}
                 voiceActiveSince={voiceActiveSince}
                 voiceSpeaking={voiceSpeaking}
+                unreadCount={0}
                 nowMs={nowMs}
                 isAdmin={isAdmin}
                 activeChannelId={activeChannelId}

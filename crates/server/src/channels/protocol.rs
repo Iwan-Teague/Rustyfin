@@ -133,6 +133,11 @@ pub struct ChannelInfo {
     pub kind: String,
     pub position: i64,
     pub is_private: bool,
+    /// Per-user count of messages newer than this user's read cursor in the channel.
+    /// Always sent in `Hello`; defaults to 0 for events (e.g. ChannelCreated) that don't
+    /// carry per-user state and for any older payloads that predate this field.
+    #[serde(default)]
+    pub unread_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +160,10 @@ pub struct MessageInfo {
     #[serde(default)]
     pub attachments: Vec<MessageAttachmentInfo>,
     pub created_ts: i64,
+    /// Monotonic ordering key. Lets the client advance its per-channel read cursor to the
+    /// newest message it has seen when marking a channel read.
+    #[serde(default)]
+    pub sort_seq: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

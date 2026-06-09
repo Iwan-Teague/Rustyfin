@@ -256,7 +256,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let mut broadcast_rx = state.channel_manager.subscribe();
 
     // ── Send Hello ────────────────────────────────────────────────────────────
-    let hello = build_hello(&state, &role).await;
+    let hello = build_hello(&state, &user_id, &role).await;
     if send_event(&mut socket, &hello).await.is_err() {
         state
             .channel_manager
@@ -295,7 +295,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let hello = build_hello(&state, &role).await;
+                        let hello = build_hello(&state, &user_id, &role).await;
                         if send_event(&mut socket, &hello).await.is_err() {
                             break;
                         }
@@ -687,6 +687,7 @@ async fn dispatch(
                     content: row.content,
                     attachments: vec![],
                     created_ts: row.created_ts,
+                    sort_seq: row.sort_seq,
                 },
             });
 
@@ -720,7 +721,7 @@ async fn is_event_visible_to_role(state: &AppState, role: &str, event: &ChannelE
     }
 }
 
-async fn build_hello(state: &AppState, role: &str) -> ChannelEvent {
+async fn build_hello(state: &AppState, user_id: &str, role: &str) -> ChannelEvent {
     let all_channels = rustfin_db::repo::channels::list_channels(&state.db)
         .await
         .unwrap_or_default();
@@ -741,15 +742,29 @@ async fn build_hello(state: &AppState, role: &str) -> ChannelEvent {
 
     // Mirror the HTTP handler rule (channels/handlers.rs `list_channels`):
     // non-admins must never see private (admin-only) channels in the sidebar.
-    let channels = all_channels
+    let visible_channels: Vec<&rustfin_db::repo::channels::ChannelRow> = all_channels
         .iter()
         .filter(|c| channel_visible_to_role(c.is_private, role))
+        .collect();
+
+    // Per-user unread counts for exactly the channels this socket can see, in one query.
+    // Computed after the role filter so we never count (or even reference) private channels
+    // a non-admin cannot access.
+    let visible_ids: Vec<String> = visible_channels.iter().map(|c| c.id.clone()).collect();
+    let unread_by_channel =
+        rustfin_db::repo::channels::channel_unread_counts(&state.db, user_id, &visible_ids)
+            .await
+            .unwrap_or_default();
+
+    let channels = visible_channels
+        .iter()
         .map(|c| super::protocol::ChannelInfo {
             id: c.id.clone(),
             name: c.name.clone(),
             kind: c.kind.clone(),
             position: c.position,
             is_private: c.is_private,
+            unread_count: unread_by_channel.get(&c.id).copied().unwrap_or(0),
         })
         .collect();
 
@@ -879,6 +894,7 @@ mod tests {
                 kind: "text".to_string(),
                 position: 0,
                 is_private: false,
+                unread_count: 0,
             },
             ChannelInfo {
                 id: "priv".to_string(),
@@ -886,6 +902,7 @@ mod tests {
                 kind: "text".to_string(),
                 position: 1,
                 is_private: true,
+                unread_count: 0,
             },
         ];
 
@@ -919,6 +936,7 @@ mod tests {
                 content: "secret".to_string(),
                 attachments: vec![],
                 created_ts: 0,
+                sort_seq: 0,
             },
         };
         assert_eq!(new_message.channel_id(), Some("ch-priv"));

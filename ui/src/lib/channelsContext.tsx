@@ -11,6 +11,7 @@ import {
 import { useAuth } from './auth';
 import { readBrowserToken } from './browserAuth';
 import {
+  markChannelRead,
   uploadVoiceTranscriptionRecording,
   uploadVoiceTranscriptionText,
 } from './channelsApi';
@@ -83,6 +84,13 @@ export interface ChannelsContextValue {
   preferredOutputDeviceId: string | null;
   newMessages: ChannelMessage[];
   lastWsEvent: ChannelEvent | null;
+  unreadByChannel: Record<string, number>;
+  // Report the highest sort_seq the UI has seen for a channel (e.g. messages loaded over
+  // REST in the text view) so the read cursor can be advanced to it.
+  recordChannelSeq: (channelId: string, sortSeq: number) => void;
+  // Mark a text channel read locally (clear its unread badge) and persist the read cursor
+  // to the server at the highest sort_seq seen for that channel.
+  markTextChannelRead: (channelId: string) => void;
   voiceSession: VoiceSession | null;
   joinVoice: (channelId: string, channelName: string) => Promise<string | null>;
   leaveVoice: () => void;
@@ -224,6 +232,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [preferredOutputDeviceId, setPreferredOutputDeviceId] = useState<string | null>(null);
   const [newMessages, setNewMessages] = useState<ChannelMessage[]>([]);
   const [lastWsEvent, setLastWsEvent] = useState<ChannelEvent | null>(null);
+  const [unreadByChannel, setUnreadByChannel] = useState<Record<string, number>>({});
   const [voiceEngineEvents, setVoiceEngineEvents] = useState<VoiceEngineEventEnvelope[]>([]);
   const [voiceSession, setVoiceSession] = useState<VoiceSession | null>(null);
   const [voiceIceServers, setVoiceIceServers] = useState<RuntimeIceServer[]>([
@@ -253,6 +262,12 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const voiceEngineEventSeqRef = useRef(0);
+  // Highest sort_seq the UI has observed per channel (from new_message events and
+  // REST-loaded history). Drives the value sent to the mark-read endpoint.
+  const seenSeqByChannelRef = useRef<Record<string, number>>({});
+  // The currently-open text channel; new messages here don't bump unread and keep the
+  // read cursor advanced. Kept in a ref so the WS onmessage closure isn't stale.
+  const activeTextChannelRef = useRef<string | null>(null);
 
   const clearVoiceEngineEvents = useCallback(() => {
     voiceEngineEventSeqRef.current = 0;
@@ -375,6 +390,33 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // ── Unread tracking ───────────────────────────────────────────────────────────
+
+  const recordChannelSeq = useCallback((channelId: string, sortSeq: number) => {
+    if (!channelId || !Number.isFinite(sortSeq)) return;
+    const prev = seenSeqByChannelRef.current[channelId] ?? 0;
+    if (sortSeq > prev) {
+      seenSeqByChannelRef.current[channelId] = sortSeq;
+    }
+  }, []);
+
+  const markTextChannelRead = useCallback((channelId: string) => {
+    if (!channelId) return;
+    activeTextChannelRef.current = channelId;
+    // Clear the badge immediately for snappy UX.
+    setUnreadByChannel((prev) => {
+      if (!(channelId in prev)) return prev;
+      const next = { ...prev };
+      delete next[channelId];
+      return next;
+    });
+    // Persist the read cursor at the newest sort_seq we've seen for this channel.
+    const seq = seenSeqByChannelRef.current[channelId] ?? 0;
+    void markChannelRead(channelId, seq).catch(() => {
+      // Non-fatal: the badge is already cleared locally and the next hello reconciles.
+    });
+  }, []);
+
   // ── WebSocket lifecycle with auto-reconnect ──────────────────────────────────
 
   useEffect(() => {
@@ -397,6 +439,9 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       setVoicePeerConnectionStates({});
       setVoiceTranscriptions({});
       setRemoteVolumes({});
+      setUnreadByChannel({});
+      seenSeqByChannelRef.current = {};
+      activeTextChannelRef.current = null;
       clearVoiceEngineEvents();
       clearPersistedVoiceSession();
       pendingVoiceRef.current = null;
@@ -438,6 +483,24 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         if (event.type === 'hello') {
           clearVoiceEngineEvents();
           setChannels(event.channels);
+          // Seed unread badges from the server's per-user counts. The active text channel
+          // (if any) is treated as already-read so reopening/reconnecting never shows a
+          // stale badge for the channel currently on screen.
+          const activeChannelId = activeTextChannelRef.current;
+          setUnreadByChannel(() => {
+            const seeded: Record<string, number> = {};
+            for (const channel of event.channels) {
+              if (channel.kind !== 'text') continue;
+              if (channel.id === activeChannelId) continue;
+              const count = channel.unread_count ?? 0;
+              if (count > 0) seeded[channel.id] = count;
+            }
+            return seeded;
+          });
+          if (activeChannelId) {
+            // Re-assert the read cursor for the channel we're viewing.
+            markTextChannelRead(activeChannelId);
+          }
           setVoicePresence(event.voice_presence);
           setVoiceActiveSince(event.voice_active_since_ts ?? {});
           setVoiceTranscriptions(event.voice_transcriptions ?? {});
@@ -616,8 +679,23 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               content: msg.content,
               attachments: msg.attachments || [],
               created_ts: msg.created_ts,
+              sort_seq: msg.sort_seq,
             },
           ]);
+          // Track the newest sort_seq seen so mark-read can advance the cursor to it.
+          recordChannelSeq(msg.channel_id, msg.sort_seq);
+          const isActive = activeTextChannelRef.current === msg.channel_id;
+          const isOwnMessage = msg.user_id === currentUserId;
+          if (isActive) {
+            // Viewing this channel: keep the server cursor current, no badge.
+            markTextChannelRead(msg.channel_id);
+          } else if (!isOwnMessage) {
+            // Background channel, someone else posted: bump the unread badge.
+            setUnreadByChannel((prev) => ({
+              ...prev,
+              [msg.channel_id]: (prev[msg.channel_id] ?? 0) + 1,
+            }));
+          }
         } else if (event.type === 'channel_created') {
           setChannels((prev) => {
             if (prev.find((c) => c.id === event.channel.id)) return prev;
@@ -640,6 +718,16 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
             delete next[event.channel_id];
             return next;
           });
+          setUnreadByChannel((prev) => {
+            if (!(event.channel_id in prev)) return prev;
+            const next = { ...prev };
+            delete next[event.channel_id];
+            return next;
+          });
+          delete seenSeqByChannelRef.current[event.channel_id];
+          if (activeTextChannelRef.current === event.channel_id) {
+            activeTextChannelRef.current = null;
+          }
         } else if (event.type === 'message_deleted') {
           setNewMessages((prev) => prev.filter((m) => m.id !== event.message_id));
         } else if (event.type === 'voice_transcription_state') {
@@ -1048,6 +1136,9 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     preferredOutputDeviceId,
     newMessages,
     lastWsEvent,
+    unreadByChannel,
+    recordChannelSeq,
+    markTextChannelRead,
     voiceSession,
     joinVoice,
     leaveVoice,
