@@ -18,6 +18,7 @@ pub fn channels_router() -> Router<AppState> {
             "/{id}/messages",
             get(super::handlers::get_messages).post(super::handlers::send_message),
         )
+        .route("/{id}/read", post(super::handlers::mark_channel_read))
         .route(
             "/{id}/attachments",
             post(super::handlers::upload_attachment_message),

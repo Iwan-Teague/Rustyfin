@@ -1504,6 +1504,146 @@ async fn create_minecraft_server_as_admin(
     body["id"].as_str().unwrap().to_string()
 }
 
+/// Per-user channel unread ("new activity") tracking.
+///
+/// Seeds an admin + a second user, a public text channel, and several admin messages,
+/// then exercises the repo + HTTP mark-read surface:
+///   * a never-read user sees unread == message count,
+///   * marking read up to the latest sort_seq (via `POST /channels/{id}/read`) zeroes it,
+///   * a later message bumps unread back to 1,
+///   * marking read with a *lower* sort_seq cannot rewind the cursor (unread stays 1).
+#[tokio::test]
+async fn channel_unread_state_tracks_new_activity() {
+    let (server, state) = test_app_with_db_state().await;
+    let db = &state.db;
+
+    let admin = rustfin_db::repo::users::find_by_username(db, "admin")
+        .await
+        .unwrap()
+        .expect("seeded admin user must exist");
+
+    let watcher_id =
+        rustfin_db::repo::users::create_user(db, "watcher", "watcher_secure_123", "user")
+            .await
+            .unwrap();
+
+    // Public text channel the second user can read.
+    let channel =
+        rustfin_db::repo::channels::create_channel(db, "general", "text", false, &admin.id, 0)
+            .await
+            .unwrap();
+    let channel_id = channel.id.clone();
+
+    // Admin posts three messages; the watcher has never read the channel.
+    for i in 0..3 {
+        rustfin_db::repo::channels::create_message(
+            db,
+            &channel_id,
+            &admin.id,
+            "admin",
+            &format!("message {i}"),
+        )
+        .await
+        .unwrap();
+    }
+
+    let unread = rustfin_db::repo::channels::channel_unread_counts(
+        db,
+        &watcher_id,
+        std::slice::from_ref(&channel_id),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unread.get(&channel_id).copied().unwrap_or(0),
+        3,
+        "a never-read user should see every message as unread"
+    );
+
+    // Mark read up to the latest sort_seq via the HTTP endpoint, as the watcher.
+    let latest_seq = rustfin_db::repo::channels::channel_max_sort_seq(db, &channel_id)
+        .await
+        .unwrap();
+    assert!(latest_seq > 0, "channel with messages must have a sort_seq");
+
+    let watcher_token = login(&server, "watcher", "watcher_secure_123").await;
+    let read_resp = server
+        .post(&format!("/api/v1/channels/{channel_id}/read"))
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {watcher_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+        .json(&json!({ "last_read_sort_seq": latest_seq }))
+        .await;
+    read_resp.assert_status_ok();
+    let read_body: Value = read_resp.json();
+    assert_eq!(read_body["ok"], true);
+    assert_eq!(read_body["channel_id"], channel_id);
+    assert_eq!(read_body["last_read_sort_seq"], latest_seq);
+
+    let unread = rustfin_db::repo::channels::channel_unread_counts(
+        db,
+        &watcher_id,
+        std::slice::from_ref(&channel_id),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unread.get(&channel_id).copied().unwrap_or(0),
+        0,
+        "marking read to the latest sort_seq should clear unread"
+    );
+
+    // One more message arrives → unread becomes 1.
+    rustfin_db::repo::channels::create_message(
+        db,
+        &channel_id,
+        &admin.id,
+        "admin",
+        "later message",
+    )
+    .await
+    .unwrap();
+    let unread = rustfin_db::repo::channels::channel_unread_counts(
+        db,
+        &watcher_id,
+        std::slice::from_ref(&channel_id),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unread.get(&channel_id).copied().unwrap_or(0),
+        1,
+        "a new message after the read cursor should count as unread"
+    );
+
+    // Marking read with a stale (lower) sort_seq must not rewind the cursor.
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    rustfin_db::repo::channels::set_channel_last_read(db, &watcher_id, &channel_id, 0, now_ms)
+        .await
+        .unwrap();
+    let unread = rustfin_db::repo::channels::channel_unread_counts(
+        db,
+        &watcher_id,
+        std::slice::from_ref(&channel_id),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unread.get(&channel_id).copied().unwrap_or(0),
+        1,
+        "a backwards mark-read must not resurrect already-read messages as unread"
+    );
+
+    // Empty input short-circuits to an empty map.
+    let empty = rustfin_db::repo::channels::channel_unread_counts(db, &watcher_id, &[])
+        .await
+        .unwrap();
+    assert!(empty.is_empty(), "empty channel id list yields no counts");
+}
+
 #[cfg(feature = "ai")]
 async fn create_voice_channel(
     pool: &rustfin_db::DbPool,

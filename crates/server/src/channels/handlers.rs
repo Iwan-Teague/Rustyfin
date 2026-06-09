@@ -241,6 +241,9 @@ pub struct MessageResponse {
     #[serde(default)]
     pub attachments: Vec<MessageAttachmentResponse>,
     pub created_ts: i64,
+    /// Monotonic ordering key, surfaced so the client can mark the channel read up to the
+    /// newest message it has seen.
+    pub sort_seq: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,6 +258,18 @@ pub struct MessageAttachmentResponse {
 #[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
     pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MarkChannelReadRequest {
+    pub last_read_sort_seq: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MarkChannelReadResponse {
+    pub ok: bool,
+    pub channel_id: String,
+    pub last_read_sort_seq: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -285,6 +300,9 @@ fn channel_to_info(row: &rustfin_db::repo::channels::ChannelRow) -> ChannelInfo 
         kind: row.kind.clone(),
         position: row.position,
         is_private: row.is_private,
+        // ChannelCreated/ChannelUpdated are not per-user; the sidebar keeps its own unread
+        // state and seeds the real count from the next Hello.
+        unread_count: 0,
     }
 }
 
@@ -814,6 +832,7 @@ pub async fn get_messages(
             content: m.content,
             attachments,
             created_ts: m.created_ts,
+            sort_seq: m.sort_seq,
         });
     }
 
@@ -924,6 +943,7 @@ pub async fn send_message(
             content: row.content.clone(),
             attachments: vec![],
             created_ts: row.created_ts,
+            sort_seq: row.sort_seq,
         },
     });
 
@@ -938,8 +958,41 @@ pub async fn send_message(
             content: row.content,
             attachments: vec![],
             created_ts: row.created_ts,
+            sort_seq: row.sort_seq,
         }),
     ))
+}
+
+/// POST /channels/:id/read
+///
+/// Marks the calling user's read cursor for a channel up to `last_read_sort_seq`. The
+/// cursor is monotonic in the repo layer (`GREATEST`), so a stale value never rewinds it.
+/// Requires the same access as reading the channel (`get_accessible_channel` rejects
+/// private channels for non-admins).
+pub async fn mark_channel_read(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    Json(body): Json<MarkChannelReadRequest>,
+) -> Result<Json<MarkChannelReadResponse>, AppError> {
+    let _channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    rustfin_db::repo::channels::set_channel_last_read(
+        &state.db,
+        &auth.user_id,
+        &channel_id,
+        body.last_read_sort_seq,
+        now_ms,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(Json(MarkChannelReadResponse {
+        ok: true,
+        channel_id,
+        last_read_sort_seq: body.last_read_sort_seq,
+    }))
 }
 
 /// POST /channels/:id/attachments (multipart form fields: file, optional content)
@@ -1068,6 +1121,7 @@ pub async fn upload_attachment_message(
             content: row.content.clone(),
             attachments: vec![attachment_info],
             created_ts: row.created_ts,
+            sort_seq: row.sort_seq,
         },
     });
 
@@ -1082,6 +1136,7 @@ pub async fn upload_attachment_message(
             content: row.content,
             attachments: vec![attachment_response],
             created_ts: row.created_ts,
+            sort_seq: row.sort_seq,
         }),
     ))
 }

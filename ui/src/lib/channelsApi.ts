@@ -19,6 +19,7 @@ export type ChannelMessage = {
   content: string;
   attachments: ChannelMessageAttachment[];
   created_ts: number;
+  sort_seq: number;
 };
 
 export type ChannelMessageAttachment = {
@@ -43,6 +44,7 @@ export type ChannelInfo = {
   kind: 'text' | 'voice';
   position: number;
   is_private: boolean;
+  unread_count: number;
 };
 
 export type UserInfo = {
@@ -60,6 +62,7 @@ export type MessageInfo = {
   content: string;
   attachments: ChannelMessageAttachment[];
   created_ts: number;
+  sort_seq: number;
 };
 
 export type ChannelEvent =
@@ -221,6 +224,22 @@ export async function postMessage(channelId: string, content: string): Promise<C
     body: JSON.stringify({ content }),
   });
   return { ...message, attachments: message.attachments || [] };
+}
+
+export type MarkChannelReadResponse = {
+  ok: boolean;
+  channel_id: string;
+  last_read_sort_seq: number;
+};
+
+export async function markChannelRead(
+  channelId: string,
+  lastReadSortSeq: number,
+): Promise<MarkChannelReadResponse> {
+  return apiJson<MarkChannelReadResponse>(`/channels/${channelId}/read`, {
+    method: 'POST',
+    body: JSON.stringify({ last_read_sort_seq: lastReadSortSeq }),
+  });
 }
 
 export async function uploadMessageAttachment(

@@ -23,6 +23,10 @@ interface Props {
   isAdmin: boolean;
   wsEvents: ChannelEvent | null;
   onSendMessage: (content: string) => Promise<ChannelMessage | null>;
+  // Report the highest sort_seq this channel has loaded so the read cursor can reach it.
+  onRecordSeq: (channelId: string, sortSeq: number) => void;
+  // Mark this channel read once messages have loaded / new ones arrive while viewing.
+  onMarkRead: (channelId: string) => void;
   onToggleSidebar: () => void;
   sidebarVisible: boolean;
 }
@@ -173,6 +177,8 @@ export default function TextChannelView({
   isAdmin,
   wsEvents,
   onSendMessage,
+  onRecordSeq,
+  onMarkRead,
   onToggleSidebar,
   sidebarVisible,
 }: Props) {
@@ -200,8 +206,12 @@ export default function TextChannelView({
       setMessages(msgs);
       setHasMore(msgs.length >= 50);
       setLoading(false);
+      // Record the newest loaded sort_seq and mark this (now-visible) channel read.
+      const maxSeq = msgs.reduce((acc, m) => Math.max(acc, m.sort_seq ?? 0), 0);
+      if (maxSeq > 0) onRecordSeq(channel.id, maxSeq);
+      onMarkRead(channel.id);
     });
-  }, [channel.id]);
+  }, [channel.id, onRecordSeq, onMarkRead]);
 
   // Append real-time messages
   useEffect(() => {

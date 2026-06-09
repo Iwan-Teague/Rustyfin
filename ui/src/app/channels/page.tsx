@@ -28,6 +28,9 @@ export default function ChannelsPage() {
     preferredOutputDeviceId,
     newMessages,
     lastWsEvent,
+    unreadByChannel,
+    recordChannelSeq,
+    markTextChannelRead,
     joinVoice,
     setPreferredAudioDevices,
   } = useChannels();
@@ -68,6 +71,14 @@ export default function ChannelsPage() {
     if (!activeChannelId || typeof window === 'undefined') return;
     window.localStorage.setItem(LAST_USED_CHANNEL_KEY, activeChannelId);
   }, [activeChannelId]);
+
+  // Opening a text channel clears its unread badge and advances the server read cursor.
+  useEffect(() => {
+    if (!activeChannelId) return;
+    const channel = channels.find((c) => c.id === activeChannelId);
+    if (channel?.kind !== 'text') return;
+    markTextChannelRead(activeChannelId);
+  }, [activeChannelId, channels, markTextChannelRead]);
 
   useEffect(() => {
     if (!activeChannelId) return;
@@ -176,6 +187,7 @@ export default function ChannelsPage() {
             voicePresence={voicePresence}
             voiceActiveSince={voiceActiveSince}
             voiceSpeaking={voiceSpeaking}
+            unreadByChannel={unreadByChannel}
             activeChannelId={activeChannelId}
             connectedVoiceChannelId={connectedVoiceChannelId}
             isAdmin={me.role === 'admin'}
@@ -206,6 +218,7 @@ export default function ChannelsPage() {
             voicePresence={voicePresence}
             voiceActiveSince={voiceActiveSince}
             voiceSpeaking={voiceSpeaking}
+            unreadByChannel={unreadByChannel}
             activeChannelId={activeChannelId}
             connectedVoiceChannelId={connectedVoiceChannelId}
             isAdmin={me.role === 'admin'}
@@ -250,6 +263,8 @@ export default function ChannelsPage() {
               isAdmin={me.role === 'admin'}
               wsEvents={lastWsEvent}
               onSendMessage={handleSendMessage}
+              onRecordSeq={recordChannelSeq}
+              onMarkRead={markTextChannelRead}
               onToggleSidebar={handleToggleSidebar}
               sidebarVisible={isDesktop ? desktopSidebarOpen : sidebarOpen}
             />

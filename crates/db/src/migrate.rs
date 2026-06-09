@@ -227,6 +227,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "055_dictionary_core",
         include_str!("../migrations_pg/055_dictionary_core.sql"),
     ),
+    (
+        "056_channel_read_state",
+        include_str!("../migrations_pg/056_channel_read_state.sql"),
+    ),
 ];
 
 const POSTGRES_MIGRATION_LOCK_ID: i64 = 0x7275737466696e;
