@@ -97,6 +97,8 @@ fn visibility_for_tool(tool: &str) -> AssistantGroundingVisibility {
         | "calendar_create_event"
         | "calendar_create_birthday"
         | "channels_get_transcript_summary"
+        | "channels_list_voice_transcripts"
+        | "channels_read_voice_transcript"
         | "memory_get_person_summary"
         | "memory_list_recent_facts"
         | "memory_list_recent_entities"
@@ -141,11 +143,12 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
                     .and_then(Value::as_str)
                     .map(|event_id| format!("calendar:{event_id}"))
             }),
-        "channels_get_transcript_summary" => block
+        "channels_get_transcript_summary" | "channels_read_voice_transcript" => block
             .data
             .get("channel_id")
             .and_then(Value::as_str)
             .map(|channel_id| format!("transcript:{channel_id}")),
+        "channels_list_voice_transcripts" => Some("transcript:catalog".to_string()),
         "downloads_list_available_artifacts" => Some("downloads:catalog".to_string()),
         "downloads_get_artifact_details" => block
             .data
@@ -698,6 +701,98 @@ fn transcript_chunks_for_block(
     out
 }
 
+/// Build grounding chunks from a `channels_read_voice_transcript` block. Each saved
+/// transcript line becomes its own user-scoped, citation-backed chunk so the assistant
+/// can quote specific call moments as evidence.
+fn voice_transcript_read_chunks_for_block(
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+    block: &AssistantToolContextBlock,
+) -> Vec<AssistantGroundingChunk> {
+    let channel_id = block
+        .data
+        .get("channel_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let session_id = block
+        .data
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let channel_name = block
+        .data
+        .get("channel_name")
+        .and_then(Value::as_str)
+        .unwrap_or(&block.label);
+    let topic_key = Some(format!("transcript:{channel_id}"));
+    let visibility = AssistantGroundingVisibility::User;
+
+    let mut out = Vec::new();
+    let Some(entries) = block.data.get("entries").and_then(Value::as_array) else {
+        return out;
+    };
+
+    for entry in entries.iter().take(24) {
+        let text = entry
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if text.is_empty() {
+            continue;
+        }
+        let entry_id = entry
+            .get("entry_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let citation_id = entry
+            .get("citation_id")
+            .and_then(Value::as_str)
+            .unwrap_or(entry_id);
+        let username = entry
+            .get("username")
+            .and_then(Value::as_str)
+            .unwrap_or("speaker");
+        let started_ts_ms = entry.get("started_ts_ms").and_then(Value::as_i64);
+        let ended_ts_ms = entry.get("ended_ts_ms").and_then(Value::as_i64);
+        let citation = AssistantGroundingCitation {
+            citation_id: citation_id.to_string(),
+            source_kind: call.tool.as_str().to_string(),
+            source_id: session_id.to_string(),
+            source_sub_id: Some(entry_id.to_string()),
+            label: Some(username.to_string()),
+            excerpt: Some(text.to_string()),
+            started_ts_ms,
+            ended_ts_ms,
+            url: None,
+        };
+        out.push(chunk_from_parts(
+            call.tool.as_str(),
+            format!(
+                "{channel_name} — {username} [{}-{}]",
+                entry
+                    .get("relative_start")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+                entry
+                    .get("relative_end")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?"),
+            ),
+            compact_text(text, 320),
+            1.3,
+            visibility,
+            topic_key.clone(),
+            Some(context.user_id.clone()),
+            Some(session_id.to_string()),
+            Some(entry_id.to_string()),
+            Some(citation),
+        ));
+    }
+
+    out
+}
+
 fn recent_error_chunks_for_block(
     context: &AssistantContext,
     call: &PlannedToolCall,
@@ -906,6 +1001,9 @@ fn build_chunks_from_block(
     }
     if call.tool == super::registry::AssistantToolName::ChannelsGetTranscriptSummary {
         return transcript_chunks_for_block(context, call, block);
+    }
+    if call.tool == super::registry::AssistantToolName::ChannelsReadVoiceTranscript {
+        return voice_transcript_read_chunks_for_block(context, call, block);
     }
     if call.tool == super::registry::AssistantToolName::SystemGetRecentErrors {
         return recent_error_chunks_for_block(context, call, block);

@@ -141,6 +141,12 @@ pub enum AssistantToolInput {
     ChannelsFilter {
         query: Option<String>,
     },
+    ChannelsReadTranscript {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
     DownloadsFilter {
         query: Option<String>,
         availability: Option<String>,

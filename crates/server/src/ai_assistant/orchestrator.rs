@@ -91,6 +91,10 @@ impl PlannerAstToolCall {
         let legacy = &self.legacy_args;
         PlannerAstArgs {
             query: args.query.clone().or_else(|| legacy.query.clone()),
+            session_id: args
+                .session_id
+                .clone()
+                .or_else(|| legacy.session_id.clone()),
             url: args.url.clone().or_else(|| legacy.url.clone()),
             category: args.category.clone().or_else(|| legacy.category.clone()),
             availability: args
@@ -113,6 +117,8 @@ impl PlannerAstToolCall {
 struct PlannerAstArgs {
     #[serde(default)]
     query: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
     #[serde(default)]
     url: Option<String>,
     #[serde(default)]
@@ -1018,6 +1024,12 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::ChannelsGetTranscriptSummary => {
             " Args: optional query; the backend picks the latest accessible completed voice transcript for a matching channel."
         }
+        AssistantToolName::ChannelsListVoiceTranscripts => {
+            " Args: optional query; lists accessible completed voice-call transcripts, most recent first."
+        }
+        AssistantToolName::ChannelsReadVoiceTranscript => {
+            " Args: optional query plus optional session_id; reads the full saved lines of one accessible completed voice call (defaults to the latest)."
+        }
         AssistantToolName::DownloadsListAvailableArtifacts => {
             " Args: optional query, optional availability."
         }
@@ -1877,6 +1889,19 @@ fn normalize_planner_tool_input(
             query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_transcript_channel_query(message)),
         }),
+        AssistantToolName::ChannelsListVoiceTranscripts => {
+            Ok(AssistantToolInput::ChannelsFilter {
+                query: normalize_optional_query(args.query.clone())
+                    .or_else(|| extract_transcript_channel_query(message)),
+            })
+        }
+        AssistantToolName::ChannelsReadVoiceTranscript => {
+            Ok(AssistantToolInput::ChannelsReadTranscript {
+                query: normalize_optional_query(args.query.clone())
+                    .or_else(|| extract_transcript_channel_query(message)),
+                session_id: normalize_optional_query(args.session_id.clone()),
+            })
+        }
         AssistantToolName::DownloadsListAvailableArtifacts => {
             let availability = validated_downloads_availability(args.availability.as_deref())?
                 .or_else(|| extract_downloads_availability(message));
@@ -4104,6 +4129,22 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
             "Checking the latest completed call transcript".to_string()
         }
         (
+            AssistantToolName::ChannelsListVoiceTranscripts,
+            AssistantToolInput::ChannelsFilter { query: Some(query) },
+        ) => format!("Listing voice-call transcripts for \"{query}\""),
+        (AssistantToolName::ChannelsListVoiceTranscripts, _) => {
+            "Listing accessible voice-call transcripts".to_string()
+        }
+        (
+            AssistantToolName::ChannelsReadVoiceTranscript,
+            AssistantToolInput::ChannelsReadTranscript {
+                query: Some(query), ..
+            },
+        ) => format!("Reading the voice-call transcript for \"{query}\""),
+        (AssistantToolName::ChannelsReadVoiceTranscript, _) => {
+            "Reading a completed voice-call transcript".to_string()
+        }
+        (
             AssistantToolName::DownloadsListAvailableArtifacts,
             AssistantToolInput::DownloadsFilter {
                 query: Some(query),
@@ -4767,6 +4808,8 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
+            AssistantToolName::ChannelsListVoiceTranscripts
+            | AssistantToolName::ChannelsReadVoiceTranscript => {}
             AssistantToolName::DownloadsListAvailableArtifacts
             | AssistantToolName::DownloadsGetArtifactDetails
             | AssistantToolName::DownloadsGetArtifactSource

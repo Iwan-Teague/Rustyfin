@@ -16,6 +16,8 @@ impl ToolProvider for ChannelsToolProvider {
     fn register(&self, registry: &mut ToolRegistryBuilder) {
         registry.register_tool(self, AssistantToolName::ChannelsListUnreadActivity);
         registry.register_tool(self, AssistantToolName::ChannelsGetTranscriptSummary);
+        registry.register_tool(self, AssistantToolName::ChannelsListVoiceTranscripts);
+        registry.register_tool(self, AssistantToolName::ChannelsReadVoiceTranscript);
     }
 
     fn execute<'a>(
