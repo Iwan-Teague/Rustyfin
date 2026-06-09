@@ -1013,6 +1013,47 @@ struct ChannelTranscriptSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct VoiceTranscriptListEntry {
+    channel_id: String,
+    channel_name: String,
+    session_id: String,
+    status: String,
+    started_ts: i64,
+    ended_ts: Option<i64>,
+    duration_seconds: i64,
+    entry_count: i64,
+    speaker_count: usize,
+    started_by_username: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VoiceTranscriptLine {
+    entry_id: String,
+    citation_id: String,
+    username: String,
+    started_ts_ms: i64,
+    ended_ts_ms: i64,
+    relative_start: String,
+    relative_end: String,
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VoiceTranscriptRead {
+    channel_id: String,
+    channel_name: String,
+    session_id: String,
+    started_ts: i64,
+    ended_ts: i64,
+    duration_seconds: i64,
+    status: String,
+    started_by_username: String,
+    entry_count: i64,
+    entries: Vec<VoiceTranscriptLine>,
+    truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct LibraryRecentItemSummary {
     library_id: String,
     id: String,
@@ -1499,6 +1540,12 @@ pub(crate) async fn execute_channels_provider_tool(
         }
         AssistantToolName::ChannelsGetTranscriptSummary => {
             channels_get_transcript_summary(state, context, call).await
+        }
+        AssistantToolName::ChannelsListVoiceTranscripts => {
+            channels_list_voice_transcripts(state, context, call).await
+        }
+        AssistantToolName::ChannelsReadVoiceTranscript => {
+            channels_read_voice_transcript(state, context, call).await
         }
         _ => Err(format!(
             "{} is not handled by the channels provider.",
@@ -6530,6 +6577,251 @@ async fn channels_get_transcript_summary(
     ))
 }
 
+/// Collect the accessible voice channels matching the optional query, applying the
+/// same ACL as `channels_get_transcript_summary`: voice channels only, and private
+/// channels only for admins.
+async fn accessible_voice_channels_for_call(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(Option<String>, Vec<rustfin_db::repo::channels::ChannelRow>), String> {
+    let channel_query = channels_query_for_call(call)
+        .as_deref()
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(str::to_string);
+
+    let channels = rustfin_db::repo::channels::list_channels(&state.db)
+        .await
+        .map_err(|e| format!("failed to load channels: {e}"))?;
+    let accessible_voice_channels: Vec<_> = channels
+        .into_iter()
+        .filter(|channel| channel.kind.eq_ignore_ascii_case("voice"))
+        .filter(|channel| !channel.is_private || context.is_admin)
+        .filter(|channel| channel_matches_query(channel, channel_query.as_deref()))
+        .collect();
+
+    Ok((channel_query, accessible_voice_channels))
+}
+
+async fn channels_list_voice_transcripts(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (channel_query, accessible_voice_channels) =
+        accessible_voice_channels_for_call(state, context, call).await?;
+
+    if accessible_voice_channels.is_empty() {
+        return Err(channel_query
+            .as_deref()
+            .map(|query| format!("no accessible voice channel matched \"{query}\""))
+            .unwrap_or_else(|| "no accessible voice channels are available".to_string()));
+    }
+
+    let mut transcripts: Vec<VoiceTranscriptListEntry> = Vec::new();
+    for channel in &accessible_voice_channels {
+        let sessions = rustfin_db::repo::channel_transcripts::list_sessions_for_channel(
+            &state.db,
+            &channel.id,
+            20,
+        )
+        .await
+        .map_err(|e| format!("failed to load transcript sessions: {e}"))?;
+
+        for session in sessions
+            .into_iter()
+            .filter(|session| session.status == "completed")
+        {
+            let entries = rustfin_db::repo::channel_transcripts::list_entries_for_session(
+                &state.db,
+                &session.id,
+            )
+            .await
+            .map_err(|e| format!("failed to load transcript entries: {e}"))?;
+            let speaker_count = entries
+                .iter()
+                .map(|entry| entry.username.as_str())
+                .collect::<HashSet<_>>()
+                .len();
+            let ended_ts = session.ended_ts;
+            transcripts.push(VoiceTranscriptListEntry {
+                channel_id: channel.id.clone(),
+                channel_name: channel.name.clone(),
+                session_id: session.id.clone(),
+                status: session.status.clone(),
+                started_ts: session.started_ts,
+                ended_ts,
+                duration_seconds: ended_ts
+                    .unwrap_or(session.started_ts)
+                    .saturating_sub(session.started_ts),
+                entry_count: session.entry_count,
+                speaker_count,
+                started_by_username: session.started_by_username.clone(),
+            });
+        }
+    }
+
+    transcripts.sort_by(|left, right| {
+        right
+            .started_ts
+            .cmp(&left.started_ts)
+            .then_with(|| left.channel_name.cmp(&right.channel_name))
+    });
+    transcripts.truncate(20);
+
+    Ok((
+        match channel_query.as_deref() {
+            Some(query) => format!("Accessible voice-call transcripts matching \"{query}\""),
+            None => "Accessible voice-call transcripts".to_string(),
+        },
+        json!({
+            "query": channel_query,
+            "total_count": transcripts.len(),
+            "transcripts": transcripts,
+        }),
+    ))
+}
+
+async fn channels_read_voice_transcript(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (channel_query, accessible_voice_channels) =
+        accessible_voice_channels_for_call(state, context, call).await?;
+
+    if accessible_voice_channels.is_empty() {
+        return Err(channel_query
+            .as_deref()
+            .map(|query| format!("no accessible voice channel matched \"{query}\""))
+            .unwrap_or_else(|| "no accessible voice channels are available".to_string()));
+    }
+
+    let requested_session_id = read_transcript_session_id_for_call(call);
+
+    // Resolve the target channel + completed session. When a session_id is supplied,
+    // it must belong to one of the accessible voice channels (preserving the ACL).
+    let mut selected: Option<(
+        rustfin_db::repo::channels::ChannelRow,
+        rustfin_db::repo::channel_transcripts::TranscriptSessionRow,
+    )> = None;
+    for channel in &accessible_voice_channels {
+        let sessions = rustfin_db::repo::channel_transcripts::list_sessions_for_channel(
+            &state.db,
+            &channel.id,
+            20,
+        )
+        .await
+        .map_err(|e| format!("failed to load transcript sessions: {e}"))?;
+
+        let candidate = match requested_session_id.as_deref() {
+            Some(session_id) => sessions
+                .into_iter()
+                .find(|session| session.id == session_id && session.status == "completed"),
+            None => sessions
+                .into_iter()
+                .find(|session| session.status == "completed"),
+        };
+
+        if let Some(session) = candidate {
+            let replace = selected
+                .as_ref()
+                .map(|(_, current)| session.started_ts > current.started_ts)
+                .unwrap_or(true);
+            if replace {
+                selected = Some((channel.clone(), session));
+            }
+            // With an explicit session_id we want exactly that session.
+            if requested_session_id.is_some() {
+                break;
+            }
+        }
+    }
+
+    let Some((channel, session)) = selected else {
+        if let Some(session_id) = requested_session_id.as_deref() {
+            return Err(format!(
+                "no accessible completed voice-call transcript was found for session \"{session_id}\""
+            ));
+        }
+        return Err(channel_query
+            .as_deref()
+            .map(|query| format!("no completed transcript was found for \"{query}\""))
+            .unwrap_or_else(|| "no completed call transcripts were found yet".to_string()));
+    };
+
+    let entries =
+        rustfin_db::repo::channel_transcripts::list_entries_for_session(&state.db, &session.id)
+            .await
+            .map_err(|e| format!("failed to load transcript entries: {e}"))?;
+    if entries.is_empty() {
+        return Err(format!(
+            "the transcript for voice channel \"{}\" has no saved transcript lines yet.",
+            channel.name
+        ));
+    }
+
+    let started_ts_ms = session.started_ts.saturating_mul(1000);
+
+    // Budget the serialized result against the tool's max_result_bytes. Leave headroom
+    // for the metadata envelope so the full block stays under the cap; stop appending
+    // lines (marking truncated) once the accumulated line bytes approach the budget.
+    let max_result_bytes = call.tool.spec().max_result_bytes;
+    let line_byte_budget = max_result_bytes.saturating_sub(2 * 1024);
+    let mut lines: Vec<VoiceTranscriptLine> = Vec::with_capacity(entries.len());
+    let mut used_bytes = 0usize;
+    let mut truncated = false;
+    for entry in &entries {
+        let line = VoiceTranscriptLine {
+            entry_id: entry.id.clone(),
+            citation_id: format!("transcript:{}:{}", entry.session_id, entry.id),
+            username: entry.username.clone(),
+            started_ts_ms: entry.started_ts_ms,
+            ended_ts_ms: entry.ended_ts_ms,
+            relative_start: format_transcript_relative_ms(
+                entry.started_ts_ms.saturating_sub(started_ts_ms),
+            ),
+            relative_end: format_transcript_relative_ms(
+                entry
+                    .ended_ts_ms
+                    .max(entry.started_ts_ms)
+                    .saturating_sub(started_ts_ms),
+            ),
+            text: entry.text.clone(),
+        };
+        let line_bytes = serde_json::to_string(&line).map(|s| s.len()).unwrap_or(0) + 1;
+        if !lines.is_empty() && used_bytes + line_bytes > line_byte_budget {
+            truncated = true;
+            break;
+        }
+        used_bytes += line_bytes;
+        lines.push(line);
+    }
+
+    let read = VoiceTranscriptRead {
+        channel_id: channel.id.clone(),
+        channel_name: channel.name.clone(),
+        session_id: session.id.clone(),
+        started_ts: session.started_ts,
+        ended_ts: session.ended_ts.unwrap_or(session.started_ts),
+        duration_seconds: session
+            .ended_ts
+            .unwrap_or(session.started_ts)
+            .saturating_sub(session.started_ts),
+        status: session.status.clone(),
+        started_by_username: session.started_by_username.clone(),
+        entry_count: session.entry_count,
+        entries: lines,
+        truncated,
+    };
+
+    Ok((
+        format!("Voice-call transcript for \"{}\"", read.channel_name),
+        serde_json::to_value(read).unwrap_or_else(|_| json!({})),
+    ))
+}
+
 async fn system_get_host_runtime_summary(
     state: &AppState,
     _context: &AssistantContext,
@@ -8266,6 +8558,18 @@ fn next_birthday_occurrence(event_date: &str) -> String {
 fn channels_query_for_call(call: &PlannedToolCall) -> Option<String> {
     match &call.input {
         AssistantToolInput::ChannelsFilter { query } => query.clone(),
+        AssistantToolInput::ChannelsReadTranscript { query, .. } => query.clone(),
+        _ => None,
+    }
+}
+
+fn read_transcript_session_id_for_call(call: &PlannedToolCall) -> Option<String> {
+    match &call.input {
+        AssistantToolInput::ChannelsReadTranscript { session_id, .. } => session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+            .map(str::to_string),
         _ => None,
     }
 }
@@ -10902,7 +11206,8 @@ fn follow_up_entities(
             entities
         }
         AssistantToolName::ChannelsListUnreadActivity => Vec::new(),
-        AssistantToolName::ChannelsGetTranscriptSummary => vec![AssistantFollowUpEntity {
+        AssistantToolName::ChannelsGetTranscriptSummary
+        | AssistantToolName::ChannelsReadVoiceTranscript => vec![AssistantFollowUpEntity {
             ordinal: 1,
             label: block
                 .data
@@ -10917,6 +11222,32 @@ fn follow_up_entities(
                 .map(str::to_string),
             ..Default::default()
         }],
+        AssistantToolName::ChannelsListVoiceTranscripts => block
+            .data
+            .get("transcripts")
+            .and_then(serde_json::Value::as_array)
+            .map(|transcripts| {
+                transcripts
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, transcript)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: transcript
+                                .get("channel_name")
+                                .and_then(serde_json::Value::as_str)?
+                                .to_string(),
+                            identifier: transcript
+                                .get("session_id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         AssistantToolName::DownloadsListAvailableArtifacts => block
             .data
             .get("artifacts")
@@ -12524,6 +12855,27 @@ mod tests {
         assert_eq!(highlights[0].relative_start, "00:05");
         assert_eq!(highlights[0].relative_end, "00:10");
         assert!(highlights[0].text.contains("server"));
+    }
+
+    #[test]
+    fn voice_transcript_tools_round_trip_names_and_map_to_transcript_domain() {
+        use crate::ai_assistant::types::AssistantDomainFamily;
+
+        for (name, tool) in [
+            (
+                "channels_list_voice_transcripts",
+                AssistantToolName::ChannelsListVoiceTranscripts,
+            ),
+            (
+                "channels_read_voice_transcript",
+                AssistantToolName::ChannelsReadVoiceTranscript,
+            ),
+        ] {
+            assert_eq!(AssistantToolName::from_str(name), Some(tool));
+            assert_eq!(tool.as_str(), name);
+            assert_eq!(tool.spec().name, name);
+            assert_eq!(tool.domain_family(), AssistantDomainFamily::Transcript);
+        }
     }
 
     #[test]

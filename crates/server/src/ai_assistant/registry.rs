@@ -53,6 +53,8 @@ pub enum AssistantToolName {
     ConversationsMoveToGroupSelection,
     ChannelsListUnreadActivity,
     ChannelsGetTranscriptSummary,
+    ChannelsListVoiceTranscripts,
+    ChannelsReadVoiceTranscript,
     DownloadsListAvailableArtifacts,
     DownloadsGetArtifactDetails,
     DownloadsGetArtifactChecksum,
@@ -190,6 +192,8 @@ impl AssistantToolName {
             Self::ConversationsMoveToGroupSelection,
             Self::ChannelsListUnreadActivity,
             Self::ChannelsGetTranscriptSummary,
+            Self::ChannelsListVoiceTranscripts,
+            Self::ChannelsReadVoiceTranscript,
             Self::DownloadsListAvailableArtifacts,
             Self::DownloadsGetArtifactDetails,
             Self::DownloadsGetArtifactChecksum,
@@ -333,6 +337,8 @@ impl AssistantToolName {
             }
             "channels_list_unread_activity" => Some(Self::ChannelsListUnreadActivity),
             "channels_get_transcript_summary" => Some(Self::ChannelsGetTranscriptSummary),
+            "channels_list_voice_transcripts" => Some(Self::ChannelsListVoiceTranscripts),
+            "channels_read_voice_transcript" => Some(Self::ChannelsReadVoiceTranscript),
             "downloads_list_available_artifacts" => Some(Self::DownloadsListAvailableArtifacts),
             "downloads_get_artifact_details" => Some(Self::DownloadsGetArtifactDetails),
             "downloads_get_artifact_checksum" => Some(Self::DownloadsGetArtifactChecksum),
@@ -477,6 +483,8 @@ impl AssistantToolName {
             Self::ConversationsMoveToGroupSelection => "conversations_move_to_group_selection",
             Self::ChannelsListUnreadActivity => "channels_list_unread_activity",
             Self::ChannelsGetTranscriptSummary => "channels_get_transcript_summary",
+            Self::ChannelsListVoiceTranscripts => "channels_list_voice_transcripts",
+            Self::ChannelsReadVoiceTranscript => "channels_read_voice_transcript",
             Self::DownloadsListAvailableArtifacts => "downloads_list_available_artifacts",
             Self::DownloadsGetArtifactDetails => "downloads_get_artifact_details",
             Self::DownloadsGetArtifactChecksum => "downloads_get_artifact_checksum",
@@ -1068,6 +1076,26 @@ impl AssistantToolName {
                 confirmation: ToolConfirmationPolicy::None,
                 timeout_ms: 5_000,
                 max_result_bytes: 16 * 1024,
+            },
+            Self::ChannelsListVoiceTranscripts => AssistantToolSpec {
+                name: "channels_list_voice_transcripts",
+                summary: "List accessible completed voice-call transcripts (channel, date, duration, participants) the signed-in user can read.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 16 * 1024,
+            },
+            Self::ChannelsReadVoiceTranscript => AssistantToolSpec {
+                name: "channels_read_voice_transcript",
+                summary: "Read the full saved transcript lines of a specific accessible completed voice call.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 6_000,
+                max_result_bytes: 48 * 1024,
             },
             Self::DownloadsListAvailableArtifacts => AssistantToolSpec {
                 name: "downloads_list_available_artifacts",
@@ -1938,7 +1966,9 @@ impl AssistantToolName {
             | Self::ConversationsDeleteSelection
             | Self::ConversationsMoveToGroupSelection => AssistantDomainFamily::Conversations,
             Self::ChannelsListUnreadActivity => AssistantDomainFamily::Channels,
-            Self::ChannelsGetTranscriptSummary => AssistantDomainFamily::Transcript,
+            Self::ChannelsGetTranscriptSummary
+            | Self::ChannelsListVoiceTranscripts
+            | Self::ChannelsReadVoiceTranscript => AssistantDomainFamily::Transcript,
             Self::DownloadsListAvailableArtifacts
             | Self::DownloadsGetArtifactDetails
             | Self::DownloadsGetArtifactSource
@@ -2135,6 +2165,8 @@ impl AssistantToolName {
                 | Self::CalendarListBusyDays
                 | Self::CalendarListOverlappingEvents
                 | Self::ChannelsGetTranscriptSummary
+                | Self::ChannelsListVoiceTranscripts
+                | Self::ChannelsReadVoiceTranscript
                 | Self::DownloadsGetArtifactDetails
                 | Self::DownloadsGetArtifactSource
                 | Self::DownloadsGetReleaseNotes

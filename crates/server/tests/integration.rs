@@ -2752,6 +2752,245 @@ async fn ai_assistant_grounding_handles_transcript_lifecycle_and_visibility() {
 
 #[cfg(feature = "ai")]
 #[tokio::test]
+async fn ai_assistant_voice_transcript_list_and_read_tools_respect_acl() {
+    use rustfin_server::ai_assistant::context::AssistantContext;
+    use rustfin_server::ai_assistant::provider::default_tool_registry;
+    use rustfin_server::ai_assistant::registry::AssistantToolName;
+    use rustfin_server::ai_assistant::types::{AssistantToolInput, PlannedToolCall};
+
+    // Execute a single planned tool call through the public provider registry, exactly
+    // like the orchestrator does at runtime, and return the produced grounding block.
+    async fn run_tool(
+        state: &AppState,
+        context: &AssistantContext,
+        tool: AssistantToolName,
+        input: AssistantToolInput,
+    ) -> Value {
+        let registry = default_tool_registry();
+        let provider = registry
+            .provider_for_tool(tool)
+            .expect("channels provider must handle the voice transcript tools");
+        let call = PlannedToolCall { tool, input };
+        let block = provider.execute(state, context, &call).await;
+        serde_json::to_value(&block).expect("tool block should serialize")
+    }
+
+    let (server, state) = test_app_with_state().await;
+    let admin_hdr = auth_hdr(&login(&server, "admin", "admin_secure_123").await);
+
+    let regular_user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "voice_transcript_user",
+        "voice_transcript_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let admin_user_id = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist")
+        .id;
+
+    let public_channel_id = create_voice_channel(
+        &state.db,
+        "Voice Transcript Public",
+        false,
+        &admin_user_id,
+        200,
+    )
+    .await;
+    let private_channel_id = create_voice_channel(
+        &state.db,
+        "Voice Transcript Private",
+        true,
+        &admin_user_id,
+        201,
+    )
+    .await;
+
+    let public_session_id = create_transcript_session(
+        &state.db,
+        &public_channel_id,
+        &admin_user_id,
+        "admin",
+        "completed",
+        &[
+            "First we covered the Friday deployment plan.",
+            "Then we agreed to bump the library scan schedule.",
+            "Finally we confirmed the watch party for Saturday.",
+        ],
+        None,
+    )
+    .await;
+    // A private-channel transcript that a non-admin must never be able to read.
+    create_transcript_session(
+        &state.db,
+        &private_channel_id,
+        &admin_user_id,
+        "admin",
+        "completed",
+        &["We rotated the production secrets and reviewed deploy keys."],
+        None,
+    )
+    .await;
+
+    let regular_user = rustfin_server::auth::AuthUser {
+        user_id: regular_user_id,
+        username: "voice_transcript_user".to_string(),
+        role: "user".to_string(),
+    };
+    let admin_user = rustfin_server::auth::AuthUser {
+        user_id: admin_user_id,
+        username: "admin".to_string(),
+        role: "admin".to_string(),
+    };
+    let regular_context = AssistantContext::new(&regular_user, "test-voice-transcript-regular");
+    let admin_context = AssistantContext::new(&admin_user, "test-voice-transcript-admin");
+
+    // (a) The list tool surfaces the seeded public completed session for a non-admin.
+    let list_block = run_tool(
+        &state,
+        &regular_context,
+        AssistantToolName::ChannelsListVoiceTranscripts,
+        AssistantToolInput::ChannelsFilter { query: None },
+    )
+    .await;
+    assert_eq!(list_block["status"], "ok");
+    let transcripts = list_block["data"]["transcripts"]
+        .as_array()
+        .expect("transcripts array");
+    let public_entry = transcripts
+        .iter()
+        .find(|entry| entry["session_id"].as_str() == Some(public_session_id.as_str()))
+        .expect("seeded public session should be listed");
+    assert_eq!(
+        public_entry["channel_name"].as_str(),
+        Some("Voice Transcript Public")
+    );
+    assert_eq!(public_entry["status"].as_str(), Some("completed"));
+    assert_eq!(public_entry["entry_count"].as_i64(), Some(3));
+    assert_eq!(public_entry["speaker_count"].as_i64(), Some(1));
+    // The private channel's transcript must not appear for a non-admin.
+    assert!(
+        transcripts
+            .iter()
+            .all(|entry| entry["channel_name"].as_str() != Some("Voice Transcript Private")),
+        "non-admin list must exclude private voice channels"
+    );
+
+    // (b) The read tool returns the full saved lines in spoken order, addressed by session_id.
+    let read_block = run_tool(
+        &state,
+        &regular_context,
+        AssistantToolName::ChannelsReadVoiceTranscript,
+        AssistantToolInput::ChannelsReadTranscript {
+            query: Some("Voice Transcript Public".to_string()),
+            session_id: Some(public_session_id.clone()),
+        },
+    )
+    .await;
+    assert_eq!(read_block["status"], "ok");
+    assert_eq!(
+        read_block["data"]["session_id"].as_str(),
+        Some(public_session_id.as_str())
+    );
+    assert_eq!(read_block["data"]["entry_count"].as_i64(), Some(3));
+    assert_eq!(read_block["data"]["truncated"].as_bool(), Some(false));
+    let lines = read_block["data"]["entries"]
+        .as_array()
+        .expect("entries array");
+    let texts: Vec<&str> = lines
+        .iter()
+        .map(|line| line["text"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "First we covered the Friday deployment plan.",
+            "Then we agreed to bump the library scan schedule.",
+            "Finally we confirmed the watch party for Saturday.",
+        ]
+    );
+    // Relative timestamps are present and use the same mm:ss formatting the summary
+    // highlights use. (The seed helper stores small absolute entry offsets against a
+    // wall-clock session start, so every offset clamps to the session start, "00:00".)
+    for line in lines {
+        assert_eq!(line["relative_start"].as_str(), Some("00:00"));
+        assert!(line["relative_end"].as_str().is_some());
+        assert!(
+            line["citation_id"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("transcript:")
+        );
+    }
+
+    // (c) A non-admin cannot read a PRIVATE voice channel's transcript (ACL preserved).
+    let denied_block = run_tool(
+        &state,
+        &regular_context,
+        AssistantToolName::ChannelsReadVoiceTranscript,
+        AssistantToolInput::ChannelsReadTranscript {
+            query: Some("Voice Transcript Private".to_string()),
+            session_id: None,
+        },
+    )
+    .await;
+    assert_eq!(denied_block["status"], "error");
+    let denied_message = denied_block["data"]["message"].as_str().unwrap_or_default();
+    assert!(
+        denied_message.contains("no accessible voice channel matched"),
+        "non-admin private read should be denied, got: {denied_message}"
+    );
+
+    // An admin, by contrast, can both list and read the private channel's transcript.
+    let admin_list_block = run_tool(
+        &state,
+        &admin_context,
+        AssistantToolName::ChannelsListVoiceTranscripts,
+        AssistantToolInput::ChannelsFilter {
+            query: Some("Voice Transcript Private".to_string()),
+        },
+    )
+    .await;
+    assert_eq!(admin_list_block["status"], "ok");
+    let admin_transcripts = admin_list_block["data"]["transcripts"]
+        .as_array()
+        .expect("admin transcripts array");
+    assert!(
+        admin_transcripts
+            .iter()
+            .any(|entry| entry["channel_name"].as_str() == Some("Voice Transcript Private")),
+        "admin list must include the private voice channel"
+    );
+
+    let admin_read_block = run_tool(
+        &state,
+        &admin_context,
+        AssistantToolName::ChannelsReadVoiceTranscript,
+        AssistantToolInput::ChannelsReadTranscript {
+            query: Some("Voice Transcript Private".to_string()),
+            session_id: None,
+        },
+    )
+    .await;
+    assert_eq!(admin_read_block["status"], "ok");
+    let admin_lines = admin_read_block["data"]["entries"]
+        .as_array()
+        .expect("admin entries array");
+    assert_eq!(admin_lines.len(), 1);
+    assert!(
+        admin_lines[0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("rotated the production secrets")
+    );
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
 async fn ai_assistant_grounding_indexes_memory_retrieval_and_entity_graph_rows() {
     let pool = create_test_pool().await;
     let user_id = rustfin_db::repo::users::create_user(
