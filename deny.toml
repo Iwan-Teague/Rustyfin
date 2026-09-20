@@ -64,12 +64,6 @@ ignore = [
     # Revisit on any rusty_ytdl / boa_engine bump. TODO(revisit) by 2026-12-20.
     "RUSTSEC-2025-0003",
 
-    # RUSTSEC-2026-0097 (unsound): rand <0.8.6 has no fixed 0.7.x release and
-    # rand 0.7.3 is pulled transitively by the stale `chess` 3.2.0 crate; the
-    # workspace itself declares rand = "0.8" (locked at a fixed 0.8.x). Ignoring
-    # by version so only the unfixable transitive copy is waived. Measured
-    # 2026-09-20. Revisit if `chess` is ever dropped or bumped. TODO(revisit) by 2026-12-20.
-    "rand@0.7.3",
 
     # Unmaintained crates (all transitively pulled, no drop-in replacement at
     # this graph state; measured 2026-09-20 with cargo-deny 0.20.2):
