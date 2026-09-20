@@ -1,0 +1,87 @@
+# cargo-deny configuration — rustyfin (AQ-73 baseline supply-chain scaffold).
+# Gate in CI: `cargo deny check advisories bans sources`.
+# NOTE: `licenses` is intentionally NOT gated in CI yet — the PolyForm/MPL
+# allow-list ruling is pending owner decision OI-05 (wave10 audit README.md B4).
+# The allow list below records the MEASURED licence set of the current graph
+# (cargo-deny 0.20.2, `cargo deny list`, all features) and is a fact-record,
+# not a policy decision.
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    # webpki-roots bundles Mozilla's root store under CDLA-Permissive-2.0.
+    "CDLA-Permissive-2.0",
+    "ISC",
+    # r-efi (transitive, UEFI target helpers) declares LGPL-2.1-or-later.
+    "LGPL-2.1-or-later",
+    "MIT",
+    # cssparser/selectors (servo) are MPL-2.0 — file-level copyleft.
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 1.0
+# Unlicensed crates are denied by default (licenses v2); any crate whose
+# licence does not match the allow list fails a local licenses check.
+
+[bans]
+multiple-versions = "warn"
+# Ratcheting note: "deny" is the goal, but every member manifest in this
+# workspace currently uses two-component caret requirements (e.g. "0.2"),
+# which cargo-deny classifies as wildcards (measured: 40 hits at HEAD).
+# Held at "warn" so the scaffold does not fail CI on day one; tighten to
+# "deny" as manifests are migrated to three-component requirements.
+wildcards = "warn"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[advisories]
+version = 2
+# advisories v2: vulnerability / unmaintained / unsound are checked for the
+# whole graph by default at error (deny) severity; `yanked` is the only
+# severity-tunable field and is pinned to "deny" here.
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2025-0003 (vulnerability): fast-float 0.2.0 reads out of bounds on
+    # empty input. No patched release exists (fix lives in the fast-float2 fork);
+    # fast-float is transitive via rusty_ytdl -> boa_engine and not directly
+    # declared by this workspace. Measured 2026-09-20 with cargo-deny 0.20.2.
+    # Revisit on any rusty_ytdl / boa_engine bump. TODO(revisit) by 2026-12-20.
+    "RUSTSEC-2025-0003",
+
+    # RUSTSEC-2026-0097 (unsound): rand <0.8.6 has no fixed 0.7.x release and
+    # rand 0.7.3 is pulled transitively by the stale `chess` 3.2.0 crate; the
+    # workspace itself declares rand = "0.8" (locked at a fixed 0.8.x). Ignoring
+    # by version so only the unfixable transitive copy is waived. Measured
+    # 2026-09-20. Revisit if `chess` is ever dropped or bumped. TODO(revisit) by 2026-12-20.
+    "rand@0.7.3",
+
+    # Unmaintained crates (all transitively pulled, no drop-in replacement at
+    # this graph state; measured 2026-09-20 with cargo-deny 0.20.2):
+    # - RUSTSEC-2020-0036: failure 0.1.8 (via chess 3.2.0)
+    # - RUSTSEC-2024-0384: derivative 0.4.x (proc-macro)
+    # - RUSTSEC-2024-0388: instant 0.1.x
+    # - RUSTSEC-2024-0436: paste 1.x (proc-macro)
+    # - RUSTSEC-2025-0057: fxhash 0.2.x
+    # TODO(revisit) by 2026-12-20.
+    "RUSTSEC-2020-0036",
+    "RUSTSEC-2024-0384",
+    "RUSTSEC-2024-0388",
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2025-0057",
+]

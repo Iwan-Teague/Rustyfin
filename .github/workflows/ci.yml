@@ -99,6 +99,16 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-deny
+        # Installed from crates.io with --locked instead of a third-party
+        # action (one less unverified supply-chain hop), matching the
+        # fleet's rustychat CI posture.
+        run: cargo install --locked cargo-deny
+
+      - name: Supply-chain check (advisories, bans, sources)
+        # licenses is intentionally omitted pending the OI-05 licence ruling.
+        run: cargo deny check advisories bans sources
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
