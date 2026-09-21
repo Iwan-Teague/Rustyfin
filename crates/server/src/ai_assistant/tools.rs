@@ -9327,12 +9327,14 @@ fn nearest_existing_storage_path(path: &std::path::Path) -> Option<std::path::Pa
 fn read_linux_storage_bytes(path: &std::path::Path) -> Option<(u64, u64)> {
     let path_cstr = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    #[allow(unsafe_code)]
     // SAFETY: the C string is NUL-terminated and points to a valid existing path.
     let result = unsafe { libc::statvfs(path_cstr.as_ptr(), stats.as_mut_ptr()) };
     if result != 0 {
         return None;
     }
 
+    #[allow(unsafe_code)]
     // SAFETY: statvfs wrote the output struct because the call succeeded.
     let stats = unsafe { stats.assume_init() };
     let fragment_size = if stats.f_frsize > 0 {

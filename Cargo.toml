@@ -74,3 +74,6 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 [profile.release]
 lto = true
 strip = true
+
+[workspace.lints.rust]
+unsafe_code = "deny"

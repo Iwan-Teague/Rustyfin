@@ -13054,6 +13054,12 @@ mod tests {
     impl PublicWebToolsEnvGuard {
         fn enable() -> Self {
             let previous = std::env::var_os(crate::ai_assistant::web::AI_PUBLIC_WEB_ENABLE_ENV);
+            #[allow(unsafe_code)]
+            // SAFETY: every environment read/mutation in this test binary is
+            // funneled through `with_public_web_tools_enabled`, whose
+            // process-wide `OnceLock<Mutex<()>>` serializes all guard
+            // construction/drop, so no other thread can access the
+            // environment while this `set_var` runs.
             unsafe {
                 std::env::set_var(crate::ai_assistant::web::AI_PUBLIC_WEB_ENABLE_ENV, "1");
             }
@@ -13064,10 +13070,22 @@ mod tests {
     impl Drop for PublicWebToolsEnvGuard {
         fn drop(&mut self) {
             match self.previous.as_ref() {
-                Some(previous) => unsafe {
+                Some(previous) =>
+                #[allow(unsafe_code)]
+                // SAFETY: same serialization contract as `enable`: all env
+                // access goes through the process-wide lock in
+                // `with_public_web_tools_enabled`, which holds the mutex
+                // across the guard's whole lifetime.
+                unsafe {
                     std::env::set_var(crate::ai_assistant::web::AI_PUBLIC_WEB_ENABLE_ENV, previous);
                 },
-                None => unsafe {
+                None =>
+                #[allow(unsafe_code)]
+                // SAFETY: same serialization contract as `enable`: all env
+                // access goes through the process-wide lock in
+                // `with_public_web_tools_enabled`, which holds the mutex
+                // across the guard's whole lifetime.
+                unsafe {
                     std::env::remove_var(crate::ai_assistant::web::AI_PUBLIC_WEB_ENABLE_ENV);
                 },
             }

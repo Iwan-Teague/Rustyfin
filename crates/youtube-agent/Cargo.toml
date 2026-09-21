@@ -21,3 +21,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 rusty_ytdl = { version = "0.7", default-features = false, features = ["search", "live", "rustls-tls"] }
+
+[lints]
+workspace = true

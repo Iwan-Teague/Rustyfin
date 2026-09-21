@@ -65,3 +65,6 @@ libc = "0.2"
 axum-test = { version = "18", features = ["ws"] }
 rustfin-transcoder = { path = "../transcoder" }
 tempfile = "3"
+
+[lints]
+workspace = true

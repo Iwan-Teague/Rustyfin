@@ -406,10 +406,19 @@ struct StatvfsSnapshot {
 fn statvfs_snapshot(path: &Path) -> Option<StatvfsSnapshot> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    #[allow(unsafe_code)]
+    // SAFETY: `c_path` is a valid NUL-terminated C string (built above) and
+    // `stat.as_mut_ptr()` points to a `MaybeUninit<libc::statvfs>` allocation
+    // of the exact expected type; `statvfs` only reads the path and writes
+    // through the out-pointer.
     let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
     if rc != 0 {
         return None;
     }
+    #[allow(unsafe_code)]
+    // SAFETY: `rc == 0` above means `statvfs` succeeded, and POSIX guarantees
+    // it fully initialized the `statvfs` structure on success, so all fields
+    // are valid to read.
     let stat = unsafe { stat.assume_init() };
     let block_size = if stat.f_frsize > 0 {
         stat.f_frsize as u64

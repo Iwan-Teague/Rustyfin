@@ -29,3 +29,6 @@ sha2 = { workspace = true }
 rustfin-ai-agent-cuda-link = { path = "../ai-agent-cuda-link", optional = true }
 rustfin-ai-agent-rocm-link = { path = "../ai-agent-rocm-link", optional = true }
 rustfin-ai-agent-vulkan-link = { path = "../ai-agent-vulkan-link", optional = true }
+
+[lints]
+workspace = true

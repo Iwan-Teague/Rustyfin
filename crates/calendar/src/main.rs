@@ -769,6 +769,7 @@ mod tests {
 
     #[test]
     fn service_specific_migration_flag_overrides_global_value() {
+        #[allow(unsafe_code)]
         // SAFETY: this test mutates process env only for the duration of the assertion.
         unsafe {
             std::env::remove_var("RUSTFIN_CALENDAR_RUN_MIGRATIONS");
@@ -783,6 +784,7 @@ mod tests {
             true,
         ));
 
+        #[allow(unsafe_code)]
         // SAFETY: restore process env after the test.
         unsafe {
             std::env::remove_var("RUSTFIN_CALENDAR_RUN_MIGRATIONS");

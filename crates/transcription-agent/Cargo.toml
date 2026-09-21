@@ -34,3 +34,6 @@ gpu-all = ["gpu-opencl", "gpu-cuda", "gpu-hip"]
 rustfin-transcription-opencl-link = { path = "../transcription-opencl-link", optional = true }
 rustfin-transcription-cuda-link = { path = "../transcription-cuda-link", optional = true }
 rustfin-transcription-hip-link = { path = "../transcription-hip-link", optional = true }
+
+[lints]
+workspace = true
