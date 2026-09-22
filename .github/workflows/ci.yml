@@ -69,7 +69,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Full history so the gate's `git rev-parse HEAD` / report metadata work.
           fetch-depth: 0
@@ -96,12 +96,12 @@ jobs:
       - name: Install Rust toolchain
         # Honors rust-toolchain.toml (channel = stable, components = rustfmt, clippy),
         # which the workspace needs for edition 2024 + the fmt/clippy gates.
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (branch head, verified 2026-09-20 via GitHub API)
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head 6bed076 (a moving branch pinned to a commit; verified against the upstream ref 2026-09-22)
         with:
           components: rustfmt, clippy
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (tag v2 -> 2.9.2, verified 2026-09-20 via GitHub API)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-deny
         # Installed from crates.io with --locked instead of a third-party
@@ -114,7 +114,7 @@ jobs:
         run: cargo deny check advisories bans sources
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
@@ -154,7 +154,7 @@ jobs:
 
       - name: Upload gate report and logs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-gates-report
           path: .tmp/gates
