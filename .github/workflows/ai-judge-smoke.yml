@@ -4,6 +4,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege (AQ-97): read-only token; no job publishes or writes to the repo.
+permissions:
+  contents: read
+
 jobs:
   ai-judge-smoke:
     name: ai-judge-smoke
@@ -11,7 +15,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -27,17 +31,17 @@ jobs:
             pkg-config
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (branch head, verified 2026-09-20 via GitHub API)
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (tag v2 -> 2.9.2, verified 2026-09-20 via GitHub API)
 
       - name: Run AI judge smoke gate
         run: bash scripts/ci/judge_gates.sh --mode smoke --artifacts-dir .tmp/gates/ci-smoke
 
       - name: Upload AI judge smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ai-judge-smoke-artifacts
           path: .tmp/gates/ci-smoke
