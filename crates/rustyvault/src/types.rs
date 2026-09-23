@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -278,13 +280,25 @@ pub struct CreateRustyVaultDeviceSessionResponse {
     pub pairing: Option<RustyVaultPairingCodeResponse>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RustyVaultDeviceSessionTokens {
     pub session_id: String,
     pub access_token: String,
     pub refresh_token: String,
     pub access_expires_ts: i64,
     pub refresh_expires_ts: i64,
+}
+
+impl fmt::Debug for RustyVaultDeviceSessionTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RustyVaultDeviceSessionTokens")
+            .field("session_id", &self.session_id)
+            .field("access_token", &"REDACTED")
+            .field("refresh_token", &"REDACTED")
+            .field("access_expires_ts", &self.access_expires_ts)
+            .field("refresh_expires_ts", &self.refresh_expires_ts)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -385,6 +399,27 @@ mod tests {
 
         assert_eq!(request.client_kind, RustyVaultClientKind::WebClient);
         assert_eq!(request.device_name, "RustyVault Web Vault");
+    }
+
+    #[test]
+    fn device_session_tokens_debug_redacts_tokens() {
+        let tokens = super::RustyVaultDeviceSessionTokens {
+            session_id: "session-1".to_string(),
+            access_token: "aq140-witness-access-token".to_string(),
+            refresh_token: "aq140-witness-refresh-token".to_string(),
+            access_expires_ts: 1_750_000_000,
+            refresh_expires_ts: 1_750_003_600,
+        };
+
+        let rendered = format!("{tokens:?}");
+        assert!(
+            !rendered.contains("aq140-witness-access-token"),
+            "RustyVaultDeviceSessionTokens Debug output leaked the access token: {rendered}"
+        );
+        assert!(
+            !rendered.contains("aq140-witness-refresh-token"),
+            "RustyVaultDeviceSessionTokens Debug output leaked the refresh token: {rendered}"
+        );
     }
 }
 
