@@ -4,6 +4,8 @@ use axum::{Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 
+use std::str::FromStr;
+
 use crate::auth::AuthUser;
 use crate::dictionary_hardening_helpers::{
     AttachNodeMode, WorkspaceMemberRole, WorkspaceMembershipMutationError, decide_attach_node_mode,
@@ -477,7 +479,7 @@ async fn ensure_workspace_write_access(
 ) -> Result<DictionaryWorkspaceRow, AppError> {
     let (workspace, membership) = ensure_workspace_role(state, auth, workspace_id).await?;
     let role = WorkspaceRole::from_str(&membership.role)
-        .ok_or_else(|| ApiError::Internal("invalid dictionary membership role".into()))?;
+        .map_err(|_| ApiError::Internal("invalid dictionary membership role".into()))?;
     if !role.can_write() {
         return Err(ApiError::Forbidden(
             "dictionary workspace is read-only for this account".into(),
@@ -489,7 +491,7 @@ async fn ensure_workspace_write_access(
 
 fn parse_workspace_role_strict(role: &str) -> Result<WorkspaceRole, AppError> {
     WorkspaceRole::from_str(role)
-        .ok_or_else(|| ApiError::Internal("invalid dictionary membership role".into()).into())
+        .map_err(|_| ApiError::Internal("invalid dictionary membership role".into()).into())
 }
 
 async fn ensure_workspace_manage_access(
@@ -579,7 +581,7 @@ fn normalize_login_username(raw: &str) -> Result<String, AppError> {
 }
 
 fn parse_requested_member_role(raw: &str) -> Result<WorkspaceRole, AppError> {
-    WorkspaceRole::from_str(raw.trim().to_ascii_lowercase().as_str()).ok_or_else(|| {
+    WorkspaceRole::from_str(raw.trim().to_ascii_lowercase().as_str()).map_err(|_| {
         ApiError::BadRequest("role must be one of: owner, editor, viewer".into()).into()
     })
 }
@@ -758,7 +760,9 @@ async fn resolve_tree_workspace(
 
     workspaces
         .into_iter()
-        .find(|workspace| WorkspaceKind::from_str(&workspace.workspace_kind) == Some(root_kind))
+        .find(|workspace| {
+            WorkspaceKind::from_str(&workspace.workspace_kind).is_ok_and(|kind| kind == root_kind)
+        })
         .ok_or_else(|| {
             ApiError::NotFound("dictionary workspace not found for that root".into()).into()
         })

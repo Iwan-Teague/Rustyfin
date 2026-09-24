@@ -204,16 +204,6 @@ async fn transcribe_pcm_chunks_to_segments_with_client<C: TranscriptionClient + 
     Ok(transcript_segments)
 }
 
-async fn transcribe_pcm_chunks(
-    state: &AppState,
-    user: &AuthUser,
-    session_id: &str,
-    decoded: &DecodedAudio,
-) -> Result<String, AppError> {
-    let client = HttpTranscriptionClient;
-    transcribe_pcm_chunks_with_client(state, user, session_id, decoded, &client).await
-}
-
 async fn transcribe_pcm_chunks_with_client<C: TranscriptionClient + ?Sized>(
     state: &AppState,
     user: &AuthUser,

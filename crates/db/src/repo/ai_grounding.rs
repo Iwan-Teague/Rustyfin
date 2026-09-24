@@ -940,7 +940,7 @@ pub async fn find_exact_entity_nodes_for_user(
     sql.push_str(&memory_scope_clause("owner_user_id"));
 
     if let Some(topic_key) = topic_key {
-        sql.push_str(&format!(" AND topic_key = $3"));
+        sql.push_str(" AND topic_key = $3");
         let _ = topic_key;
     }
     sql.push_str(&format!(

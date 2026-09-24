@@ -216,11 +216,13 @@ pub async fn bootstrap_rustyvault(
     };
     rustfin_db::repo::rustyvault::bootstrap_rustyvault(
         &state.db,
-        &auth.user_id,
-        &auth.username,
-        "active",
-        service::RUSTYVAULT_SCHEMA_VERSION,
-        wrapped_key.key_version,
+        rustfin_db::repo::rustyvault::RustyVaultBootstrapAccount {
+            user_id: &auth.user_id,
+            display_name: &auth.username,
+            account_status: "active",
+            schema_version: service::RUSTYVAULT_SCHEMA_VERSION,
+            active_key_version: wrapped_key.key_version,
+        },
         &wrapped_key,
         service::now_ts(),
     )

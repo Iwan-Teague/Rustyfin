@@ -91,14 +91,18 @@ impl WorkspaceKind {
             Self::Custom => "custom",
         }
     }
+}
 
-    pub fn from_str(value: &str) -> Option<Self> {
+impl std::str::FromStr for WorkspaceKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "family_shared" => Some(Self::FamilyShared),
-            "friends_private" => Some(Self::FriendsPrivate),
-            "work_private" => Some(Self::WorkPrivate),
-            "custom" => Some(Self::Custom),
-            _ => None,
+            "family_shared" => Ok(Self::FamilyShared),
+            "friends_private" => Ok(Self::FriendsPrivate),
+            "work_private" => Ok(Self::WorkPrivate),
+            "custom" => Ok(Self::Custom),
+            _ => Err(format!("unknown workspace kind: {value}")),
         }
     }
 }
@@ -120,21 +124,25 @@ impl WorkspaceRole {
         }
     }
 
-    pub fn from_str(value: &str) -> Option<Self> {
-        match value {
-            "owner" => Some(Self::Owner),
-            "editor" => Some(Self::Editor),
-            "viewer" => Some(Self::Viewer),
-            _ => None,
-        }
-    }
-
     pub const fn can_write(self) -> bool {
         matches!(self, Self::Owner | Self::Editor)
     }
 
     pub const fn can_manage(self) -> bool {
         matches!(self, Self::Owner)
+    }
+}
+
+impl std::str::FromStr for WorkspaceRole {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "owner" => Ok(Self::Owner),
+            "editor" => Ok(Self::Editor),
+            "viewer" => Ok(Self::Viewer),
+            _ => Err(format!("unknown workspace role: {value}")),
+        }
     }
 }
 
@@ -1499,19 +1507,36 @@ pub async fn list_visible_people(
     Ok(rows.into_iter().map(map_dictionary_person_row).collect())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RelationUpsertParams<'a> {
+    workspace_id: &'a str,
+    from_person_id: &'a str,
+    to_person_id: &'a str,
+    relation_type: &'a str,
+    pair_key: &'a str,
+    relation_group_key: &'a str,
+    direction: &'a str,
+    source_kind: MutationSourceKind,
+    source_user_id: Option<&'a str>,
+    source_note: Option<&'a str>,
+}
+
 async fn upsert_single_relation(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    workspace_id: &str,
-    from_person_id: &str,
-    to_person_id: &str,
-    relation_type: &str,
-    pair_key: &str,
-    relation_group_key: &str,
-    direction: &str,
-    source_kind: MutationSourceKind,
-    source_user_id: Option<&str>,
-    source_note: Option<&str>,
+    params: &RelationUpsertParams<'_>,
 ) -> Result<DictionaryRelationRow, sqlx::Error> {
+    let RelationUpsertParams {
+        workspace_id,
+        from_person_id,
+        to_person_id,
+        relation_type,
+        pair_key,
+        relation_group_key,
+        direction,
+        source_kind,
+        source_user_id,
+        source_note,
+    } = *params;
     let now = now_ts();
     let id = new_id();
     let sql = format!(
@@ -1559,32 +1584,28 @@ pub async fn upsert_relation_pair(
         &input.relation_type,
         &input.inverse_relation_type,
     );
-    let forward = upsert_single_relation(
-        &mut tx,
-        &input.workspace_id,
-        &input.from_person_id,
-        &input.to_person_id,
-        &input.relation_type,
-        &pair_key,
-        &group_key,
-        "forward",
-        input.source_kind,
-        input.source_user_id.as_deref(),
-        input.source_note.as_deref(),
-    )
-    .await?;
+    let forward_params = RelationUpsertParams {
+        workspace_id: &input.workspace_id,
+        from_person_id: &input.from_person_id,
+        to_person_id: &input.to_person_id,
+        relation_type: &input.relation_type,
+        pair_key: &pair_key,
+        relation_group_key: &group_key,
+        direction: "forward",
+        source_kind: input.source_kind,
+        source_user_id: input.source_user_id.as_deref(),
+        source_note: input.source_note.as_deref(),
+    };
+    let forward = upsert_single_relation(&mut tx, &forward_params).await?;
     let inverse = upsert_single_relation(
         &mut tx,
-        &input.workspace_id,
-        &input.to_person_id,
-        &input.from_person_id,
-        &input.inverse_relation_type,
-        &pair_key,
-        &group_key,
-        "inverse",
-        input.source_kind,
-        input.source_user_id.as_deref(),
-        input.source_note.as_deref(),
+        &RelationUpsertParams {
+            from_person_id: forward_params.to_person_id,
+            to_person_id: forward_params.from_person_id,
+            relation_type: &input.inverse_relation_type,
+            direction: "inverse",
+            ..forward_params
+        },
     )
     .await?;
     tx.commit().await?;
@@ -1656,8 +1677,7 @@ pub async fn list_resolved_relations_for_person(
         .fetch_all(pool)
         .await?;
 
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .map(|row| {
             Ok(DictionaryResolvedRelationRow {
                 relation_id: row.try_get("id")?,
@@ -1667,7 +1687,7 @@ pub async fn list_resolved_relations_for_person(
                 other_person: dictionary_person_row_from_pg_row(&row)?,
             })
         })
-        .collect::<Result<Vec<_>, sqlx::Error>>()?)
+        .collect()
 }
 
 pub async fn delete_relation_group(
@@ -2059,4 +2079,46 @@ pub async fn archive_person_from_workspace(
 
     tx.commit().await?;
     Ok(affected)
+}
+
+#[cfg(test)]
+mod workspace_enum_parse_tests {
+    use super::{WorkspaceKind, WorkspaceRole};
+
+    #[test]
+    fn workspace_kind_round_trips_with_as_str() {
+        for kind in [
+            WorkspaceKind::FamilyShared,
+            WorkspaceKind::FriendsPrivate,
+            WorkspaceKind::WorkPrivate,
+            WorkspaceKind::Custom,
+        ] {
+            assert_eq!(kind.as_str().parse::<WorkspaceKind>(), Ok(kind));
+        }
+    }
+
+    #[test]
+    fn workspace_kind_rejects_unknown_values() {
+        assert!("".parse::<WorkspaceKind>().is_err());
+        assert!("FamilyShared".parse::<WorkspaceKind>().is_err());
+        assert!("family-shared".parse::<WorkspaceKind>().is_err());
+    }
+
+    #[test]
+    fn workspace_role_round_trips_with_as_str() {
+        for role in [
+            WorkspaceRole::Owner,
+            WorkspaceRole::Editor,
+            WorkspaceRole::Viewer,
+        ] {
+            assert_eq!(role.as_str().parse::<WorkspaceRole>(), Ok(role));
+        }
+    }
+
+    #[test]
+    fn workspace_role_rejects_unknown_values() {
+        assert!("admin".parse::<WorkspaceRole>().is_err());
+        assert!("".parse::<WorkspaceRole>().is_err());
+        assert!("Owner".parse::<WorkspaceRole>().is_err());
+    }
 }

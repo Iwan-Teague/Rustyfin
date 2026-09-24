@@ -94,7 +94,7 @@ jobs:
             postgresql-client
 
       - name: Install Rust toolchain
-        # Honors rust-toolchain.toml (channel = stable, components = rustfmt, clippy),
+        # Honors rust-toolchain.toml (pinned channel, components = rustfmt, clippy),
         # which the workspace needs for edition 2024 + the fmt/clippy gates.
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head 6bed076 (a moving branch pinned to a commit; verified against the upstream ref 2026-09-22)
         with:

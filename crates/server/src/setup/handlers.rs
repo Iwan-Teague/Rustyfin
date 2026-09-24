@@ -295,7 +295,7 @@ pub async fn get_setup_config(_guard: SetupReadGuard, State(state): State<AppSta
     let tz = rustfin_db::repo::settings::get(&state.db, "default_time_zone")
         .await
         .unwrap_or(Some("Europe/London".to_string()));
-    let tz = tz.and_then(|t| if t.is_empty() { None } else { Some(t) });
+    let tz = tz.filter(|t| !t.is_empty());
 
     (
         StatusCode::OK,

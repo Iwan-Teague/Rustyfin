@@ -460,11 +460,7 @@ fn classify_network_node_status(
     }
 
     let operstate = operstate.unwrap_or_default();
-    if operstate.eq_ignore_ascii_case("UP")
-        || operstate.eq_ignore_ascii_case("UNKNOWN") && !addresses.is_empty()
-    {
-        "online"
-    } else if !addresses.is_empty() {
+    if operstate.eq_ignore_ascii_case("UP") || !addresses.is_empty() {
         "online"
     } else {
         "offline"
@@ -548,6 +544,32 @@ mod tests {
     fn classify_network_node_status_prefers_loopback() {
         let status = classify_network_node_status(None, true, &[]);
         assert_eq!(status, "loopback");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn classify_network_node_status_marks_unknown_state_with_addresses_online() {
+        let addresses = vec![NetworkAddressSummary {
+            family: "inet".to_string(),
+            address: "192.168.1.5".to_string(),
+            scope: Some("global".to_string()),
+        }];
+        let status = classify_network_node_status(Some("UNKNOWN"), false, &addresses);
+        assert_eq!(status, "online");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn classify_network_node_status_marks_addressless_unknown_state_offline() {
+        let status = classify_network_node_status(Some("UNKNOWN"), false, &[]);
+        assert_eq!(status, "offline");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn classify_network_node_status_marks_addressless_down_state_offline() {
+        let status = classify_network_node_status(Some("DOWN"), false, &[]);
+        assert_eq!(status, "offline");
     }
 
     #[cfg(target_os = "linux")]

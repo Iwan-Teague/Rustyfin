@@ -15,6 +15,14 @@
 # exits 1 when any gate FAILED. This wrapper adds only the supply-chain gate
 # its CI runs as a separate step, so local and CI gate the identical set.
 #
+# Prerequisites (r106 F10): two gates fail-closed on missing environment, so
+# provision them before running locally:
+#   - RUSTFIN_DATABASE_URL  required by the "Rust setup integration" gate
+#                           (a live postgres; export the URL or that gate
+#                           fails with "RUSTFIN_DATABASE_URL is required").
+#   - ui/node_modules       required by the UI gates ("UI dependencies
+#                           present", lint, typecheck, production build);
+#                           populate with (cd ui && npm ci).
 # Fails closed: missing host tooling (jq, curl, lsof, psql, ffprobe, node,
 # npm, a populated ui/node_modules, Postgres for the setup-integration gate)
 # FAILS the corresponding gate -- it is never skipped into green. Full local

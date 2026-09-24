@@ -820,16 +820,27 @@ pub async fn count_items(pool: &DbPool, user_id: &str) -> Result<i64, sqlx::Erro
     Ok(row.0)
 }
 
+pub struct RustyVaultBootstrapAccount<'a> {
+    pub user_id: &'a str,
+    pub display_name: &'a str,
+    pub account_status: &'a str,
+    pub schema_version: i32,
+    pub active_key_version: i32,
+}
+
 pub async fn bootstrap_rustyvault(
     pool: &DbPool,
-    user_id: &str,
-    display_name: &str,
-    account_status: &str,
-    schema_version: i32,
-    active_key_version: i32,
+    account: RustyVaultBootstrapAccount<'_>,
     wrapped_key: &RustyVaultWrappedKeyInsert,
     now_ts: i64,
 ) -> Result<(), sqlx::Error> {
+    let RustyVaultBootstrapAccount {
+        user_id,
+        display_name,
+        account_status,
+        schema_version,
+        active_key_version,
+    } = account;
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO rustyvault_account (user_id, display_name, status, schema_version, active_key_version, created_ts, updated_ts, last_unlock_required_ts, last_rekey_ts) \

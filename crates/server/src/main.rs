@@ -543,9 +543,7 @@ async fn main() -> anyhow::Result<()> {
         servers_agent_url,
         servers_agent_token,
         model_dir: std::sync::Arc::new(tokio::sync::RwLock::new(model_dir)),
-        engine: std::sync::Arc::new(tokio::sync::Mutex::new(
-            rustfin_server::ai::EngineState::default(),
-        )),
+        engine: std::sync::Arc::new(tokio::sync::Mutex::new(rustfin_server::ai::EngineState)),
         transcoder: session_mgr,
         ffmpeg_path: std::path::PathBuf::from(&ffmpeg_path),
         ffprobe_path: std::path::PathBuf::from(&ffprobe_path),

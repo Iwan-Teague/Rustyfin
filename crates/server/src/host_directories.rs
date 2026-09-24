@@ -124,7 +124,7 @@ pub fn build_host_directory_listing(
             path: canonical.to_string_lossy().into_owned(),
         });
     }
-    directories.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    directories.sort_by_key(|d| d.name.to_lowercase());
 
     let parent_path = if current_path == active_root {
         None
