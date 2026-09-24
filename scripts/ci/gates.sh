@@ -23,11 +23,18 @@
 #   - ui/node_modules       required by the UI gates ("UI dependencies
 #                           present", lint, typecheck, production build);
 #                           populate with (cd ui && npm ci).
-# Fails closed: missing host tooling (jq, curl, lsof, psql, ffprobe, node,
-# npm, a populated ui/node_modules, Postgres for the setup-integration gate)
-# FAILS the corresponding gate -- it is never skipped into green. Full local
-# cost is CI-scale: workspace compile + clippy + the Rust test gates + UI
-# lint/typecheck/production build (CI allows 90 minutes at 2 cargo jobs).
+# Environment semantics (r106 F10, revised by AQ-233): on GitHub CI
+# (GITHUB_ACTIONS=true, which provisions Postgres, psql and node) every gate
+# is fail-closed exactly as before -- missing host tooling or a missing
+# RUSTFIN_DATABASE_URL FAILS the corresponding gate and is never skipped
+# into green. On any other host, only the DB-/UI-dependent gates (setup
+# integration, migration query, UI lint/typecheck/build) SKIP (exit 222,
+# the protocol --allow-non-debian already uses) when their prerequisites
+# are absent, each with a message naming the missing piece and pointing at
+# CI, which runs them fail-closed on every push; every gate that can still
+# make an assertion (fmt, clippy, the Rust test gates, docs, syntax,
+# runtime/docker checks) still runs and still fails here. Full local cost
+# without UI/node is: workspace compile + clippy + the Rust test gates.
 set -eu
 
 cd "$(dirname "$0")/../.."

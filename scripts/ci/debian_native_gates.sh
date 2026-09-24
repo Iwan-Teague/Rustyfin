@@ -122,6 +122,20 @@ FAIL_COUNT=0
 SKIP_COUNT=0
 declare -a RESULT_ROWS=()
 
+# AQ-233: a host outside GitHub CI may lack the Postgres server, psql, or the
+# node/npm/ui-node_modules toolchain that the DB- and UI-dependent gates need.
+# On such a host those specific gates SKIP (the same exit-222 protocol
+# --allow-non-debian already uses) with a message naming the missing piece and
+# pointing at CI, which provisions Postgres (ci.yml:44-65), psql and node and
+# runs those gates fail-closed on every push. A SKIP is never a PASS: it is
+# recorded as SKIP in the report, and every gate that can still make an
+# assertion (e.g. the migration-count query once a DB answers) keeps failing
+# exactly as before. GITHUB_ACTIONS=true (set by every GitHub Actions runner)
+# keeps today's fail-closed behaviour byte-for-byte.
+is_ci_env() {
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]]
+}
+
 slugify() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
 }
@@ -194,7 +208,11 @@ check_supported_debian_host() {
 
 check_required_tooling() {
   local missing=0
-  local tools=(cargo rustc node npm git curl jq psql)
+  local tools=(cargo rustc git curl jq)
+  # node, npm and psql gate only the DB-/UI-dependent gates, which SKIP (not
+  # fail) on a non-CI host that lacks them (AQ-233); CI provisions all three
+  # (ci.yml installs node and postgresql-client) and stays fail-closed.
+  local host_optional=(node npm psql)
   if [[ "$SKIP_BROWSER_SMOKE" != "true" ]]; then
     tools+=(lsof)
   fi
@@ -202,9 +220,11 @@ check_required_tooling() {
     tools+=(systemctl)
   fi
   local tool
-  for tool in "${tools[@]}"; do
+  for tool in "${tools[@]}" "${host_optional[@]}"; do
     if command -v "$tool" >/dev/null 2>&1; then
       printf 'found %s at %s\n' "$tool" "$(command -v "$tool")"
+    elif ! is_ci_env && printf '%s\n' "${host_optional[@]}" | grep -qx "$tool"; then
+      printf 'missing %s (SKIP on this non-CI host: the gates that need it skip; CI provisions it)\n' "$tool"
     else
       printf 'missing %s\n' "$tool"
       missing=1
@@ -260,10 +280,39 @@ check_ai_judge_gate() {
 }
 
 check_ui_dependencies_present() {
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    if is_ci_env; then
+      echo "node/npm are required by the UI gates"
+      return 1
+    fi
+    echo "SKIP: node/npm not on PATH on this non-CI host; the UI gates need them. GitHub CI installs node and runs the UI gates on every push (ci.yml)."
+    return "$SKIP_CODE"
+  fi
   [[ -x "$REPO_ROOT/ui/node_modules/.bin/tsc" ]] || {
-    echo "UI dependencies are missing. Run npm --prefix ui ci first."
-    return 1
+    if is_ci_env; then
+      echo "UI dependencies are missing. Run npm --prefix ui ci first."
+      return 1
+    fi
+    echo "SKIP: ui/node_modules not populated on this non-CI host (npm --prefix ui ci). GitHub CI installs them and runs the UI gates on every push."
+    return "$SKIP_CODE"
   }
+}
+
+# ui_gate (AQ-233): guard the three UI commands on the same prerequisites the
+# "UI dependencies present" gate asserts; on a non-CI host without them they
+# SKIP instead of failing, exactly like that gate.
+ui_gate() {
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 \
+    && [[ -x "$REPO_ROOT/ui/node_modules/.bin/tsc" ]]; then
+    "$@"
+    return
+  fi
+  if is_ci_env; then
+    echo "UI tooling missing (node/npm/ui/node_modules); run npm --prefix ui ci"
+    return 1
+  fi
+  echo "SKIP: node/npm/ui/node_modules absent on this non-CI host; the UI gates need them. GitHub CI runs these gates on every push (ci.yml)."
+  return "$SKIP_CODE"
 }
 
 check_media_fixtures() {
@@ -365,8 +414,12 @@ check_latest_migration_applied() {
     return "$SKIP_CODE"
   }
   command -v psql >/dev/null 2>&1 || {
-    echo "psql not installed"
-    return 1
+    if is_ci_env; then
+      echo "psql not installed"
+      return 1
+    fi
+    echo "SKIP: psql not installed on this non-CI host; cannot query migration state. GitHub CI provisions postgresql-client and runs this gate on every push."
+    return "$SKIP_CODE"
   }
   local latest_migration db_name applied_count db_target
   latest_migration="$(find "$REPO_ROOT/crates/db/migrations_pg" -maxdepth 1 -type f -name '*.sql' -print | sort | tail -n 1)"
@@ -451,10 +504,18 @@ build_schema_db_url() {
 
 check_setup_integration() {
   local base_db_url="${RUSTFIN_DATABASE_URL:-}"
+  if [[ -z "$base_db_url" ]] && ! is_ci_env; then
+    echo "SKIP: RUSTFIN_DATABASE_URL is not set on this non-CI host and no Postgres is provisioned here; the setup-integration gate needs a live database. GitHub CI runs this gate against its postgres:16 service on every push (ci.yml:44-65)."
+    return "$SKIP_CODE"
+  fi
   [[ -n "$base_db_url" ]] || {
     echo "RUSTFIN_DATABASE_URL is required for setup integration gate"
     return 1
   }
+  if ! command -v psql >/dev/null 2>&1 && ! is_ci_env; then
+    echo "SKIP: psql not installed on this non-CI host; the setup-integration gate needs it. GitHub CI provisions postgresql-client and runs this gate on every push."
+    return "$SKIP_CODE"
+  fi
 
   local schema_name="rustfin_setup_gate_${RUN_ID}_$$"
   local test_db_url
@@ -543,9 +604,9 @@ if [[ "$SKIP_UI" == "true" ]]; then
 else
   run_gate "UI dependencies present" check_ui_dependencies_present
   run_gate "Media fixtures are playable" check_media_fixtures
-  run_gate "UI lint" npm --prefix ui run lint
-  run_gate "UI typecheck" "$REPO_ROOT/ui/node_modules/.bin/tsc" --noEmit -p "$REPO_ROOT/ui/tsconfig.json"
-  run_gate "UI production build" npm --prefix ui run build
+  run_gate "UI lint" ui_gate npm --prefix ui run lint
+  run_gate "UI typecheck" ui_gate "$REPO_ROOT/ui/node_modules/.bin/tsc" --noEmit -p "$REPO_ROOT/ui/tsconfig.json"
+  run_gate "UI production build" ui_gate npm --prefix ui run build
 fi
 
 if [[ "$SKIP_BROWSER_SMOKE" == "true" ]]; then
