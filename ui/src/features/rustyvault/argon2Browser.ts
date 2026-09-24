@@ -80,16 +80,16 @@ export async function deriveArgon2IdHashBytes(params: {
   parallelism: number;
   hashLen: number;
 }): Promise<Uint8Array> {
-  const module = await loadArgon2BrowserModule();
+  const argon2Module = await loadArgon2BrowserModule();
   const result = await withTimeout(
-    module.hash({
+    argon2Module.hash({
       pass: params.pass,
       salt: params.salt,
       time: params.time,
       mem: params.mem,
       parallelism: params.parallelism,
       hashLen: params.hashLen,
-      type: module.ArgonType.Argon2id,
+      type: argon2Module.ArgonType.Argon2id,
     }),
     'Timed out while deriving the Argon2 browser fallback hash',
     20_000,
