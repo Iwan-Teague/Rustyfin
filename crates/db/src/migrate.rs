@@ -208,6 +208,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations_pg/047_ai_model_benchmarks.sql"),
     ),
     (
+        "048_ai_model_tps_float8",
+        include_str!("../migrations_pg/048_ai_model_tps_float8.sql"),
+    ),
+    (
         "051_ai_planner_audit",
         include_str!("../migrations_pg/051_ai_planner_audit.sql"),
     ),
