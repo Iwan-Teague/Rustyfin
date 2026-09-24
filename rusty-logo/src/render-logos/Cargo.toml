@@ -4,6 +4,7 @@
 name = "render-logos"
 version = "0.1.0"
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
 description = "Renders the Rusty* suite app-icon PNGs and the standalone R mark from the custom R outline."
 
 [dependencies]

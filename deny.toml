@@ -1,10 +1,12 @@
 # cargo-deny configuration — rustyfin (AQ-73 baseline supply-chain scaffold).
 # Gate in CI: `cargo deny check advisories bans sources`.
-# NOTE: `licenses` is intentionally NOT gated in CI yet — the PolyForm/MPL
-# allow-list ruling is pending owner decision OI-05 (wave10 audit README.md B4).
-# The allow list below records the MEASURED licence set of the current graph
-# (cargo-deny 0.20.2, `cargo deny list`, all features) and is a fact-record,
-# not a policy decision.
+# NOTE: `licenses` is still not part of the CI gate command above; it is
+# verified out-of-band for now. Owner decision OI-05 (ADR-021) is DECIDED:
+# the suite is relicensed to PolyForm Noncommercial 1.0.0 — rustyfin's own
+# crates declare that id (see the PolyForm entry heading the allow list
+# below). The remaining allow entries record the MEASURED third-party licence
+# set of the current graph (cargo-deny 0.20.2, `cargo deny list`, all
+# features).
 
 [graph]
 all-features = true
@@ -12,6 +14,10 @@ all-features = true
 [licenses]
 version = 2
 allow = [
+    # ADR-021 / OI-05: rustyfin's own crates are licensed under PolyForm
+    # Noncommercial 1.0.0. The SPDX id resolves directly from the crate
+    # manifests, so no [licenses.clarify] stanza is required.
+    "PolyForm-Noncommercial-1.0.0",
     "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

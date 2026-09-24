@@ -4,6 +4,7 @@
 name = "extract-glyph"
 version = "0.0.0"
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
 
 [dependencies]
 ttf-parser = "0.20"

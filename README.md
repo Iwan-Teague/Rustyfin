@@ -481,3 +481,12 @@ Database:
 ## Historical Notes
 
 Some archived planning/reference documents under `/Users/iwanteague/Desktop/Rustyfin/docs/` still discuss earlier design phases. Current operational guidance is limited to the supported native Linux install/runtime surface documented in this file, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`.
+
+## License
+
+Rustyfin is licensed under the [PolyForm Noncommercial 1.0.0](LICENSE.md).
+You are free to use, study, modify, and redistribute Rustyfin for any
+noncommercial purpose. Commercial use requires a separate licence from the
+copyright holder.
+
+Contributions are accepted under the same PolyForm Noncommercial 1.0.0 terms.
