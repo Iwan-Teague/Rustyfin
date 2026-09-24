@@ -528,6 +528,11 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // EngineState is a unit struct without the `ai` feature and a real
+    // struct with it, so `::default()` is the one spelling that builds both
+    // ways. Clippy only sees the unit-struct build.
+    #[allow(clippy::default_constructed_unit_structs)]
+    let engine_state = rustfin_server::ai::EngineState::default();
     let app_state = rustfin_server::state::AppState {
         db: pool,
         rustyvault,
@@ -543,7 +548,7 @@ async fn main() -> anyhow::Result<()> {
         servers_agent_url,
         servers_agent_token,
         model_dir: std::sync::Arc::new(tokio::sync::RwLock::new(model_dir)),
-        engine: std::sync::Arc::new(tokio::sync::Mutex::new(rustfin_server::ai::EngineState)),
+        engine: std::sync::Arc::new(tokio::sync::Mutex::new(engine_state)),
         transcoder: session_mgr,
         ffmpeg_path: std::path::PathBuf::from(&ffmpeg_path),
         ffprobe_path: std::path::PathBuf::from(&ffprobe_path),
