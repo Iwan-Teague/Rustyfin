@@ -110,8 +110,8 @@ fi
 printf 'gate toolchain: pin %s — rustc %s, clippy %s (pinned bin dir first on PATH)\n' \
   "$channel" "$rustc_ver" "$clippy_ver"
 
-printf '=== 1/2 cargo deny check advisories bans sources ===\n'
-cargo deny check advisories bans sources
+printf '=== 1/2 cargo deny check advisories bans licenses sources ===\n'
+cargo deny check advisories bans licenses sources
 
 printf '=== 2/2 native quality gates (scripts/ci/debian_native_gates.sh) ===\n'
 bash scripts/ci/debian_native_gates.sh \

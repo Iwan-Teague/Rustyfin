@@ -111,7 +111,7 @@ jobs:
 
       - name: Supply-chain check (advisories, bans, sources)
         # licenses is intentionally omitted pending the OI-05 licence ruling.
-        run: cargo deny check advisories bans sources
+        run: cargo deny check advisories bans licenses sources
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
